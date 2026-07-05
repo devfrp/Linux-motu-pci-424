@@ -23,6 +23,7 @@ set -eu
 
 # --------------------------------------------------------------------- options
 ASSUME_YES=0; DO_DEPS=1; USE_DKMS=1; DO_LOAD=1; TOOLS_ONLY=0; UNINSTALL=0
+NONINTERACTIVE=0
 for arg in "$@"; do
 	case "$arg" in
 	-y|--yes)        ASSUME_YES=1 ;;
@@ -35,6 +36,15 @@ for arg in "$@"; do
 	*) echo "unknown option: $arg (try -h)" >&2; exit 2 ;;
 	esac
 done
+
+# When stdin is not a terminal (piped: `curl ... | sh`), there is no way to
+# answer a package-manager prompt, so default to non-interactive installs.
+# A real terminal keeps the prompts. (sudo reads /dev/tty for its password
+# regardless, so it still works under a pipe.)
+if [ ! -t 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
+	ASSUME_YES=1
+	NONINTERACTIVE=1
+fi
 
 # ------------------------------------------------------------------- helpers
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -128,6 +138,8 @@ install_deps() {
 		warn "  a C toolchain (gcc/make), kernel headers for $KREL, alsa-lib dev, dkms, pkg-config"
 		return
 	fi
+	[ "$NONINTERACTIVE" -eq 1 ] && \
+		log "piped/non-interactive run -> installing packages without prompting"
 	log "installing dependencies via $PM: $DEPS"
 	y=""; [ "$ASSUME_YES" -eq 1 ] && y="-y"
 	case "$PM" in

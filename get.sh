@@ -50,12 +50,8 @@ cd "$DEST" || die "checkout failed"
 [ -f install.sh ] || die "install.sh missing in $DEST (wrong branch?)"
 log "sources in $DEST - running installer"
 
-# Under `curl ... | sh`, stdin is the script (this pipe), so the installer's
-# package-manager prompts would read EOF and abort. Reconnect stdin to the
-# terminal when one is available so those prompts work; otherwise the user
-# should pass -y (e.g. `... | sh -s -- -y`).
-if [ -r /dev/tty ]; then
-	exec sh install.sh "$@" </dev/tty
-else
-	exec sh install.sh "$@"
-fi
+# Under `curl ... | sh` stdin is this pipe, not a terminal, so package-manager
+# prompts would read EOF and abort. install.sh detects a non-tty stdin and
+# switches package installs to non-interactive automatically; sudo still reads
+# the terminal directly for its password. (Pass -y to force it anyway.)
+exec sh install.sh "$@"
