@@ -84,6 +84,19 @@ base and go through the same window dispatch:
 The **ack register is a separate card address in device-ext `+0x88`** (from the
 same sub-object, field `+0x4`; method `0x2c150`).
 
+## Mixer coefficient region (CONFIRMED via the bulk-write destinations)
+
+A **third card-reported base lives in device-ext `+0x9c`**: at init (`fn 0x2c360`,
+store at `0x2c427`) the driver `READ_REGISTER`s a location off the audio base and
+keeps the returned card address there — same pattern as `+0x98`/`+0x88`. The
+**CueMix mixer coefficients** are staged in an inline object buffer at `+0x110`
+(~45 dwords) and flushed to `+0x9c` with `WRITE_REGISTER_BUFFER_ULONG`
+(`fn 0x29aa0`, site `0x29ad5`), writing only the **dirty range** `[+0x1c4]..[+0x1c8]`
+(classic mixer incremental update). This is the hardware sink for the CueMix
+control set — see `cuemix-control-map.md`. Full destination table for all six
+`WRITE_REGISTER_BUFFER_ULONG` sites (audio aperture / channel-bank / mixer) is in
+`fpga-upload.md`.
+
 ## IRQ path (CONFIRMED — ISR `0x2bae0` = vtable `0x30cc0` slot `0x28`)
 
 The ISR shim (`0x201f0`) forwards to the virtual ISR `0x2bae0`:

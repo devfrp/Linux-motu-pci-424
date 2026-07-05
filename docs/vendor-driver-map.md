@@ -37,22 +37,38 @@ hand: the hardware class vtable is at `.rdata` `0x30cc0`, and slot `0x28` =
 ack, enable and audio-register block). Vtable resolution was done with a small
 Python helper over the raw section bytes, since objdump gives no xrefs.
 
-## `MotuBus.sys` — PCI bus/multifunction enumerator
+## `MotuBus.sys` — PCI bus/multifunction enumerator (RE'd)
 
-Small (`~25 KB`). Per `MotuBus.inf`, it is the bus/function driver that
-enumerates the card's PCI functions and creates the child device(s) that
-`MOTUAW.sys` then attaches to. Not audio-relevant beyond enumeration; a Linux
-driver binds the PCI function directly and needs no equivalent.
+Small (`~25 KB`, 44 NTOSKRNL imports, no other DLLs). Confirmed by its import
+table to be a **pure PnP bus/filter driver**: `IoCreateDevice`,
+`IoAttachDeviceToDeviceStack`, `IoRegisterDeviceInterface`,
+`IoSetDeviceInterfaceState`, `IoInvalidateDeviceRelations`,
+`IoGetAttachedDeviceReference` — it creates/stacks the child device object(s)
+that `MOTUAW.sys` attaches to and triggers (re)enumeration. **Decisive negatives:**
+*no* hardware access (no `READ/WRITE_REGISTER`, no `READ/WRITE_PORT`, no
+`HalGetBusData`) and *no* file I/O (no `ZwCreateFile/ZwReadFile`). So it neither
+touches registers nor uploads the FPGA — which, together with the same negative
+for `MOTUAW.sys`, means the **FPGA bitstream upload is done by a user-mode
+component**, not by either kernel driver (see `fpga-upload.md`). A Linux driver
+binds the PCI function directly and needs no equivalent.
 
-## `MAWWAVE.sys` — legacy WDM/kmixer wave shim
+## `MAWWAVE.sys` — WDM/WaveRT audio miniport (RE'd)
 
-`~70 KB`. The legacy Windows WDM "wave" personality layered on top of the audio
-driver (kmixer path). Low RE priority — irrelevant to ALSA. No unique hardware
-knowledge expected here.
+`~70 KB`. Links **`portcls.sys`** (`PcNewPort`, `PcNewServiceGroup`) — it is a
+Windows Port Class **WaveRT / WaveCyclic miniport** (source strings
+`wavecyc.cpp`, `wavecycstrm.cpp`, `WaveRT.cpp`, `waveRTStrm.cpp`; pdb
+`mawwave.pdb`). It presents the card to the WDM audio stack and **delegates all
+hardware to `MOTUAW.sys`** — confirmed: *no* direct `READ/WRITE_REGISTER` or
+`READ/WRITE_PORT`. This is exactly the layer the Linux **ALSA PCM** side replaces,
+so it carries no unique register knowledge. Minor confirmation: the WaveRT model
+(a shared cyclic buffer the app fills and the device drains) is consistent with
+the PIO-aperture ring recovered in `transport.md`.
 
-## `HDExpress_FullImageRun.bin` — PCIe variant FPGA/DSP image
+## `HDExpress_FullImageRun.bin` — PCIe variant image (RE'd)
 
-`~1.2 MB` binary shipped for the PCIe "HD Express" (`DEV_0005`) card. Much
-larger than a bare ACEX/Cyclone `.rbf`, so it is likely an FPGA bitstream **plus**
-a DSP/firmware image ("FullImageRun"). Not yet dissected. The parallel-PCI
-PCI-324/424 cards use `altera424b.rbf` instead.
+`~1.2 MB` image for the PCIe "HD Express" (`DEV_0005`) card. **Fully dissected**
+(see `fpga-upload.md`): a 24-byte-header container (load `0x100000`, entry
+`0x108608`, sum32 payload checksum verified) holding an ARM firmware section + a
+Xilinx Virtex FPGA bitstream (sync `0xAA995566`) + two small config records — an
+**ARM SoC + Xilinx** design, distinct from the classic PCI-324/424's Altera
+passive-serial FPGA (`altera424b.rbf`, which is *not* in the 4.0.6 installer).

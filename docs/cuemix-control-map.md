@@ -66,6 +66,17 @@ already knows them and pretty-prints the ones it finds. `N` = input index,
 These names are the contract between the kernel driver and `motu424-ctl`; keep
 them in sync with `tools/motu424-ctl.c` (`KNOWN_*` tables) if either changes.
 
+### Hardware sink (recovered)
+
+The mixer coefficients ultimately land in a **card-reported region at device-ext
+`+0x9c`** (read from the card at init, `fn 0x2c360`). The vendor driver stages
+them in an inline buffer (`dev+0x110`, ~45 dwords) and flushes only the changed
+range (`[dev+0x1c4]..[dev+0x1c8]`) via `WRITE_REGISTER_BUFFER_ULONG` (`fn 0x29aa0`).
+So a Linux CueMix implementation writes each changed coefficient into that block
+and pushes the dirty range — it does **not** need a per-control register. See
+`register-map.md` (mixer coefficient region) and `fpga-upload.md` (full
+destination table).
+
 ## `motu424-ctl` — the Linux CueMix
 
 `tools/motu424-ctl` is a self-contained alsa-lib CLI (no card libraries beyond

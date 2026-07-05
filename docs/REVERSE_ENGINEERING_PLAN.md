@@ -89,11 +89,16 @@ The single biggest unknown that gates *any* audio.
   `altera424b.rbf` string (file off `0x2e877`) and follow it to the byte-feeding
   loop. Determine transport: passive-serial via the I/O-port strobes, or a
   bulk `WRITE_REGISTER_BUFFER_ULONG` into a config window.
-  **[PARTIAL]** `docs/fpga-upload.md`: `MOTUAW.sys` has no file-I/O imports and
-  no code xref to the `.rbf` path string — it does not load the bitstream
-  itself; bytes arrive from user mode (likely IOCTL). Byte-feeding loop not
-  isolated with objdump. Port bridge `+0x4`/`+0x8` strobes + `+0x0` bit-1 poll
-  are the candidate config interface.
+  **[LARGELY DONE]** `docs/fpga-upload.md`: `MOTUAW.sys` has no file-I/O and no
+  xref to the `.rbf` string — bytes arrive from user mode via IOCTL, now fully
+  mapped. `DriverEntry@0x63000` sets `MajorFunction[DEVICE_CONTROL]=0x21d40`;
+  dispatcher `0x242b0` computes `func=((code>>2)&0xfff)-0x800` and switches
+  (`0x241b0`, 4 entries) over **four IOCTLs 0x801-0x804**: submit-buffer / start-
+  stop / control / register-callback. **No dedicated firmware opcode** — the
+  bitstream is pushed through the generic `0x801` buffer channel. The port
+  `+0x4`/`+0x8` strobes are IRQ/enable, **not** a passive-serial feed. Remaining:
+  the card address the submitted bytes land at (the vector consumer / stream
+  worker → `WRITE_REGISTER_BUFFER`).
 - [ ] **2.2 Decode the handshake.** nCONFIG assert, poll nSTATUS/CONF_DONE,
   bit/byte order (Altera passive-serial is LSB-first), post-config init clocks.
   *Deliverable:* `docs/fpga-upload.md` pseudocode. **[OPEN]** — needs the

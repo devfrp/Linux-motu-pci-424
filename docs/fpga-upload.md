@@ -99,6 +99,72 @@ This matches the installer shipping a `Virtex.cab` (Xilinx) rather than an Alter
 bitstream. The ARM firmware presumably drives the FPGA load internally, so on the
 PCIe card the host just DMAs this whole blob to the ARM and lets it self-boot.
 
+## IOCTL interface — fully mapped (CONFIRMED, no card)
+
+Traced the whole `IRP_MJ_DEVICE_CONTROL` path with `tools/re/xref.py`:
+
+```
+DriverEntry (init sec, VA 0x63000)
+  mov [DriverObject+0x70], 0x21d40      ; MajorFunction[IRP_MJ_DEVICE_CONTROL]
+0x21d40  IoAcquireRemoveLockEx; dispatch; IoReleaseRemoveLockEx; complete IRP
+0x242b0  edx = Irp->CurrentStackLocation
+         eax = [edx+0xc]                ; irpSp->Parameters.DeviceIoControl.IoControlCode
+         func = ((eax >> 2) & 0xfff) - 0x800   ; custom-function index (0x800-based)
+0x241b0  switch(func-1) via 4-entry jump table @0x242a0
+```
+
+So the device exposes exactly **four IOCTLs** (function codes `0x801..0x804`):
+
+| Func | Handler | Role (recovered) |
+|---|---|---|
+| `0x801` | `0x240f0` | get/create the stream object (`0x1cab0`) at ctx `+0x54`; if a data buffer arg is present, **append its {ptr,len} descriptor to a `std::vector`** (`0x23db0` = vector grow). A generic **buffer-submit**. |
+| `0x802` | `0x2424e` | arg≠0 → **start** (`0x23ff0`); arg=0 → stop/teardown (virtual close, zero ctx `+0x54/+0x58`). |
+| `0x803` | `0x241cb` | control op — virtual method on the stream object. |
+| `0x804` | `0x24216` | install a completion **callback** (`0x238c0`) into the caller's struct. |
+
+**There is no dedicated "load firmware" IOCTL.** MOTUAW.sys offers only this small
+generic streaming interface: submit buffers (0x801), start/stop (0x802), control
+(0x803), register a callback (0x804). Combined with the earlier negatives (no file
+I/O; only 3 port accesses — init/IRQ, *not* a passive-serial feed loop), the
+picture is now consistent and firm:
+
+> The **FPGA bitstream is pushed from user mode as ordinary submitted data**
+> through the `0x801` buffer channel (queued into the vector, then written to a
+> card window by the stream worker) — or via a user-mapped aperture. The driver
+> does not "know" it is firmware; it writes bytes to a card address. This is why
+> there is neither a file open nor a bit-banging port loop anywhere in the driver.
+
+## Where the bulk card-writes actually go (CONFIRMED) — and the firmware verdict
+
+All six `WRITE_REGISTER_BUFFER_ULONG` destinations were pinned by reading the
+address computation just before each call:
+
+| Site(s) | Destination card address | Payload |
+|---|---|---|
+| `0x29560` (`fn 0x29420`) | `base_B + (cardAddr & 0x3fffff)`, dynamic head | **audio PCM** into the window-B aperture |
+| `0x2a22d` / `0x2a291` (`fn 0x2a190`) | `[dev+0x98] + idx*4 + 0x24`, ping-pong `[+0x90]/[+0x94]` | per-**channel/bank** block |
+| `0x2c540` / `0x29ad5` / `0x29a04` | **`[dev+0x9c]`**, staged from the inline buffer `[dev+0x110]` (~45 dwords), flushed by a dirty range `[dev+0x1c4]..[dev+0x1c8]` | **CueMix mixer coefficients** |
+
+`[dev+0x9c]` is, like `+0x98` (audio base) and `+0x88` (ack), a **card-reported
+address**: at init (`fn 0x2c360`) the driver `READ_REGISTER`s a location near the
+audio base and stores the returned card address in `+0x9c` (`0x2c427`). None of
+these writes moves anything close to a 340 KB bitstream — the largest is ~45
+dwords, and its incremental dirty-range flush is the fingerprint of a **mixer**,
+not a one-shot FPGA config.
+
+**Verdict — the classic PCI-324/424 is NOT host-FPGA-uploaded.** Every strand of
+evidence now agrees: no file I/O, no firmware IOCTL (only the four streaming
+IOCTLs 0x801-0x804), no passive-serial port loop, no large-buffer config write,
+and the `.rbf` string has no code xref. The parallel-PCI card's Altera FPGA
+therefore **self-configures from onboard flash/EEPROM at power-on**; the `.rbf`
+path in `MOTUAW.sys` is a build/legacy artefact. Only the PCIe **HD Express**
+(separate ARM+Xilinx image, `HDExpress_FullImageRun.bin`) takes a host upload.
+
+**Consequence for the Linux driver:** Phase 4.2 (`request_firmware("altera424b.rbf")`)
+is very likely **unnecessary for the classic card** — plan for no bitstream upload,
+and verify on hardware that the card enumerates and streams with no firmware push.
+Keep a `request_firmware()` path only for the PCIe HD Express variant.
+
 ## To close this phase (needs more than objdump)
 
 - For the **classic PCI-324/424**: obtain `altera424b.rbf` from an older PCI-era
