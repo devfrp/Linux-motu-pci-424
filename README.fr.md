@@ -2,7 +2,7 @@
 
 *Lire dans une autre langue : [English](README.md) · **Français***
 
-🌐 **Site web :** <https://devfrp.github.io/motu-pci-424/>
+🌐 **Site web :** <https://devfrp.github.io/linux-motu-pci-424/>
 
 Un pilote ALSA Linux écrit de zéro pour la carte audio **MOTU PCI-324 / PCI-424**
 et ses interfaces de sortie AudioWire (2408, 24I/O, 828, HD192, 896HD, …).
@@ -17,7 +17,7 @@ et ses interfaces de sortie AudioWire (2408, 24I/O, 828, HD192, 896HD, …).
 ## Démarrage rapide
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/devfrp/motu-pci-424/main/get.sh | sh
+curl -fsSL https://raw.githubusercontent.com/devfrp/linux-motu-pci-424/main/get.sh | sh
 ```
 
 Installe sur n'importe quelle distro (dépendances + module DKMS + outils).
@@ -49,9 +49,9 @@ deux fichiers changent.
 Une ligne — récupère les sources et lance l'installeur :
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/devfrp/motu-pci-424/main/get.sh | sh
+curl -fsSL https://raw.githubusercontent.com/devfrp/linux-motu-pci-424/main/get.sh | sh
 # passer des options à l'installeur :
-curl -fsSL https://raw.githubusercontent.com/devfrp/motu-pci-424/main/get.sh | sh -s -- --no-dkms -y
+curl -fsSL https://raw.githubusercontent.com/devfrp/linux-motu-pci-424/main/get.sh | sh -s -- --no-dkms -y
 ```
 
 Ou clonez et lancez l'installeur directement. Il détecte votre gestionnaire de

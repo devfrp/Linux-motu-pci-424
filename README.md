@@ -2,7 +2,7 @@
 
 *Read this in: **English** · [Français](README.fr.md)*
 
-🌐 **Website:** <https://devfrp.github.io/motu-pci-424/>
+🌐 **Website:** <https://devfrp.github.io/linux-motu-pci-424/>
 
 A from-scratch Linux ALSA driver for the **MOTU PCI-324 / PCI-424** audio card
 and its AudioWire breakout interfaces (2408, 24I/O, 828, HD192, 896HD, …).
@@ -17,7 +17,7 @@ and its AudioWire breakout interfaces (2408, 24I/O, 828, HD192, 896HD, …).
 ## Quick start
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/devfrp/motu-pci-424/main/get.sh | sh
+curl -fsSL https://raw.githubusercontent.com/devfrp/linux-motu-pci-424/main/get.sh | sh
 ```
 
 Installs on any distro (deps + DKMS module + tools). Details and options under
@@ -49,9 +49,9 @@ Once the true register layout is known, only those two files change.
 One line — fetches the sources and runs the installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/devfrp/motu-pci-424/main/get.sh | sh
+curl -fsSL https://raw.githubusercontent.com/devfrp/linux-motu-pci-424/main/get.sh | sh
 # pass installer options through:
-curl -fsSL https://raw.githubusercontent.com/devfrp/motu-pci-424/main/get.sh | sh -s -- --no-dkms -y
+curl -fsSL https://raw.githubusercontent.com/devfrp/linux-motu-pci-424/main/get.sh | sh -s -- --no-dkms -y
 ```
 
 Or clone and run the installer directly. It detects your package manager
