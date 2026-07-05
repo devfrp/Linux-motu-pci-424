@@ -131,7 +131,7 @@ detect_pm() {
 	xbps)   DEPS="base-devel dkms pkg-config alsa-lib-devel $KH"; GUI_DEPS="python3-gobject gtk4" ;;
 	unknown) DEPS=""; GUI_DEPS="" ;;
 	esac
-	[ "$WANT_GUI" -eq 1 ] && DEPS="$DEPS $GUI_DEPS"
+	if [ "$WANT_GUI" -eq 1 ]; then DEPS="$DEPS $GUI_DEPS"; fi
 }
 
 install_deps() {
