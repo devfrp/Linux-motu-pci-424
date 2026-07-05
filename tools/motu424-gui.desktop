@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MOTU CueMix (motu424)
+GenericName=Audio Mixer
+Comment=Control panel for the MOTU PCI-324/424 sound card
+Exec=motu424-gui
+Icon=audio-card
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;GTK;
+Keywords=MOTU;CueMix;mixer;ALSA;clock;

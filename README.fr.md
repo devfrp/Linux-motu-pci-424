@@ -30,7 +30,8 @@ Détails et options dans [Installation](#installation-toute-distro).
 | `kernel/motu424_hw.c` | **Abstraction matérielle — le seul fichier avec la vraie sémantique des registres** |
 | `kernel/motu424_pcm.c` | Callbacks PCM ALSA (lecture + capture) |
 | `tools/motu424-probe.c` | Dumpeur de BAR0 en espace utilisateur pour la rétro-ingénierie |
-| `tools/motu424-ctl.c` | **Appli de gestion façon CueMix** (horloge/format + mixeur de monitoring) via alsa-lib |
+| `tools/motu424-ctl.c` | **CLI de gestion façon CueMix** (horloge/format + mixeur de monitoring) via alsa-lib |
+| `tools/motu424-gui` | **GUI GTK4** (panneau de contrôle, front-end de `motu424-ctl`) |
 | `tools/re/` | Aides à la RE statique (`vtable-scan.py`, `xref.py` basé sur capstone) |
 | `get.sh` | **Bootstrap `curl \| sh`** — récupère les sources + lance l'installeur |
 | `install.sh` | **Installeur multi-distro** (dépendances + DKMS + outils) |
@@ -100,6 +101,23 @@ make tools                              # compile motu424-ctl si alsa-lib est pr
 Les contrôles du mixeur relèvent de la Phase 5 (dépendante de la carte) ; l'appli
 est écrite pour s'activer automatiquement dès que le pilote les enregistre, et se
 dégrade proprement en leur absence.
+
+#### Panneau graphique
+
+`tools/motu424-gui` est un panneau de contrôle GTK4 — un simple front-end
+au-dessus de `motu424-ctl`, de sorte que la CLI reste la source de vérité unique.
+Il choisit la carte, puis rend chaque contrôle selon son type (interrupteur /
+curseur / menu déroulant), regroupé façon CueMix (horloge & format, entrées,
+matrice de mix par bus).
+
+```sh
+./install.sh --gui        # installe le lanceur + ses dépendances d'exécution
+motu424-gui               # ou depuis le menu d'applications (« MOTU CueMix »)
+```
+
+Nécessite `python-gobject` + `gtk4` (ajoutés automatiquement par `--gui`). Comme
+la CLI, il s'ouvre sur n'importe quelle carte ALSA et affiche la disposition
+CueMix complète dès que le pilote expose ses kcontrols.
 
 ## Rétro-ingénierie
 

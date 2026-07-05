@@ -30,7 +30,8 @@ Installs on any distro (deps + DKMS module + tools). Details and options under
 | `kernel/motu424_hw.c` | **Hardware abstraction — the only file with real register semantics** |
 | `kernel/motu424_pcm.c` | ALSA PCM callbacks (playback + capture) |
 | `tools/motu424-probe.c` | Userspace BAR0 dumper for reverse engineering |
-| `tools/motu424-ctl.c` | **CueMix-style management app** (clock/format + monitor mixer) over alsa-lib |
+| `tools/motu424-ctl.c` | **CueMix-style management CLI** (clock/format + monitor mixer) over alsa-lib |
+| `tools/motu424-gui` | **GTK4 GUI** control panel (a front-end over `motu424-ctl`) |
 | `tools/re/` | Static-RE helpers (`vtable-scan.py`, capstone `xref.py`) |
 | `get.sh` | **`curl \| sh` bootstrap** — fetch sources + run the installer |
 | `install.sh` | **Cross-distro installer** (deps + DKMS + tools) |
@@ -92,6 +93,22 @@ make tools                              # builds motu424-ctl if alsa-lib is pres
 
 The mixer controls are Phase 5 (card-gated); the app is written to light up
 automatically as the driver registers them, and degrades cleanly when absent.
+
+#### Graphical panel
+
+`tools/motu424-gui` is a GTK4 control panel — a thin front-end over
+`motu424-ctl`, so the CLI stays the single source of truth. It picks the card,
+then renders each control by type (switch / slider / dropdown), grouped the
+CueMix way (clock & format, inputs, per-bus mix matrix).
+
+```sh
+./install.sh --gui        # installs the launcher + its runtime deps
+motu424-gui               # or launch from your app menu ("MOTU CueMix")
+```
+
+Needs `python-gobject` + `gtk4` (added automatically by `--gui`). Like the CLI,
+it opens against any ALSA card and fills in the full CueMix layout once the
+driver exposes its kcontrols.
 
 ## Reverse engineering
 

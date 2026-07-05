@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""
+motu424-gui - graphical CueMix-style control panel for the MOTU PCI-324/424.
+
+A thin GTK4 front-end over `motu424-ctl` (the tested CLI is the single source of
+truth for talking to the driver's ALSA kcontrols). It auto-finds the MOTU card,
+lets you pick another card, and renders each control by type: switches for
+booleans, sliders for integers, dropdowns for enumerations - grouped the CueMix
+way (clock/format, inputs, per-bus mix matrix).
+
+The driver's mixer is card-gated (Phase 5); with no MOTU card, or a card that
+only exposes PCM, the window still opens and shows whatever controls exist, so
+you can drive any ALSA card. It lights up fully once the driver registers its
+CueMix kcontrols - no GUI change needed.
+
+Run:  motu424-gui        (needs python-gobject + gtk4; deps: ./install.sh --gui)
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+try:
+    import gi
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gtk, GLib, Gio
+except Exception as e:  # noqa: BLE001
+    sys.stderr.write(
+        "motu424-gui needs PyGObject + GTK4.\n"
+        "  Arch:   sudo pacman -S python-gobject gtk4\n"
+        "  Debian: sudo apt install python3-gi gir1.2-gtk-4.0\n"
+        "  Fedora: sudo dnf install python3-gobject gtk4\n"
+        f"(import error: {e})\n")
+    sys.exit(1)
+
+APP_ID = "org.motu.motu424ctl"
+
+
+# --------------------------------------------------------------------- backend
+
+def find_ctl():
+    """Locate the motu424-ctl binary (PATH, or next to this script)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return (shutil.which("motu424-ctl")
+            or (os.path.join(here, "motu424-ctl")
+                if os.path.exists(os.path.join(here, "motu424-ctl")) else None))
+
+
+CTL = find_ctl()
+
+
+def run_ctl(args, dev=None):
+    """Run motu424-ctl; return (rc, stdout, stderr)."""
+    if not CTL:
+        return 127, "", "motu424-ctl not found in PATH"
+    cmd = [CTL]
+    if dev:
+        cmd += ["-D", dev]
+    cmd += args
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    return p.returncode, p.stdout, p.stderr
+
+
+def list_cards():
+    """Return [(dev, label)] from /proc/asound/cards, plus an Auto entry."""
+    cards = [(None, "Auto (find MOTU)")]
+    try:
+        with open("/proc/asound/cards") as f:
+            for line in f:
+                m = re.match(r"\s*(\d+)\s+\[.*?\]:\s*(.*)", line)
+                if m:
+                    cards.append((f"hw:{m.group(1)}", f"hw:{m.group(1)}  {m.group(2).strip()}"))
+    except OSError:
+        pass
+    return cards
+
+
+def parse_list(text):
+    """Parse `motu424-ctl list` into control dicts.
+
+    Line form (from the CLI):  "<name padded 32> <type 6> = <value>[ range]".
+    Names may contain spaces and exceed 32 chars, so split on ' = ' and take the
+    trailing token of the left side as the type.
+    """
+    out = []
+    for line in text.splitlines():
+        if " = " not in line:
+            continue
+        left, right = line.split(" = ", 1)
+        parts = left.rsplit(None, 1)
+        if len(parts) != 2:
+            continue
+        name, ctype = parts[0].strip(), parts[1].strip()
+        ctrl = {"name": name, "type": ctype, "value": right.strip(),
+                "min": None, "max": None, "items": None}
+        if ctype == "int" and "[" in right:
+            val, rng = right.rsplit("[", 1)
+            ctrl["value"] = val.strip()
+            m = re.match(r"\s*(-?\d+)\.\.(-?\d+)", rng)
+            if m:
+                ctrl["min"], ctrl["max"] = int(m.group(1)), int(m.group(2))
+        elif ctype == "enum" and "{" in right:
+            val, items = right.rsplit("{", 1)
+            ctrl["value"] = val.strip()
+            ctrl["items"] = items.rstrip("}").split("|")
+        if ctype not in ("int", "enum", "bool"):
+            continue  # only render controls we can drive
+        out.append(ctrl)
+    return out
+
+
+def group_of(name):
+    """CueMix-style section for a control name."""
+    if name.startswith("Clock") or name.startswith("Meters") or name.startswith("Sample"):
+        return "Clock & format"
+    m = re.match(r"Mix (\d+)", name)
+    if m:
+        return f"Mix bus {int(m.group(1))}"
+    if name.startswith("Input "):
+        return "Inputs"
+    return "Other"
+
+
+# ------------------------------------------------------------------------- gui
+
+class Panel(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="motu424 — CueMix")
+        self.set_default_size(560, 720)
+        self.dev = None
+        self._loading = False
+
+        header = Gtk.HeaderBar()
+        self.set_titlebar(header)
+
+        cards = list_cards()
+        self.cards = cards
+        self.card_dd = Gtk.DropDown.new_from_strings([c[1] for c in cards])
+        self.card_dd.connect("notify::selected", self.on_card_changed)
+        header.pack_start(self.card_dd)
+
+        refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        refresh.set_tooltip_text("Reload controls")
+        refresh.connect("clicked", lambda *_: self.reload())
+        header.pack_end(refresh)
+
+        self.scroller = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        self.set_child(self.scroller)
+        self.reload()
+
+    # -- data ----------------------------------------------------------------
+    def current_dev(self):
+        return self.cards[self.card_dd.get_selected()][0]
+
+    def on_card_changed(self, *_):
+        self.reload()
+
+    def reload(self):
+        dev = self.current_dev()
+        rc, out, err = run_ctl(["list"], dev)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                      margin_top=12, margin_bottom=12,
+                      margin_start=12, margin_end=12)
+        if rc != 0:
+            box.append(self._notice(err.strip() or "no MOTU card found.",
+                                    "Pick a card above, or load the module."))
+            self.scroller.set_child(box)
+            return
+        controls = parse_list(out)
+        if not controls:
+            box.append(self._notice(
+                "This card exposes no adjustable controls yet.",
+                "The CueMix mixer is Phase 5 (needs the driver to register "
+                "kcontrols on real hardware)."))
+            self.scroller.set_child(box)
+            return
+
+        groups = {}
+        for c in controls:
+            groups.setdefault(group_of(c["name"]), []).append(c)
+        order = ["Clock & format", "Inputs"] + \
+                sorted(g for g in groups if g.startswith("Mix bus")) + ["Other"]
+        for g in order:
+            if g not in groups:
+                continue
+            box.append(self._section(g))
+            grid = Gtk.Grid(row_spacing=6, column_spacing=12,
+                            margin_start=6, margin_end=6)
+            for row, c in enumerate(groups[g]):
+                lbl = Gtk.Label(label=c["name"], xalign=0, hexpand=True)
+                lbl.add_css_class("dim-label")
+                grid.attach(lbl, 0, row, 1, 1)
+                grid.attach(self._widget(c), 1, row, 1, 1)
+            box.append(grid)
+        self.scroller.set_child(box)
+
+    # -- widgets -------------------------------------------------------------
+    def _section(self, title):
+        lbl = Gtk.Label(xalign=0, margin_top=10)
+        lbl.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
+        return lbl
+
+    def _notice(self, title, subtitle):
+        b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                    valign=Gtk.Align.CENTER, vexpand=True)
+        t = Gtk.Label()
+        t.set_markup(f"<big>{GLib.markup_escape_text(title)}</big>")
+        s = Gtk.Label(label=subtitle, wrap=True, justify=Gtk.Justification.CENTER)
+        s.add_css_class("dim-label")
+        b.append(t)
+        b.append(s)
+        return b
+
+    def _widget(self, c):
+        name, ctype = c["name"], c["type"]
+        if ctype == "bool":
+            sw = Gtk.Switch(halign=Gtk.Align.END, valign=Gtk.Align.CENTER)
+            sw.set_active(c["value"].split(",")[0].strip() == "on")
+            sw.connect("state-set", self._on_switch, name)
+            return sw
+        if ctype == "enum":
+            items = c["items"] or []
+            dd = Gtk.DropDown.new_from_strings(items)
+            cur = c["value"].strip()
+            if cur in items:
+                dd.set_selected(items.index(cur))
+            dd.connect("notify::selected", self._on_enum, name, items)
+            return dd
+        # int
+        lo = c["min"] if c["min"] is not None else 0
+        hi = c["max"] if c["max"] is not None else 100
+        if hi <= lo:
+            hi = lo + 1
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, lo, hi, 1)
+        scale.set_hexpand(True)
+        scale.set_size_request(220, -1)
+        scale.set_draw_value(True)
+        scale.set_digits(0)
+        try:
+            scale.set_value(int(c["value"].split(",")[0]))
+        except ValueError:
+            pass
+        scale.connect("value-changed", self._on_scale, name)
+        return scale
+
+    # -- handlers (write through motu424-ctl) --------------------------------
+    def _apply(self, name, value):
+        rc, _out, err = run_ctl(["set", name, value], self.current_dev())
+        if rc != 0:
+            self._toast(f"set '{name}' failed: {err.strip()}")
+
+    def _on_switch(self, _sw, state, name):
+        self._apply(name, "on" if state else "off")
+        return False
+
+    def _on_enum(self, dd, _pspec, name, items):
+        i = dd.get_selected()
+        if 0 <= i < len(items):
+            self._apply(name, items[i])
+
+    def _on_scale(self, scale, name):
+        self._apply(name, str(int(scale.get_value())))
+
+    def _toast(self, msg):
+        sys.stderr.write(msg + "\n")
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID,
+                         flags=Gio.ApplicationFlags.FLAGS_NONE)
+
+    def do_activate(self):
+        win = self.props.active_window or Panel(self)
+        win.present()
+
+
+def main():
+    if not CTL:
+        sys.stderr.write(
+            "motu424-ctl not found. Build/install it first "
+            "(make tools, or ./install.sh).\n")
+        return 1
+    return App().run(sys.argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

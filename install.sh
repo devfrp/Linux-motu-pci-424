@@ -15,6 +15,7 @@
 #   ./install.sh --no-dkms       # plain `make install` instead of DKMS
 #   ./install.sh --no-load       # do not modprobe/insmod at the end
 #   ./install.sh --tools-only    # just build the userspace tools
+#   ./install.sh --gui           # also install the GTK GUI + its runtime deps
 #   ./install.sh --uninstall     # remove the module + tools
 #   ./install.sh -h              # help
 #
@@ -23,7 +24,7 @@ set -eu
 
 # --------------------------------------------------------------------- options
 ASSUME_YES=0; DO_DEPS=1; USE_DKMS=1; DO_LOAD=1; TOOLS_ONLY=0; UNINSTALL=0
-NONINTERACTIVE=0
+NONINTERACTIVE=0; WANT_GUI=0
 for arg in "$@"; do
 	case "$arg" in
 	-y|--yes)        ASSUME_YES=1 ;;
@@ -31,8 +32,9 @@ for arg in "$@"; do
 	--no-dkms)       USE_DKMS=0 ;;
 	--no-load)       DO_LOAD=0 ;;
 	--tools-only)    TOOLS_ONLY=1 ;;
+	--gui)           WANT_GUI=1 ;;
 	--uninstall)     UNINSTALL=1 ;;
-	-h|--help)       sed -n '4,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-h|--help)       sed -n '4,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "unknown option: $arg (try -h)" >&2; exit 2 ;;
 	esac
 done
@@ -121,14 +123,15 @@ detect_pm() {
 
 	KH=$(kernel_headers_pkg "$PM")
 	case "$PM" in
-	pacman) DEPS="base-devel dkms alsa-lib $KH" ;;
-	apt)    DEPS="build-essential dkms pkg-config libasound2-dev $KH" ;;
-	dnf|yum) DEPS="gcc make dkms pkgconf-pkg-config alsa-lib-devel $KH" ;;
-	zypper) DEPS="gcc make dkms pkg-config alsa-devel $KH" ;;
-	apk)    DEPS="build-base dkms pkgconf alsa-lib-dev $KH" ;;
-	xbps)   DEPS="base-devel dkms pkg-config alsa-lib-devel $KH" ;;
-	unknown) DEPS="" ;;
+	pacman) DEPS="base-devel dkms alsa-lib $KH";   GUI_DEPS="python-gobject gtk4" ;;
+	apt)    DEPS="build-essential dkms pkg-config libasound2-dev $KH"; GUI_DEPS="python3-gi gir1.2-gtk-4.0" ;;
+	dnf|yum) DEPS="gcc make dkms pkgconf-pkg-config alsa-lib-devel $KH"; GUI_DEPS="python3-gobject gtk4" ;;
+	zypper) DEPS="gcc make dkms pkg-config alsa-devel $KH"; GUI_DEPS="python3-gobject typelib-1_0-Gtk-4_0" ;;
+	apk)    DEPS="build-base dkms pkgconf alsa-lib-dev $KH"; GUI_DEPS="py3-gobject3 gtk4.0" ;;
+	xbps)   DEPS="base-devel dkms pkg-config alsa-lib-devel $KH"; GUI_DEPS="python3-gobject gtk4" ;;
+	unknown) DEPS=""; GUI_DEPS="" ;;
 	esac
+	[ "$WANT_GUI" -eq 1 ] && DEPS="$DEPS $GUI_DEPS"
 }
 
 install_deps() {
@@ -165,6 +168,13 @@ build_tools() {
 	else
 		warn "motu424-ctl not built (alsa-lib dev missing) - mixer app unavailable"
 	fi
+	# GUI launcher (a Python/GTK4 script - no build). Installed always; it
+	# self-reports if its runtime deps are missing. `--gui` pulls those deps.
+	$SUDO install -m0755 tools/motu424-gui /usr/local/bin/ 2>/dev/null && {
+		$SUDO install -Dm0644 tools/motu424-gui.desktop \
+			/usr/local/share/applications/motu424-gui.desktop 2>/dev/null || true
+		[ "$WANT_GUI" -eq 1 ] || log "GUI installed: run 'motu424-gui' (needs python-gobject+gtk4; ./install.sh --gui adds them)"
+	} || warn "motu424-gui not installed"
 }
 
 install_dkms() {
@@ -205,7 +215,9 @@ uninstall() {
 	$SUDO modprobe -r "$PKG" 2>/dev/null || $SUDO rmmod "$PKG" 2>/dev/null || true
 	if have dkms; then $SUDO dkms remove "$PKG/$VER" --all 2>/dev/null || true; fi
 	$SUDO rm -rf "/usr/src/$PKG-$VER"
-	$SUDO rm -f /usr/local/bin/motu424-probe /usr/local/bin/motu424-ctl
+	$SUDO rm -f /usr/local/bin/motu424-probe /usr/local/bin/motu424-ctl \
+		/usr/local/bin/motu424-gui \
+		/usr/local/share/applications/motu424-gui.desktop
 	$SUDO depmod -a || true
 	log "done. (Module source in this repo was left untouched.)"
 }
@@ -234,8 +246,10 @@ $(printf '\033[1;32m==> motu424 installed.\033[0m')
 Next steps:
   • Check it came up:   dmesg | tail    (look for the ALSA card registration)
   • List the card:      aplay -l  /  arecord -l
-  • Manage the card:    motu424-ctl            (CueMix-style status)
+  • Manage (CLI):       motu424-ctl            (CueMix-style status)
                         motu424-ctl list
+  • Manage (GUI):       motu424-gui            (needs python-gobject+gtk4;
+                        re-run with --gui to install those)
   • Remove everything:  ./install.sh --uninstall
 
 Firmware note: the classic PCI-324/424 Altera bitstream (altera424b.rbf) is NOT
