@@ -56,6 +56,18 @@ PKG=$(sed -n 's/^PACKAGE_NAME="\(.*\)"/\1/p' dkms.conf)
 VER=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' dkms.conf)
 : "${PKG:=motu424}" "${VER:=0.1.0}"
 KREL=$(uname -r)
+KBUILD="/lib/modules/$KREL/build"
+
+# Building any kernel module needs the running kernel's build tree. If the deps
+# step was declined or the headers package name was wrong, fail with a clear
+# message instead of a cryptic "No such file or directory" from kbuild.
+require_headers() {
+	[ -d "$KBUILD" ] && return 0
+	die "kernel build tree not found: $KBUILD
+Install the headers for your running kernel ($KREL) and re-run. Expected package:
+  $(kernel_headers_pkg "$PM")
+If you just declined the dependency prompt, re-run and accept it (or pass -y)."
+}
 
 # --------------------------------------------------------------- distro detect
 distro_id() {
@@ -145,6 +157,7 @@ build_tools() {
 
 install_dkms() {
 	have dkms || { warn "dkms not found; falling back to in-tree build"; USE_DKMS=0; return; }
+	require_headers
 	SRC="/usr/src/$PKG-$VER"
 	log "installing module via DKMS ($PKG/$VER)"
 	$SUDO rm -rf "$SRC"
@@ -158,6 +171,7 @@ install_dkms() {
 }
 
 install_intree() {
+	require_headers
 	log "building + installing module in-tree (no DKMS)"
 	make module
 	$SUDO make install    # modules_install + depmod

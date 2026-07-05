@@ -49,4 +49,13 @@ fetch
 cd "$DEST" || die "checkout failed"
 [ -f install.sh ] || die "install.sh missing in $DEST (wrong branch?)"
 log "sources in $DEST - running installer"
-exec sh install.sh "$@"
+
+# Under `curl ... | sh`, stdin is the script (this pipe), so the installer's
+# package-manager prompts would read EOF and abort. Reconnect stdin to the
+# terminal when one is available so those prompts work; otherwise the user
+# should pass -y (e.g. `... | sh -s -- -y`).
+if [ -r /dev/tty ]; then
+	exec sh install.sh "$@" </dev/tty
+else
+	exec sh install.sh "$@"
+fi
