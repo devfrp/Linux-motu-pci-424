@@ -10,6 +10,15 @@ and its AudioWire breakout interfaces (2408, 24I/O, 828, HD192, 896HD, …).
 > then the module loads and creates an ALSA device but will not produce correct
 > audio. See [Reverse engineering](#reverse-engineering).
 
+## Quick start
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/devfrp/motu-pci-424/main/get.sh | sh
+```
+
+Installs on any distro (deps + DKMS module + tools). Details and options under
+[Install](#install-any-distro).
+
 ## Layout
 
 | Path | Role |
@@ -21,6 +30,7 @@ and its AudioWire breakout interfaces (2408, 24I/O, 828, HD192, 896HD, …).
 | `tools/motu424-probe.c` | Userspace BAR0 dumper for reverse engineering |
 | `tools/motu424-ctl.c` | **CueMix-style management app** (clock/format + monitor mixer) over alsa-lib |
 | `tools/re/` | Static-RE helpers (`vtable-scan.py`, capstone `xref.py`) |
+| `get.sh` | **`curl \| sh` bootstrap** — fetch sources + run the installer |
 | `install.sh` | **Cross-distro installer** (deps + DKMS + tools) |
 | `ARCHITECTURE.md` | Design notes: the 3-layer split + hardware-confinement rule |
 | `dkms.conf` | DKMS packaging for automatic rebuilds across kernels |
@@ -30,7 +40,15 @@ Once the true register layout is known, only those two files change.
 
 ## Install (any distro)
 
-The one-shot installer detects your package manager
+One line — fetches the sources and runs the installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/devfrp/motu-pci-424/main/get.sh | sh
+# pass installer options through:
+curl -fsSL https://raw.githubusercontent.com/devfrp/motu-pci-424/main/get.sh | sh -s -- --no-dkms -y
+```
+
+Or clone and run the installer directly. It detects your package manager
 (pacman/apt/dnf/yum/zypper/apk/xbps), pulls the build dependencies, installs the
 module via **DKMS** (so it survives kernel upgrades) and installs the tools:
 
