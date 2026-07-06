@@ -173,7 +173,7 @@ struct motu424_stream {
 	unsigned int buffer_frames;
 	/* PIO ring bookkeeping (all owned by motu424_hw.c under chip->lock) */
 	unsigned int buf_pos;		/* next host-buffer byte to copy     */
-	unsigned int ring_pos;		/* aperture head, in dwords          */
+	unsigned int ring_pos;		/* aperture write head, in bytes     */
 	unsigned int pos_frames;	/* ALSA pointer, frames in buffer    */
 	unsigned int period_acc;	/* frames since last period elapsed  */
 };
@@ -228,7 +228,7 @@ void motu424_hw_shutdown(struct motu424 *chip);
 int  motu424_hw_set_rate(struct motu424 *chip, unsigned int rate);
 int  motu424_hw_stream_prepare(struct motu424 *chip,
 			       struct snd_pcm_substream *substream);
-void motu424_hw_stream_start(struct motu424 *chip, bool playback);
+void motu424_hw_stream_start(struct motu424 *chip, bool playback, bool fresh);
 void motu424_hw_stream_stop(struct motu424 *chip, bool playback);
 snd_pcm_uframes_t motu424_hw_stream_pointer(struct motu424 *chip, bool playback);
 u32  motu424_hw_irq_ack(struct motu424 *chip);	/* returns MOTU424_IRQ_* bits */

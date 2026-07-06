@@ -242,7 +242,12 @@ int motu424_hw_set_rate(struct motu424 *chip, unsigned int rate)
 /*
  * Copy one period between the host buffer and the card aperture ring,
  * advancing the stream's host and ring positions. Called under chip->lock.
- * The ring is a power-of-two number of dwords in window B; bursts may wrap.
+ * The ring is a power-of-two number of bytes in window B; bursts may wrap.
+ *
+ * TODO (RT latency): this runs a multi-KB memcpy_toio under chip->lock with
+ * IRQs off. On the PREEMPT_RT target that is a latency spike; once the real
+ * dmaPoint register is known, move the copy out of the IRQ-off region (e.g.
+ * a threaded handler or a bounded per-tick burst).
  */
 static void motu424_push_period(struct motu424 *chip, struct motu424_stream *s,
 				bool playback)
@@ -250,7 +255,7 @@ static void motu424_push_period(struct motu424 *chip, struct motu424_stream *s,
 	struct snd_pcm_runtime *runtime = s->substream->runtime;
 	u32 aperture = chip->aperture[playback ? 0 : 1];
 	unsigned int bytes = s->period_bytes;
-	unsigned int ring_off = (s->ring_pos * 4) % MOTU424_RING_BYTES;
+	unsigned int ring_off = s->ring_pos % MOTU424_RING_BYTES;
 
 	while (bytes) {
 		unsigned int chunk = min(bytes, MOTU424_RING_BYTES - ring_off);
@@ -266,7 +271,7 @@ static void motu424_push_period(struct motu424 *chip, struct motu424_stream *s,
 		ring_off = (ring_off + chunk) % MOTU424_RING_BYTES;
 		s->buf_pos = (s->buf_pos + chunk) % s->buffer_bytes;
 	}
-	s->ring_pos = ring_off / 4;
+	s->ring_pos = ring_off;
 }
 
 /*
@@ -304,8 +309,12 @@ int motu424_hw_stream_prepare(struct motu424 *chip,
  * Start a stream. Vendor sequence (method 0x298e0 + slot-1 enable):
  * prefill the aperture, write 1 to base+0x54, then kick the port bridge
  * with WRITE(+0x0, 4) and WRITE(+0x4, 1). Called from the atomic trigger.
+ *
+ * @fresh is true only for a genuine TRIGGER_START (from prepared state); it is
+ * false for pause-release/resume, where the ring bookkeeping must be preserved
+ * and the buffer must NOT be re-prefilled (that would skip data).
  */
-void motu424_hw_stream_start(struct motu424 *chip, bool playback)
+void motu424_hw_stream_start(struct motu424 *chip, bool playback, bool fresh)
 {
 	struct motu424_stream *s = playback ? &chip->playback : &chip->capture;
 	bool first = !chip->playback.running && !chip->capture.running;
@@ -322,8 +331,8 @@ void motu424_hw_stream_start(struct motu424 *chip, bool playback)
 			  MOTU424_APERTURE_PAGE_SHIFT,
 			  chip->port + MOTU424_PORT_INIT);
 
-	/* Double-buffer: keep two periods ahead of the card. */
-	if (playback) {
+	/* Double-buffer: keep two periods ahead of the card (fresh start only). */
+	if (playback && fresh) {
 		motu424_push_period(chip, s, true);
 		motu424_push_period(chip, s, true);
 	}
