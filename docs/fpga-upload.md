@@ -1,8 +1,9 @@
 # FPGA upload (Phase 2)
 
-The card needs an Altera FPGA bitstream (`altera424b.rbf`) loaded before audio
-works. This note records what static RE of `MOTUAW.sys` did and did **not**
-establish. VAs use image base `0x10000`.
+Whether the card needs an Altera FPGA bitstream (`altera424b.rbf`) pushed from
+the host was the central question of this phase. Static RE of `MOTUAW.sys`
+settled it for the classic card (**verdict below: no host upload**). This note
+records what that RE did and did **not** establish. VAs use image base `0x10000`.
 
 ## Confirmed facts
 

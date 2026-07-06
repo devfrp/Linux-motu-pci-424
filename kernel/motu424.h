@@ -73,11 +73,14 @@
  *      len %08x"). => Handing the card runtime->dma_addr as a ring base (what
  *      motu424_hw.c currently assumes) is almost certainly WRONG.
  *
- *   4. The card requires an FPGA bitstream upload at init: Altera
- *      "altera424b.rbf" (referenced by name in the .sys; shipped as a separate
- *      file, not embedded). HDExpress_FullImageRun.bin is the PCIe HD Express
- *      variant image. The Linux driver will need request_firmware() before any
- *      audio is possible.
+ *   4. FPGA firmware - VERDICT from exhaustive static RE: the classic PCI-324/
+ *      424 is NOT host-uploaded. MOTUAW.sys has no file I/O, no code xref to the
+ *      "altera424b.rbf" string (a build/legacy artefact), no firmware IOCTL and
+ *      no large-buffer config write - so the parallel-PCI card's Altera FPGA
+ *      self-configures from onboard flash/EEPROM at power-on. The Linux driver
+ *      likely needs NO request_firmware() for the classic card (verify on hw).
+ *      Only the PCIe HD Express variant (HDExpress_FullImageRun.bin, an ARM SoC
+ *      + Xilinx image) takes a host upload. See docs/fpga-upload.md.
  *
  * The MOTU424_REG_*, CTRL_*, STAT_* constants below are the ORIGINAL hypothesis
  * and are retained only so the existing framework builds. They do NOT match the
