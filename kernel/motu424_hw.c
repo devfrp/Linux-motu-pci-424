@@ -54,8 +54,10 @@ MODULE_PARM_DESC(cap_aperture, "Card address of the capture aperture (from probe
 static void __iomem *motu424_addr(struct motu424 *chip, u32 card_addr)
 {
 	if ((card_addr & MOTU424_WINA_TAG_MASK) == MOTU424_WINA_TAG) {
-		/* Windows A and B alias the same space; fall back to B when
-		 * the card exposes a single MMIO BAR. */
+		/*
+		 * Windows A and B alias the same space; fall back to B when
+		 * the card exposes a single MMIO BAR.
+		 */
 		if (chip->win_a)
 			return chip->win_a + (card_addr & MOTU424_WINA_MASK);
 		card_addr &= ~MOTU424_WINA_TAG;
@@ -147,13 +149,17 @@ int motu424_hw_init(struct motu424 *chip)
 	spin_lock_irqsave(&chip->lock, flags);
 
 	if (chip->port) {
-		/* Vendor bring-up writes an init value (observed 0) to the
-		 * port bridge. TODO: verify on hardware. */
+		/*
+		 * Vendor bring-up writes an init value (observed 0) to the
+		 * port bridge. TODO: verify on hardware.
+		 */
 		iowrite32(0, chip->port + MOTU424_PORT_INIT);
 	}
 
-	/* Dump the per-bank ctrl/status words - harmless reads that give the
-	 * first signs of life in dmesg and feed the probe/diff workflow. */
+	/*
+	 * Dump the per-bank ctrl/status words - harmless reads that give the
+	 * first signs of life in dmesg and feed the probe/diff workflow.
+	 */
 	dev_info(dev, "bank0 ctrl/status: 0x%08x, bank1: 0x%08x\n",
 		 motu424_rd32(chip, MOTU424_BANK0 + MOTU424_BANK_CTRL),
 		 motu424_rd32(chip, MOTU424_BANK1 + MOTU424_BANK_CTRL));
@@ -307,8 +313,10 @@ void motu424_hw_stream_start(struct motu424 *chip, bool playback)
 
 	spin_lock_irqsave(&chip->lock, flags);
 
-	/* Page the window-B aperture in via the port bridge (vendor arm
-	 * routine fn 0x2c150: WRITE_PORT(port+0x8, apertureBase >> 22)). */
+	/*
+	 * Page the window-B aperture in via the port bridge (vendor arm
+	 * routine fn 0x2c150: WRITE_PORT(port+0x8, apertureBase >> 22)).
+	 */
 	if (chip->port)
 		iowrite32(chip->aperture[playback ? 0 : 1] >>
 			  MOTU424_APERTURE_PAGE_SHIFT,
@@ -343,9 +351,11 @@ void motu424_hw_stream_stop(struct motu424 *chip, bool playback)
 	if (!chip->playback.running && !chip->capture.running) {
 		if (chip->audio_base)
 			motu424_awr(chip, MOTU424_AREG_ENABLE, 0);
-		/* TODO: verify - the vendor's stop sequence is not yet
+		/*
+		 * TODO: verify - the vendor's stop sequence is not yet
 		 * recovered; dropping the port enable bit is the inverse of
-		 * the start sequence. */
+		 * the start sequence.
+		 */
 		if (chip->port)
 			iowrite32(0, chip->port + MOTU424_PORT_CTRL);
 	}
@@ -373,8 +383,10 @@ snd_pcm_uframes_t motu424_hw_stream_pointer(struct motu424 *chip, bool playback)
 	return pos;
 }
 
-/* Advance one stream by one hardware interrupt; returns true when a full
- * period has elapsed (and moves the period's data). Under chip->lock. */
+/*
+ * Advance one stream by one hardware interrupt; returns true when a full
+ * period has elapsed (and moves the period's data). Under chip->lock.
+ */
 static bool motu424_stream_tick(struct motu424 *chip,
 				struct motu424_stream *s, bool playback)
 {
@@ -422,9 +434,11 @@ u32 motu424_hw_irq_ack(struct motu424 *chip)
 	if (motu424_stream_tick(chip, &chip->capture, false))
 		pending |= MOTU424_IRQ_REC;
 
-	/* Mirror the vendor ISR: read + clear the hardware counters once per
+	/*
+	 * Mirror the vendor ISR: read + clear the hardware counters once per
 	 * period so they never overflow. Their exact use (rate/drift
-	 * measurement) is still TODO: verify. */
+	 * measurement) is still TODO: verify.
+	 */
 	if (pending && chip->audio_base) {
 		motu424_ard(chip, MOTU424_AREG_POS);
 		motu424_awr(chip, MOTU424_AREG_POS, 0);

@@ -78,9 +78,9 @@
  * Start sequence (method 0x298e0): WRITE(+0x0, 4) then WRITE(+0x4, 1).
  */
 #define MOTU424_PORT_STATUS	0x0
-#define MOTU424_PORT_IRQ_PENDING	(1u << 1)
+#define MOTU424_PORT_IRQ_PENDING	BIT(1)
 #define MOTU424_PORT_CTRL	0x0
-#define MOTU424_PORT_CTRL_ENABLE	(1u << 2)
+#define MOTU424_PORT_CTRL_ENABLE	BIT(2)
 #define MOTU424_PORT_STROBE	0x4
 #define MOTU424_PORT_INIT	0x8
 
@@ -138,8 +138,8 @@
  * Software IRQ bits: driver-internal contract between motu424_hw_irq_ack()
  * and the interrupt handler in motu424_main.c (NOT hardware register bits).
  */
-#define MOTU424_IRQ_PLAY	(1u << 0)	/* playback period elapsed */
-#define MOTU424_IRQ_REC		(1u << 1)	/* capture  period elapsed */
+#define MOTU424_IRQ_PLAY	BIT(0)	/* playback period elapsed */
+#define MOTU424_IRQ_REC		BIT(1)	/* capture  period elapsed */
 
 /* --------------------------------------------------------------------------
  * Audio format constants
@@ -153,8 +153,10 @@
 #define MOTU424_MAX_CHANNELS		24	/* e.g. one 2408 mk3 bank */
 #define MOTU424_MIN_CHANNELS		2
 
-/* Host buffer sizing bounds (bytes). The period must fit the aperture ring
- * with double-buffering, hence the period cap at half the ring. */
+/*
+ * Host buffer sizing bounds (bytes). The period must fit the aperture ring
+ * with double-buffering, hence the period cap at half the ring.
+ */
 #define MOTU424_MAX_BUFFER_BYTES	(512 * 1024)
 #define MOTU424_MIN_PERIOD_BYTES	1024
 #define MOTU424_MAX_PERIOD_BYTES	(MOTU424_RING_BYTES / 2)
@@ -176,8 +178,10 @@ struct motu424_stream {
 	unsigned int period_acc;	/* frames since last period elapsed  */
 };
 
-/* One mapped PCI BAR, filled generically by motu424_main.c; motu424_hw.c
- * decides which BAR is which hardware window. */
+/*
+ * One mapped PCI BAR, filled generically by motu424_main.c; motu424_hw.c
+ * decides which BAR is which hardware window.
+ */
 struct motu424_bar {
 	void __iomem *ptr;		/* NULL if absent/unmapped */
 	resource_size_t len;

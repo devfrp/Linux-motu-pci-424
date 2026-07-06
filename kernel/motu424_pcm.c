@@ -39,7 +39,7 @@ static const struct snd_pcm_hardware motu424_pcm_hw = {
 };
 
 static struct motu424_stream *motu424_substream_stream(struct motu424 *chip,
-					struct snd_pcm_substream *substream)
+						       struct snd_pcm_substream *substream)
 {
 	return MOTU424_STREAM_IS_PLAYBACK(substream) ? &chip->playback
 						     : &chip->capture;
@@ -52,8 +52,10 @@ static int motu424_pcm_open(struct snd_pcm_substream *substream)
 
 	runtime->hw = motu424_pcm_hw;
 
-	/* One frame must be a whole number of 3-byte samples across channels;
-	 * keep the period a multiple of the frame so DMA math stays exact. */
+	/*
+	 * One frame must be a whole number of 3-byte samples across channels;
+	 * keep the period a multiple of the frame so DMA math stays exact.
+	 */
 	snd_pcm_hw_constraint_step(runtime, 0,
 				   SNDRV_PCM_HW_PARAM_PERIOD_BYTES,
 				   MOTU424_BYTES_PER_SAMPLE * MOTU424_MIN_CHANNELS);
