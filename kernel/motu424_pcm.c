@@ -93,9 +93,13 @@ static int motu424_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
+		/* Fresh start from prepared state: prefill the aperture. */
+		motu424_hw_stream_start(chip, playback, true);
+		return 0;
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		motu424_hw_stream_start(chip, playback);
+		/* Continue mid-stream: keep the ring state, do not re-prefill. */
+		motu424_hw_stream_start(chip, playback, false);
 		return 0;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
