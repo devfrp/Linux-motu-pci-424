@@ -204,8 +204,11 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
   idle vs. streaming to confirm the `dmaPoint`/status offsets from phase 3.
 - [ ] **6.3 Soak & edge cases**: all rates, both directions simultaneously,
   start/stop churn, unplug/replug of the breakout, module reload.
-- [ ] **6.4 Cleanup for upstream**: checkpatch, GPL headers, `MODULE_FIRMWARE()`,
-  a `Documentation/` note, and a clean-room statement (facts-only from RE).
+- [~] **6.4 Cleanup for upstream** — **[PARTIAL, no card]**: `checkpatch --strict`
+  clean on all four source files; SPDX GPL headers on every file; no
+  `MODULE_FIRMWARE()` (verdict: classic card needs no host firmware); clean-room
+  + provenance statement written (`CLEANROOM.md`). Remaining (card/upstream):
+  the `Documentation/sound/` note and the eventual patch submission.
 
 ---
 

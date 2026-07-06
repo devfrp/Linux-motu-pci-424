@@ -42,6 +42,7 @@ Installs on any distro (deps + DKMS module + tools). Details and options under
 | `get.sh` | **`curl \| sh` bootstrap** — fetch sources + run the installer |
 | `install.sh` | **Cross-distro installer** (deps + DKMS + tools) |
 | `ARCHITECTURE.md` | Design notes: the 3-layer split + hardware-confinement rule |
+| `CLEANROOM.md` | Clean-room & provenance statement (legal basis, RE method) |
 | `docs/index.html` | Project website (GitHub Pages landing page) |
 | `dkms.conf` | DKMS packaging for automatic rebuilds across kernels |
 

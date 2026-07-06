@@ -43,6 +43,7 @@ Détails et options dans [Installation](#installation-toute-distro).
 | `get.sh` | **Bootstrap `curl \| sh`** — récupère les sources + lance l'installeur |
 | `install.sh` | **Installeur multi-distro** (dépendances + DKMS + outils) |
 | `ARCHITECTURE.md` | Notes de conception : la séparation en 3 couches + la règle de confinement matériel |
+| `CLEANROOM.md` | Énoncé clean-room & provenance (base légale, méthode de RE) |
 | `dkms.conf` | Empaquetage DKMS pour la reconstruction automatique à chaque noyau |
 
 Objectif de conception : **toute l'incertitude est confinée à `motu424.h` +
