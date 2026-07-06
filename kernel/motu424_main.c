@@ -10,7 +10,6 @@
 #include <linux/init.h>
 #include <linux/pci.h>
 #include <linux/interrupt.h>
-#include <linux/dma-mapping.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 
@@ -76,7 +75,7 @@ static int motu424_probe(struct pci_dev *pci, const struct pci_device_id *ent)
 	static int dev;
 	struct snd_card *card;
 	struct motu424 *chip;
-	int err;
+	int i, err;
 
 	if (dev >= SNDRV_CARDS)
 		return -ENODEV;
@@ -100,19 +99,25 @@ static int motu424_probe(struct pci_dev *pci, const struct pci_device_id *ent)
 	if (err < 0)
 		return err;
 
-	err = pcim_iomap_regions(pci, BIT(MOTU424_BAR), MOTU424_DRIVER_NAME);
-	if (err < 0) {
-		dev_err(&pci->dev, "cannot map BAR%d\n", MOTU424_BAR);
-		return err;
+	/*
+	 * Map every BAR the card exposes, without interpreting them: the
+	 * hardware layer decides which mapping is which window (the card is
+	 * not a single flat register BAR). pcim_iomap() handles both MMIO
+	 * and I/O-port BARs.
+	 */
+	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+		if (!pci_resource_len(pci, i))
+			continue;
+		chip->bars[i].ptr = pcim_iomap(pci, i, 0);
+		if (!chip->bars[i].ptr) {
+			dev_err(&pci->dev, "cannot map BAR%d\n", i);
+			return -ENOMEM;
+		}
+		chip->bars[i].len = pci_resource_len(pci, i);
+		chip->bars[i].flags = pci_resource_flags(pci, i);
 	}
-	chip->mmio = pcim_iomap_table(pci)[MOTU424_BAR];
 
-	err = dma_set_mask_and_coherent(&pci->dev, DMA_BIT_MASK(32));
-	if (err < 0) {
-		dev_err(&pci->dev, "no suitable 32-bit DMA mask\n");
-		return err;
-	}
-	pci_set_master(pci);
+	/* No bus mastering: the card is fed by PIO, it never DMAs host RAM. */
 
 	snprintf(chip->model, sizeof(chip->model), "MOTU PCI-%s",
 		 ent->device == MOTU424_DEV_PCI424_A ? "324" : "424");

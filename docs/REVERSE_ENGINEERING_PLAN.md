@@ -152,21 +152,30 @@ The single biggest unknown that gates *any* audio.
 Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
 `motu424_hw.c` (see `ARCHITECTURE.md`).
 
-- [ ] **4.1 Register accessors.** Replace flat-offset helpers with the windowed
-  `card_addr → (window, base, masked offset)` scheme; add `motu424_rd32/wr32`
-  and a `wr_buf` for aperture writes.
-- [ ] **4.2 Firmware upload.** Add `request_firmware("altera424b.rbf")` +
-  `motu424_hw_fpga_load()` in the init path, before ALSA card creation; fail
-  cleanly (and audibly in dmesg) if firmware is absent.
-- [ ] **4.3 Transport rewrite.** Replace the bus-master `dma_addr` assumption in
-  `motu424_hw_stream_prepare/start/stop/pointer` with the PIO-aperture ring:
-  copy period data into window B, drive `readHead/writeHead`, read `dmaPoint`
-  for `.pointer`. Revisit `snd_pcm_set_managed_buffer_all` vs. an indirect/copy
-  PCM (`SNDRV_PCM_INFO_..` / `copy` callback) since the card isn't DMA-ing host RAM.
-- [ ] **4.4 Clock/rate.** Implement `motu424_hw_set_rate()` from the 3.3 table,
-  including the per-rate channel-count change.
-- [ ] **4.5 IRQ.** Implement `motu424_hw_irq_ack()` against the real status/ack
-  registers; keep the devm teardown ordering (quiesce action after IRQ request).
+- [x] **4.1 Register accessors.** **[DONE, no card]** Windowed
+  `card_addr → (window, masked offset)` dispatch (`motu424_addr()`,
+  `motu424_rd32/wr32`); `main.c` maps all BARs generically,
+  `motu424_assign_windows()` picks A/B/port by BAR type+size. Bulk aperture
+  writes use `memcpy_toio` (the vendor's `WRITE_REGISTER_BUFFER_ULONG`).
+- [x] **4.2 Firmware upload.** **[CLOSED - NOT NEEDED]** RE verdict
+  (docs/fpga-upload.md): the classic card self-configures its FPGA from flash;
+  no `request_firmware()`. Only the PCIe HD Express would need an upload path
+  (out of scope until that variant is targeted).
+- [x] **4.3 Transport rewrite.** **[DONE, no card]** `dma_addr` assumption
+  removed; host buffer is `SNDRV_DMA_TYPE_VMALLOC`, periods are copied into the
+  window-B aperture ring with software heads (`motu424_push_period()`), pointer
+  advances by the per-IRQ sample increment. **Aperture base addresses are
+  placeholders (TODO: verify)** — the real ring base/len come from the vendor
+  config path (RE in progress) or a card dump.
+- [x] **4.4 Clock/rate.** **[PARTIAL, no card]** family → period increment
+  `0x10<<(2*family)` → `base+0x60` implemented; `base+0x64` param written as
+  `2*family` (single-trace hypothesis, TODO: verify). Clock-source select
+  register still unknown; per-rate channel-count constraint deferred to 5.1.
+- [x] **4.5 IRQ.** **[DONE, no card]** Real path implemented: pending = port
+  BAR +0x0 bit 1, ack = write 0x10 to the card-reported ack address, period
+  accounting via the sample accumulator; devm teardown ordering preserved.
+  The card-reported `audio_base`/`ack_addr` are runtime values — until dumped
+  from a card, streaming is refused and they are injectable via module params.
 
 ## Phase 5 — ALSA feature completeness (needs card)
 

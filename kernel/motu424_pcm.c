@@ -33,7 +33,7 @@ static const struct snd_pcm_hardware motu424_pcm_hw = {
 	.channels_max = MOTU424_MAX_CHANNELS,
 	.buffer_bytes_max = MOTU424_MAX_BUFFER_BYTES,
 	.period_bytes_min = MOTU424_MIN_PERIOD_BYTES,
-	.period_bytes_max = MOTU424_MAX_BUFFER_BYTES / 2,
+	.period_bytes_max = MOTU424_MAX_PERIOD_BYTES,
 	.periods_min = 2,
 	.periods_max = MOTU424_MAX_PERIODS,
 };
@@ -137,9 +137,12 @@ int motu424_pcm_create(struct motu424 *chip)
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &motu424_pcm_ops);
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &motu424_pcm_ops);
 
-	/* Coherent DMA buffers, allocated/freed by ALSA around hw_params. */
-	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
-				       &chip->pci->dev,
+	/*
+	 * Plain host memory: the card never sees a host address - all data
+	 * moves by PIO into the card aperture (see docs/transport.md), so no
+	 * device-visible DMA buffer is needed.
+	 */
+	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_VMALLOC, NULL,
 				       MOTU424_MAX_BUFFER_BYTES,
 				       MOTU424_MAX_BUFFER_BYTES);
 	return 0;

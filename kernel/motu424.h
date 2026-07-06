@@ -2,20 +2,22 @@
 /*
  * motu424 - Linux ALSA driver for the MOTU PCI-324 / PCI-424 audio card.
  *
- * Shared definitions: hardware register map, driver state structures and
+ * Shared definitions: hardware model, driver state structures and
  * inter-module prototypes.
  *
  * ---------------------------------------------------------------------------
  * IMPORTANT - REVERSE ENGINEERING STATUS
  * ---------------------------------------------------------------------------
- * The MOTU PCI-324/424 is undocumented hardware. Everything in the "HARDWARE
- * INTERFACE (unverified)" section below is a *hypothesis* about the register
- * layout and MUST be confirmed against a real card (see tools/motu424-probe.c
- * and docs in README.md). The PCI/DMA/IRQ/ALSA framework around it is standard
- * and correct; only these constants gate real audio.
+ * The MOTU PCI-324/424 is undocumented hardware. The model below was recovered
+ * by static RE of the vendor Windows driver MOTUAW.sys (docs/register-map.md,
+ * docs/transport.md, docs/vendor-driver-map.md). Structural facts (windowed
+ * address space, port BAR, PIO-aperture transport, audio-register offsets,
+ * IRQ ack protocol) are CONFIRMED from disassembly; anything tagged
+ * "TODO: verify" is still a hypothesis, and the card-reported runtime
+ * addresses (audio base / ack address) cannot be known without a card.
  *
- * All accesses to these constants are funnelled through motu424_hw.c so that,
- * once the true layout is known, a single file needs changing.
+ * All accesses are funnelled through motu424_hw.c so that hardware truth
+ * lives in a single file.
  */
 #ifndef MOTU424_H
 #define MOTU424_H
@@ -45,100 +47,115 @@
 #define MOTU424_DEV_PCI424_C		0x0005
 
 /* --------------------------------------------------------------------------
- * HARDWARE MODEL - partially CONFIRMED from static RE of vendor MOTUAW.sys
+ * Windowed card-address space - CONFIRMED (accessor VAs 0x29110/0x29160)
  * --------------------------------------------------------------------------
- * (PE32 i386, image base 0x10000; src files PCI424Driver.cpp /
- * PCI424NanoDriver.cpp / AW2408.cpp). What the vendor driver actually does:
+ * The card is not a flat register file. A 32-bit "card address" is dispatched
+ * onto one of two MMIO BAR windows:
  *
- *   1. The card is NOT a small offset-based register file. It exposes a
- *      windowed ~24-bit "card address" space over TWO mapped MMIO regions,
- *      accessed with READ/WRITE_REGISTER_ULONG (LE 32-bit). A 32-bit card
- *      address is dispatched by testing (addr & 0xff800000) == 0x01800000:
- *        - true  -> window A: (addr & 0x7fffff) + base_A   (23-bit / 8 MB)
- *        - false -> window B: (addr & 0x3fffff) + base_B   (22-bit / 4 MB)
- *      Concrete card addresses observed: 0xC0024 / 0x100024 (per-bank ctrl/status
- *      at bank+0x24, bank stride 0x40000, window B); same banks via window A at
- *      0x18C0000 / 0x1900000. NB: 0xAC44 is NOT an address - it is 44100 decimal,
- *      a sample-rate constant. See docs/register-map.md and docs/transport.md.
+ *   if ((addr & 0xff800000) == 0x01800000)   // window A (8 MB)
+ *       mmio = win_a + (addr & 0x007fffff);
+ *   else                                      // window B (4 MB)
+ *       mmio = win_b + (addr & 0x003fffff);
  *
- *   2. A third, small I/O-PORT BAR (READ/WRITE_PORT_ULONG) carries a few dwords
- *      of bridge/GPIO control: read at +0x0, writes at +0x4 (value 1) and +0x8.
- *      Consistent with a PLX-style PCI local-bus bridge fronting an FPGA.
- *
- *   3. Audio transport is PIO into a card-side aperture, NOT a host bus-master
- *      ring: the driver pushes host buffers into window B with
- *      WRITE_REGISTER_BUFFER_ULONG and tracks a hardware "dmaPoint" plus
- *      software readHead/writeHead/len (vendor debug string:
- *      "ReadHead out of bounds: dmaPoint %08x, readHead %08x, writeHead %08x,
- *      len %08x"). => Handing the card runtime->dma_addr as a ring base (what
- *      motu424_hw.c currently assumes) is almost certainly WRONG.
- *
- *   4. FPGA firmware - VERDICT from exhaustive static RE: the classic PCI-324/
- *      424 is NOT host-uploaded. MOTUAW.sys has no file I/O, no code xref to the
- *      "altera424b.rbf" string (a build/legacy artefact), no firmware IOCTL and
- *      no large-buffer config write - so the parallel-PCI card's Altera FPGA
- *      self-configures from onboard flash/EEPROM at power-on. The Linux driver
- *      likely needs NO request_firmware() for the classic card (verify on hw).
- *      Only the PCIe HD Express variant (HDExpress_FullImageRun.bin, an ARM SoC
- *      + Xilinx image) takes a host upload. See docs/fpga-upload.md.
- *
- * The MOTU424_REG_*, CTRL_*, STAT_* constants below are the ORIGINAL hypothesis
- * and are retained only so the existing framework builds. They do NOT match the
- * windowed model above and must be reworked in motu424_hw.c once the concrete
- * register semantics (rate/clock/dmaPoint/IRQ) are decoded. Do not trust them.
+ * Windows A and B alias the same underlying space (0x018c0000 and 0x000c0000
+ * both name bank 0); A is used for 8-dword block writes, B for ordinary
+ * accesses and the audio aperture. All accesses are little-endian 32-bit.
  */
-#define MOTU424_BAR		0		/* control BAR index (window B) */
+#define MOTU424_WINA_TAG	0x01800000u
+#define MOTU424_WINA_TAG_MASK	0xff800000u
+#define MOTU424_WINA_MASK	0x007fffffu
+#define MOTU424_WINB_MASK	0x003fffffu
+#define MOTU424_WINA_LEN	0x00800000u	/* 8 MB */
+#define MOTU424_WINB_LEN	0x00400000u	/* 4 MB */
 
-#define MOTU424_REG_CONTROL	0x00	/* rw: global control (see CTRL_* bits) */
-#define MOTU424_REG_STATUS	0x04	/* r : global status (see STAT_* bits)  */
-#define MOTU424_REG_CLOCK	0x08	/* rw: clock source / sample-rate mode  */
-#define MOTU424_REG_IRQ_STATUS	0x0c	/* r/w1c: pending interrupt sources     */
-#define MOTU424_REG_IRQ_MASK	0x10	/* rw: interrupt enable mask            */
-#define MOTU424_REG_DMA_PLAY	0x14	/* rw: playback DMA ring base (bus addr)*/
-#define MOTU424_REG_DMA_REC	0x18	/* rw: capture  DMA ring base (bus addr)*/
-#define MOTU424_REG_DMA_PLAY_POS 0x1c	/* r : playback DMA byte position       */
-#define MOTU424_REG_DMA_REC_POS	0x20	/* r : capture  DMA byte position       */
-#define MOTU424_REG_PLAY_SIZE	0x24	/* rw: playback ring size in bytes      */
-#define MOTU424_REG_REC_SIZE	0x28	/* rw: capture  ring size in bytes      */
-#define MOTU424_REG_PLAY_PERIOD	0x2c	/* rw: playback period (IRQ) size bytes */
-#define MOTU424_REG_REC_PERIOD	0x30	/* rw: capture  period (IRQ) size bytes */
+/* --------------------------------------------------------------------------
+ * I/O-port BAR - CONFIRMED (a few dwords of bridge/GPIO control)
+ * --------------------------------------------------------------------------
+ * +0x0 R : status - bit 1 = IRQ pending (ISR 0x2bae0)
+ * +0x0 W : control - value 4 (bit 2) = IRQ/stream enable (0x298f3)
+ * +0x4 W : strobe / commit (write 1; 0x29906, 0x2c3dc)
+ * +0x8 W : init value at bring-up (0x2b6c8; observed 0)
+ * Start sequence (method 0x298e0): WRITE(+0x0, 4) then WRITE(+0x4, 1).
+ */
+#define MOTU424_PORT_STATUS	0x0
+#define MOTU424_PORT_IRQ_PENDING	(1u << 1)
+#define MOTU424_PORT_CTRL	0x0
+#define MOTU424_PORT_CTRL_ENABLE	(1u << 2)
+#define MOTU424_PORT_STROBE	0x4
+#define MOTU424_PORT_INIT	0x8
 
-/* MOTU424_REG_CONTROL bits */
-#define MOTU424_CTRL_RESET	(1u << 0)	/* soft reset the card          */
-#define MOTU424_CTRL_PLAY_EN	(1u << 1)	/* enable playback DMA engine   */
-#define MOTU424_CTRL_REC_EN	(1u << 2)	/* enable capture DMA engine    */
-#define MOTU424_CTRL_IRQ_EN	(1u << 3)	/* master interrupt enable      */
+/* --------------------------------------------------------------------------
+ * Bank register file - INFERRED (window-B card addresses)
+ * --------------------------------------------------------------------------
+ * Two banks at 0xc0000 / 0x100000 (stride 0x40000); per-bank ctrl/status at
+ * bank+0x24 (bit 6 is a r/w control flag); bank+0x08..+0x24 programmed as an
+ * 8-dword unit at init via window A (WriteBlock8 0x291a0).
+ */
+#define MOTU424_BANK0		0x000c0000u
+#define MOTU424_BANK1		0x00100000u
+#define MOTU424_BANK_STRIDE	0x00040000u
+#define MOTU424_BANK_CTRL	0x24u
 
-/* MOTU424_REG_STATUS bits */
-#define MOTU424_STAT_LOCKED	(1u << 0)	/* clock PLL locked             */
+/* --------------------------------------------------------------------------
+ * Audio register block - CONFIRMED offsets, runtime base
+ * --------------------------------------------------------------------------
+ * The audio register base is a CARD-REPORTED card address (vendor keeps it at
+ * devext+0x98, read from the card at init; likewise the IRQ-ack address at
+ * devext+0x88 and the CueMix mixer base at devext+0x9c). These are runtime
+ * values: they cannot be recovered statically and must be dumped on real
+ * hardware (tools/motu424-probe). Until then they are 0 here and streaming is
+ * refused; they can be injected via module parameters for bring-up
+ * (motu424.audio_base= / ack_addr= / mix_base=).
+ */
+#define MOTU424_AREG_ENABLE	0x54u	/* W: 1 = stream/DMA enable          */
+#define MOTU424_AREG_INCR	0x60u	/* W: period increment 0x10<<(2*fam) */
+#define MOTU424_AREG_PARAM	0x64u	/* W: rate param (encoding TODO)     */
+#define MOTU424_AREG_POS	0x128u	/* R->W0: position counter           */
+#define MOTU424_AREG_NUM	0x12cu	/* R->W0: numerator                  */
+#define MOTU424_AREG_DIV	0x130u	/* R->W0: divisor                    */
 
-/* MOTU424_REG_IRQ_STATUS / IRQ_MASK bits */
-#define MOTU424_IRQ_PLAY	(1u << 0)	/* playback period elapsed      */
-#define MOTU424_IRQ_REC		(1u << 1)	/* capture  period elapsed      */
-#define MOTU424_IRQ_MASK_ALL	(MOTU424_IRQ_PLAY | MOTU424_IRQ_REC)
+#define MOTU424_ACK_MAGIC	0x10u	/* IRQ ack: write 0x10 to ack_addr   */
+#define MOTU424_PERIOD_UNIT	0x800u	/* vendor period accumulator bound   */
 
-/* MOTU424_REG_CLOCK: sample-rate family. The card runs 1x/2x/4x families; the
- * channel count of the fixed frame shrinks as the rate family rises. */
-#define MOTU424_CLK_INTERNAL	(0u << 4)	/* internal clock source        */
-#define MOTU424_CLK_RATE_1X	(0u << 0)	/* 44.1 / 48 kHz                */
-#define MOTU424_CLK_RATE_2X	(1u << 0)	/* 88.2 / 96 kHz                */
-#define MOTU424_CLK_RATE_4X	(2u << 0)	/* 176.4 / 192 kHz              */
-#define MOTU424_CLK_BASE_44100	(1u << 2)	/* 44.1 kHz family (else 48)    */
+/* --------------------------------------------------------------------------
+ * PIO aperture ring - CONFIRMED shape, TODO: verify addresses
+ * --------------------------------------------------------------------------
+ * Audio is NOT host bus-master DMA. The vendor pushes samples into a window-B
+ * aperture with WRITE_REGISTER_BUFFER_ULONG (<=64 KB bursts, dword units) and
+ * runs a software readHead/writeHead/len ring against a hardware "dmaPoint";
+ * len is a power of two in dwords. The aperture base addresses below are
+ * PLACEHOLDERS (the real values come from the vendor config path and are not
+ * yet recovered) - TODO: verify on hardware before trusting any audio I/O.
+ */
+#define MOTU424_APERTURE_PLAY	0x00200000u	/* TODO: verify */
+#define MOTU424_APERTURE_CAP	0x00300000u	/* TODO: verify */
+#define MOTU424_RING_DWORDS	0x4000u		/* 64 KB, power of two */
+#define MOTU424_RING_BYTES	(MOTU424_RING_DWORDS * 4)
+
+/*
+ * Software IRQ bits: driver-internal contract between motu424_hw_irq_ack()
+ * and the interrupt handler in motu424_main.c (NOT hardware register bits).
+ */
+#define MOTU424_IRQ_PLAY	(1u << 0)	/* playback period elapsed */
+#define MOTU424_IRQ_REC		(1u << 1)	/* capture  period elapsed */
 
 /* --------------------------------------------------------------------------
  * Audio format constants
  * --------------------------------------------------------------------------
- * The card's native wire format is 24-bit big-endian samples packed 3 bytes
- * per channel per frame ("event"). We expose S24_3LE and repack, or S24_3BE
- * directly; kept as one place so it can be tuned once the format is confirmed.
+ * The card's native wire format is 24-bit samples packed 3 bytes per channel
+ * per frame ("event"). We expose S24_3LE; endianness must be confirmed on a
+ * card. The fixed frame's channel count shrinks as the rate family rises
+ * (1x/2x/4x).
  */
 #define MOTU424_BYTES_PER_SAMPLE	3
 #define MOTU424_MAX_CHANNELS		24	/* e.g. one 2408 mk3 bank */
 #define MOTU424_MIN_CHANNELS		2
 
-/* DMA ring sizing bounds (bytes). */
+/* Host buffer sizing bounds (bytes). The period must fit the aperture ring
+ * with double-buffering, hence the period cap at half the ring. */
 #define MOTU424_MAX_BUFFER_BYTES	(512 * 1024)
 #define MOTU424_MIN_PERIOD_BYTES	1024
+#define MOTU424_MAX_PERIOD_BYTES	(MOTU424_RING_BYTES / 2)
 #define MOTU424_MAX_PERIODS		32
 
 struct motu424;
@@ -149,6 +166,20 @@ struct motu424_stream {
 	bool running;
 	unsigned int period_bytes;
 	unsigned int buffer_bytes;
+	unsigned int buffer_frames;
+	/* PIO ring bookkeeping (all owned by motu424_hw.c under chip->lock) */
+	unsigned int buf_pos;		/* next host-buffer byte to copy     */
+	unsigned int ring_pos;		/* aperture head, in dwords          */
+	unsigned int pos_frames;	/* ALSA pointer, frames in buffer    */
+	unsigned int period_acc;	/* frames since last period elapsed  */
+};
+
+/* One mapped PCI BAR, filled generically by motu424_main.c; motu424_hw.c
+ * decides which BAR is which hardware window. */
+struct motu424_bar {
+	void __iomem *ptr;		/* NULL if absent/unmapped */
+	resource_size_t len;
+	unsigned long flags;		/* IORESOURCE_MEM / _IO    */
 };
 
 /* Driver instance (lives in snd_card->private_data). */
@@ -156,16 +187,26 @@ struct motu424 {
 	struct snd_card *card;
 	struct pci_dev *pci;
 
-	void __iomem *mmio;		/* mapped BAR0 */
+	struct motu424_bar bars[PCI_STD_NUM_BARS];	/* from main.c   */
+	void __iomem *win_a;		/* 8 MB MMIO window (may be NULL) */
+	void __iomem *win_b;		/* 4 MB MMIO window               */
+	void __iomem *port;		/* small I/O-port bridge BAR      */
 	int irq;
 
 	spinlock_t lock;		/* guards register access + stream state */
+
+	/* Card-reported runtime card-addresses (0 = not yet discovered). */
+	u32 audio_base;			/* audio register block base */
+	u32 ack_addr;			/* IRQ ack register          */
+	u32 mix_base;			/* CueMix coefficient region */
 
 	struct snd_pcm *pcm;
 	struct motu424_stream playback;
 	struct motu424_stream capture;
 
-	unsigned int rate;		/* active sample rate (Hz) */
+	unsigned int rate;		/* active sample rate (Hz)        */
+	unsigned int family;		/* 0/1/2 = 1x/2x/4x               */
+	unsigned int period_incr;	/* samples per IRQ, 0x10<<(2*fam) */
 	unsigned int channels;		/* active channel count per frame */
 
 	char model[32];			/* human-readable model string */
