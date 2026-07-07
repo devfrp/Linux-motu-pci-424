@@ -193,6 +193,18 @@ direction (`>>22` = the 4 MB window-B page index). See `transport.md`.
   (jump table `0x11420`) / the `fn 0x13c30` arm chain (observed value `4` for
   the 4x family) — resolving the full enum→dword table needs the virtual
   dispatch traced deeper or a card.
+  **Update 2 (2026-07-06): the `base+0x64` value is interface-supplied runtime
+  data — NOT a static rate→dword table.** The generic arm routine `fn 0x13b30`
+  writes `base+0x64` from the state field `devext+0x1a2d0`; that field's writers
+  are (a) a setter `fn 0x14ff0` storing a caller-supplied dword (`0x15018`),
+  (b) `0x199e7` storing the constant `4`, and (c) `0x1ba10` storing the result
+  of a **virtual call, interface-object vtable slot 0x6c** — i.e. the value is
+  *queried from the connected breakout/interface*. The fixed-family-2 arm
+  `fn 0x13c30` hardcodes increment-arg `2` alongside `base+0x64 = 4`, so the
+  driver's `param = 2*family` heuristic matches the one static constant
+  (family 2 → 4). The exact per-rate/per-interface dword can only be observed on
+  a card. **This closes the static +0x64 question: it is card/interface-bound.**
+
   **Update (2026-07-06): the `[obj+0x3e]` enum is the RATE-mode index, not a
   clock source.** Classifier `fn 0x11330` reads it and its jump table `0x11420`
   maps each value straight to a standard Hz immediate (`0xac44`/`0xbb80`/
