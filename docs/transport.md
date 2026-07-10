@@ -102,3 +102,15 @@ WRITE_REGISTER(dispatch(base+edi), 0)`) → `call 0x29500(A+0x10, A+0x14, A+0x18
   `0x29500`'s three args (`A+0x10/0x14/0x18`) are the likely home.
 - Aperture `len` power-of-two assumption vs. the runtime `[A+0x1c]`/`[A+0x2c]`.
 - Endianness / channel packing of the aperture payload.
+- **Full-duplex page aliasing (design risk, code-reviewed, not RE'd further):**
+  play and capture apertures are two independent runtime addresses; if they
+  land in different 4 MB window-B pages, a single shared page-select register
+  (port `+0x8`) means starting/streaming one direction can silently repoint
+  the window out from under the other. The vendor trace only shows the page
+  write happening once, "before streaming a direction" (`fn 0x2c150`) — it
+  was not confirmed whether the vendor re-arms it on every transfer or relies
+  on both apertures sharing a page by construction. `motu424_hw.c` now
+  re-arms the page-select on every `motu424_push_period()` call (not just at
+  stream start) as a defensive fix, which is correct either way but adds one
+  extra port write per period. Worth confirming on a card whether this was
+  ever actually reachable (i.e. whether play/cap apertures do share a page).

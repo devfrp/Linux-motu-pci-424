@@ -257,6 +257,18 @@ static void motu424_push_period(struct motu424 *chip, struct motu424_stream *s,
 	unsigned int bytes = s->period_bytes;
 	unsigned int ring_off = s->ring_pos % MOTU424_RING_BYTES;
 
+	/*
+	 * Window B is a paged 4 MB view over a larger card-address space, and
+	 * playback/capture apertures are two independent runtime addresses
+	 * (docs/transport.md) that are not guaranteed to share a page. Full
+	 * duplex re-arms the page-select register on *every* push (not just
+	 * at stream start) so the other direction's start/IRQ processing can
+	 * never leave this access pointed at the wrong page.
+	 */
+	if (chip->port)
+		iowrite32(aperture >> MOTU424_APERTURE_PAGE_SHIFT,
+			  chip->port + MOTU424_PORT_INIT);
+
 	while (bytes) {
 		unsigned int chunk = min(bytes, MOTU424_RING_BYTES - ring_off);
 		void __iomem *io = motu424_addr(chip, aperture + ring_off);
@@ -323,8 +335,12 @@ void motu424_hw_stream_start(struct motu424 *chip, bool playback, bool fresh)
 	spin_lock_irqsave(&chip->lock, flags);
 
 	/*
-	 * Page the window-B aperture in via the port bridge (vendor arm
-	 * routine fn 0x2c150: WRITE_PORT(port+0x8, apertureBase >> 22)).
+	 * The window-B page-select (port+0x8, vendor arm routine fn 0x2c150)
+	 * is re-armed on every motu424_push_period() call now, not just here,
+	 * so a concurrent duplex direction can't leave it pointed at the
+	 * wrong aperture. For capture-only, non-fresh starts (no push below),
+	 * still page it in up front so the first IRQ's pointer/ack activity
+	 * finds the right window.
 	 */
 	if (chip->port)
 		iowrite32(chip->aperture[playback ? 0 : 1] >>
