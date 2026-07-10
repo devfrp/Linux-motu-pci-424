@@ -198,6 +198,13 @@ static void dump_target(const char *dir, const struct bar bars[PCI_NUM_BARS],
 		    &got);
 	if (!p)
 		return;
+	/*
+	 * map_bar() clamps the mapped span to the BAR's actual size (got may
+	 * be less than requested near the end of a BAR); clamp the dump
+	 * length the same way, or hexdump() reads past the mmap'd region.
+	 */
+	if (len > got - (off - page))
+		len = got - (off - page);
 	printf("  window-B target @ card 0x%08" PRIx64 ", %zu bytes (BAR%d):\n",
 	       card_off, len, idx);
 	hexdump(p + (off - page) / 4, card_off, len);
