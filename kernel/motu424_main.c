@@ -6,6 +6,7 @@
  * This file contains the standard, hardware-agnostic driver framework. All
  * register-level semantics live in motu424_hw.c.
  */
+#include <linux/err.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/pci.h>
@@ -102,17 +103,24 @@ static int motu424_probe(struct pci_dev *pci, const struct pci_device_id *ent)
 	/*
 	 * Map every BAR the card exposes, without interpreting them: the
 	 * hardware layer decides which mapping is which window (the card is
-	 * not a single flat register BAR). pcim_iomap() handles both MMIO
-	 * and I/O-port BARs.
+	 * not a single flat register BAR). pcim_iomap_region() both reserves
+	 * (pci_request_region()) and maps each BAR in one managed call, so a
+	 * conflicting claim on the same resource is caught here instead of
+	 * being silently skipped (plain pcim_iomap() only maps and never
+	 * requests the region).
 	 */
 	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+		void __iomem *p;
+
 		if (!pci_resource_len(pci, i))
 			continue;
-		chip->bars[i].ptr = pcim_iomap(pci, i, 0);
-		if (!chip->bars[i].ptr) {
-			dev_err(&pci->dev, "cannot map BAR%d\n", i);
-			return -ENOMEM;
+		p = pcim_iomap_region(pci, i, MOTU424_DRIVER_NAME);
+		if (IS_ERR(p)) {
+			dev_err(&pci->dev, "cannot request/map BAR%d: %pe\n",
+				i, p);
+			return PTR_ERR(p);
 		}
+		chip->bars[i].ptr = p;
 		chip->bars[i].len = pci_resource_len(pci, i);
 		chip->bars[i].flags = pci_resource_flags(pci, i);
 	}
