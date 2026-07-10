@@ -60,6 +60,5 @@ the driver never writes to addresses that were guessed rather than observed.
 ## Authorship
 
 Reverse engineering, driver, tooling, and documentation by the repository's
-contributors, with AI assistance (Claude) used as a tool under human direction.
-All facts derive from the author's own analysis of hardware and binaries the
-author lawfully possesses.
+contributors. All facts derive from the author's own analysis of hardware and
+binaries the author lawfully possesses.
