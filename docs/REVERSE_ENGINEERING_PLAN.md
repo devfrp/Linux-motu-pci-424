@@ -47,11 +47,18 @@ Everything below turns these shapes into exact, implementable semantics.
   **Caveat:** it has no type recovery, so C++ object *identity/layout* (which
   vtable a `this` register holds) still must be inferred by hand and stays
   error-prone — the reason the fine-grained rate encoding below is still OPEN.
-- [ ] **0.2 Symbol/type recovery.** MOTUAW.sys is C++ with RTTI-ish strings and
-  source names (`PCI424Driver.cpp`, `PCI424NanoDriver.cpp`, `AW2408.cpp`). Map
-  the class layout of the device-extension struct (fields already seen: `+0x78`
-  window-B base, `+0x7c` window-A base, `+0x80` I/O-port base, `+0x84/+0xa8/+0xb0`
-  DMA descriptor state). *Deliverable:* a commented struct in `docs/`.
+- [~] **0.2 Symbol/type recovery.** **[PARTIAL, no card]** MOTUAW.sys is C++
+  with RTTI-ish strings and source names (`PCI424Driver.cpp`,
+  `PCI424NanoDriver.cpp`, `AW2408.cpp`). Every field offset pinned by a
+  concrete access site (across all RE sessions) is now consolidated into one
+  table in `docs/vendor-driver-map.md` ("Device-extension field map"):
+  `+0x28` DMA adapter, `+0x38` DPC, `+0x50` status, `+0x6c` interrupt object,
+  `+0x70` audio sub-object, `+0x78/+0x7c` window bases, `+0x80` port base,
+  `+0x88` ack, `+0x98` audio base, `+0x9c` mix base, `+0x110`/`+0x1c4`/`+0x1c8`
+  CueMix staging, `+0x260`/`+0x264` sample accounting. *Still open:* full
+  struct size/layout and whether one class or several share the vtable shape
+  — real type recovery (Ghidra) or a card is needed for that, objdump/xref.py
+  cannot resolve it further.
 - [ ] **0.3 Role of each binary.**
   - `MotuBus.sys` — PCI bus/function enumeration & child device creation.
   - `MOTUAW.sys` — the audio function driver (register + DMA + FPGA logic).
@@ -69,10 +76,19 @@ Everything below turns these shapes into exact, implementable semantics.
   **[DONE for statics]** — `docs/register-map.md` written. Key correction:
   `0xAC44` is 44100 (a rate constant), not an address. Clock/IRQ/dmaPoint
   register encodings remain OPEN (behind C++ vtables; need a card or xref RE).
-- [ ] **1.2 Reset / init sequence.** Trace `AddDevice`→`StartDevice` (the
-  `IoConnectInterrupt`, `MmMapIoSpace`, `IoGetDmaAdapter` call site at ~`0x28e94`)
-  to recover the ordered register writes that bring the card up. *Exit:* a
-  numbered power-on sequence.
+- [x] **1.2 Reset / init sequence.** **[DONE for statics]** Traced the
+  `IRP_MN_START_DEVICE` resource-list translator (`fn 0x28ee0`, via
+  `xref.py`): Port resource → port-BAR base (a zero base aborts the parse
+  loop early, WMI-logged as event `0x7a` — mandatory in practice, exact
+  return status not pinned); Interrupt resource → Level/Vector/Affinity/mode
+  (boilerplate);
+  Memory resource dispatches on **exact Length** — `0x400000` → window B,
+  `0x800000` → window A, both `MmMapIoSpace(..., CacheType=0)` (non-cached).
+  `CmResourceTypeDma` is never handled (default/no-op case) — one more
+  independent confirmation of no host bus-mastering. A separate
+  `IoGetDmaAdapter` setup exists (device-ext `+0x28`) but is never referenced
+  by the PIO audio path. See `docs/vendor-driver-map.md` for the full trace
+  and the extended device-extension field map (`+0x28`/`+0x50`/`+0x6c`).
 - [ ] **1.3 I/O-port BAR meaning.** Decode the port block at dev-ext `+0x80`
   (read `+0x0`; write `+0x4`←1, `+0x8`). Likely a PLX/local-bus bridge: identify
   the bridge (readback IDs) and whether `+0x4`/`+0x8` are FPGA-config strobes
@@ -207,16 +223,34 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
 - [~] **6.4 Cleanup for upstream** — **[PARTIAL, no card]**: `checkpatch --strict`
   clean on all four source files; SPDX GPL headers on every file; no
   `MODULE_FIRMWARE()` (verdict: classic card needs no host firmware); clean-room
-  + provenance statement written (`CLEANROOM.md`). Remaining (card/upstream):
-  the `Documentation/sound/` note and the eventual patch submission.
+  + provenance statement written (`CLEANROOM.md`); `Documentation/sound/motu424.rst`
+  written (architecture, bring-up/module-param flow, current status/limitations).
+  Remaining (card/upstream): the eventual patch submission itself.
 
 ---
 
-## Immediate next actions (do these first, no card required)
+## Immediate next actions
 
-1. Phase 2.1–2.2 — decode the FPGA upload (gates everything). 
-2. Phase 3.3 + 3.4 — rate/clock table and the IRQ status/ack registers.
-3. Phase 1.1 — finish the full `docs/register-map.md` table.
+**Update (2026-07-10): the objdump/xref.py-tractable static work is now
+exhausted.** Phases 0.1/0.3/1.1/1.2/1.3(partial)/2.1/2.3/3.1(partial)/3.3/3.4/
+4/6.4(partial) are done or as-done-as-possible without better tooling; Phase
+0.2 is consolidated into one field-map table (`vendor-driver-map.md`).
+Everything still open genuinely needs one of:
 
-Only after 1–3 are documented does the phase-4 rewrite become low-risk; until
-then the existing framework stays as-is with its constants flagged untrustworthy.
+- **A real disassembler with type recovery** (Ghidra/rizin, not installable
+  in this environment) — blocks: Phase 2.2 (FPGA handshake bit/byte order),
+  the full device-extension struct layout (0.2), and Phase 3.5 (breakout/
+  AudioWire channel enumeration — `strings` on `AW2408.cpp`/`AW24IO.cpp`/
+  `Awnano.cpp` turned up only the source filenames, no channel-count data;
+  the actual enumeration is behind virtual dispatch on an "interface object"
+  this repo's tooling cannot type-resolve).
+- **A card** — blocks: Phase 1.3 (bridge chip identity via readback), 3.2
+  (`dmaPoint` concrete address), 3.5 (confirm channel counts empirically
+  instead), and all of Phases 5–6 (kcontrol registration, real playback/
+  capture, soak testing). The driver already refuses to stream until the
+  card-reported runtime addresses are supplied via module params
+  (`audio_base=`/`ack_addr=`/`mix_base=`/`play_aperture=`/`cap_aperture=`),
+  obtainable from `tools/motu424-probe` once a card is attached.
+
+There is no more useful static-RE brick to pick up without new tooling or
+hardware; the project's critical path is now **Phase 6.1 empirical bring-up**.
