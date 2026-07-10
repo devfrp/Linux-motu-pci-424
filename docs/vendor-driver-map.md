@@ -37,6 +37,91 @@ hand: the hardware class vtable is at `.rdata` `0x30cc0`, and slot `0x28` =
 ack, enable and audio-register block). Vtable resolution was done with a small
 Python helper over the raw section bytes, since objdump gives no xrefs.
 
+### StartDevice resource parsing (Phase 1.2, RE'd via `xref.py`)
+
+Located the IRP_MN_START_DEVICE resource-list translator: `fn 0x28ee0` walks
+the raw `CM_PARTIAL_RESOURCE_DESCRIPTOR` array (16-byte stride) handed in by
+the PnP manager, dispatching on `Type` through a compact translation table
+(`0x2907c`) + a 5-entry jump table (`0x29068`). Only three types are handled;
+everything else (including `CmResourceTypeDma`, type 4) hits the default
+no-op case — **the resource parser never touches a DMA descriptor**, one more
+independent confirmation that the audio path is not host bus-mastered.
+
+- **Port** (`Type=1`, jump `0x28f2d`): captures `Start.LowPart` as the
+  I/O-port BAR base. If it is zero, the parser **abandons the loop
+  immediately** (jumps straight to the shared exit/WMI-log tail with event
+  code `0x7a` instead of continuing to the next descriptor) — structurally
+  this cuts resource processing short on a missing port BAR, so it is
+  mandatory in practice. The exact NTSTATUS the function then returns wasn't
+  pinned (it falls through to whatever the WMI-log helper `0x23570` returns
+  in `eax`, not an explicitly-set status) — treat "hard failure" as a
+  reasonable reading of the control flow, not a confirmed return value.
+- **Interrupt** (`Type=2`, jump `0x28f42`): captures Level/Vector/Affinity
+  plus an edge-vs-level flag (`Flags==1`) and a `ShareDisposition==3` flag —
+  boilerplate `IoConnectInterrupt` prep, nothing card-specific.
+- **Memory** (`Type=3`, jump `0x28f73`): dispatches purely on the resource's
+  **exact `Length`**: `== 0x400000` (4 MiB) maps **window B**, `== 0x800000`
+  (8 MiB) maps **window A**, both via `MmMapIoSpace(phys, len, CacheType=0)`
+  — cache type is hard-coded to **non-cached** on both windows (no
+  write-combining anywhere on the register/aperture path). This is an exact
+  ground-truth confirmation of the two MMIO window sizes already assumed in
+  `motu424.h`/`tools/motu424-probe.c`; our `motu424_assign_windows()` uses
+  `>=` thresholds rather than an exact match, which is deliberately more
+  permissive and still correct against this evidence.
+- A separate helper (`fn 0x20100`) builds a `DEVICE_DESCRIPTION` (via
+  `IoGetDeviceProperty(DevicePropertyBusNumber)`, IAT `0x30068`) and calls
+  `IoGetDmaAdapter` (IAT `0x30064`), storing the HAL DMA-adapter object at
+  offset `+0x28` of its `this` (`ecx`/`esi`), with a matching teardown
+  routine (`fn 0x20190`, guarded by `+0xc`). *Caveat:* this trace did not
+  confirm that `this` is the *same* device-extension object used by
+  `WriteRegister`/`ReadRegister` elsewhere — it may be a sub-object, but the
+  `+0x28`/teardown pair is internally consistent either way. What's solid
+  regardless of that: this DMA-adapter object is **never referenced by the
+  PIO audio path** (`WRITE_REGISTER_BUFFER_ULONG` sites don't touch it), so
+  it's orthogonal to streaming — likely WDM-template boilerplate; not
+  blocking for the Linux driver, which has no DMA adapter.
+
+Device-extension field map extended by this trace: **`+0x28`** = HAL
+DMA-adapter pointer, **`+0x50`** = pending-error/status code (checked before
+each `MmMapIoSpace`, logged via a WMI-event helper `fn 0x23570` if set),
+**`+0x6c`** = interrupt object — this cross-checks cleanly against the
+already-resolved ISR shim (`fn 0x201f0`, `re-hardware-model` memory), which
+guards on the same `[ctx+0x6c]` before dispatching to vtable slot `0x28`.
+
+### Device-extension field map (Phase 0.2, partial — no full type recovery)
+
+Consolidated from every setter/getter site identified so far (register-map.md,
+transport.md, and the StartDevice trace above). This is the hardware object's
+"this" as seen by `WriteRegister`/`ReadRegister` and the ISR — **not** a
+complete struct layout (no Ghidra-grade type recovery was done), just every
+field offset whose meaning is pinned by at least one concrete access:
+
+| Offset | Meaning | Evidence |
+|---|---|---|
+| `+0x28` | HAL DMA-adapter pointer (`IoGetDmaAdapter` result) | StartDevice trace (`fn 0x20100`/`0x20190`); unused by the audio path |
+| `+0x38` | `[[+0x38]]` DPC object, queued on period-elapsed | ISR (`0x2bae0`) |
+| `+0x50` | pending-error/status code, gates `MmMapIoSpace`+WMI-log helper | StartDevice trace (`fn 0x28e60`) |
+| `+0x6c` | interrupt object (`IoConnectInterrupt` result) | ISR shim guard (`0x201f0`), teardown (`fn 0x201d0` → `IoDisconnectInterrupt`) |
+| `+0x70` | audio sub-object pointer `A` (vtable slot `0x44`) | arm routine `0x2c150` |
+| `+0x78` | window-B MMIO base (mapped VA) | `motu424_addr()` dispatch |
+| `+0x7c` | window-A MMIO base (mapped VA) | `motu424_addr()` dispatch |
+| `+0x80` | I/O-port BAR base (mapped VA) | port accessors |
+| `+0x88` | IRQ ack card-address (runtime) | ISR (write `0x10`) |
+| `+0x98` | audio register block base (runtime card address) | init read (`0x2c360`) |
+| `+0x9c` | CueMix mixer coefficient base (runtime card address) | init read (`0x2c360`) |
+| `+0x110` | inline CueMix staging buffer (~45 dwords) | `0x29aa0` |
+| `+0x1c4`/`+0x1c8` | CueMix dirty-range markers | `0x29aa0` |
+| `+0x260` | per-IRQ sample increment | ISR |
+| `+0x264` | per-IRQ sample accumulator | ISR |
+
+Off the audio sub-object `A` (`[devext+0x70]`): `[A+0x04]` ack, `[A+0x18]`/
+`[A+0x1c]` playback aperture base/len, `[A+0x28]`/`[A+0x2c]` capture aperture
+base/len (see `transport.md`). Genuinely open: the object's total size/full
+layout (the `0x50`-byte allocation seen at `fn 0x2b610` cannot hold every
+field above, so either multiple sub-classes share the vtable shape or the
+`this` identity varies by call site — this needs real type recovery, not
+achievable with `objdump`/`xref.py` alone).
+
 ## `MotuBus.sys` — PCI bus/multifunction enumerator (RE'd)
 
 Small (`~25 KB`, 44 NTOSKRNL imports, no other DLLs). Confirmed by its import
