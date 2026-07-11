@@ -329,10 +329,19 @@ int motu424_hw_stream_prepare(struct motu424 *chip,
 void motu424_hw_stream_start(struct motu424 *chip, bool playback, bool fresh)
 {
 	struct motu424_stream *s = playback ? &chip->playback : &chip->capture;
-	bool first = !chip->playback.running && !chip->capture.running;
 	unsigned long flags;
+	bool first;
 
 	spin_lock_irqsave(&chip->lock, flags);
+
+	/*
+	 * .running is chip->lock-protected (motu424.h); reading it for the
+	 * "first" decision has to happen under the lock too, or a concurrent
+	 * trigger of the other direction's substream (ALSA does not serialize
+	 * .trigger across unlinked playback/capture substreams) can race this
+	 * read and double-fire the ENABLE/STROBE kick sequence below.
+	 */
+	first = !chip->playback.running && !chip->capture.running;
 
 	/*
 	 * The window-B page-select (port+0x8, vendor arm routine fn 0x2c150)
@@ -409,26 +418,37 @@ snd_pcm_uframes_t motu424_hw_stream_pointer(struct motu424 *chip, bool playback)
 }
 
 /*
- * Advance one stream by one hardware interrupt; returns true when a full
- * period has elapsed (and moves the period's data). Under chip->lock.
+ * Advance one stream by one hardware interrupt; returns true if at least one
+ * full period elapsed (and moved that period's data). Under chip->lock.
+ *
+ * period_incr (16/64/256 samples/IRQ) is not guaranteed to be <= the
+ * negotiated period size: e.g. a 192 kHz family (incr=256) paired with a
+ * period near MOTU424_MIN_PERIOD_BYTES at few channels yields period_frames
+ * well under 256. A single "if" here would let pos_frames run ahead of what
+ * push_period() actually transferred, so loop and push once per period_frames
+ * actually covered by this tick's accumulator instead of assuming <=1.
  */
 static bool motu424_stream_tick(struct motu424 *chip,
 				struct motu424_stream *s, bool playback)
 {
 	unsigned int period_frames;
+	bool elapsed = false;
 
 	if (!s->running || !s->substream)
 		return false;
 
 	period_frames = s->substream->runtime->period_size;
-	s->pos_frames = (s->pos_frames + chip->period_incr) % s->buffer_frames;
-	s->period_acc += chip->period_incr;
-	if (s->period_acc < period_frames)
+	if (!period_frames)
 		return false;
 
-	s->period_acc -= period_frames;
-	motu424_push_period(chip, s, playback);
-	return true;
+	s->pos_frames = (s->pos_frames + chip->period_incr) % s->buffer_frames;
+	s->period_acc += chip->period_incr;
+	while (s->period_acc >= period_frames) {
+		s->period_acc -= period_frames;
+		motu424_push_period(chip, s, playback);
+		elapsed = true;
+	}
+	return elapsed;
 }
 
 /*
