@@ -112,7 +112,7 @@ pinned by at least one concrete access is listed:
 | `+0x80` | ptr | I/O-port BAR base (mapped VA) | ISR `0x2baf0`, enable `0x298f3` |
 | `+0x84` | u32 | port `+0x8` page-select value cache (`apertureBase >> 22`) | arm `0x2c1ec`/`0x2c27e`, ctor zeroes it |
 | `+0x88` | u32 | IRQ ack card-address (runtime; comes from `[A+0x04]`) | ISR (write `0x10`), init `0x2c16a` |
-| `+0x8c` | u32 | zero-init; written through `audio_base+0x8c` mirror | ctor `0x2b6da` |
+| `+0x8c` | u32 | 0/1 double-buffer bank index: clock-relock `0x2b7f0` toggles `[+0x8c] = 1 - [+0x8c]` then reads `audio_base+0xc + idx*4` (selects `+0xc`/`+0x10`). Zero-init by ctor. (Only `0x2b7f0` inspected — a mirror-write elsewhere isn't ruled out.) | ctor `0x2b6da`, toggle `0x2b7f0` |
 | `+0x90` | u32 | zero-init; written through `audio_base+0x90` mirror | ctor `0x2b6e0` |
 | `+0x94` | u32 | zero-init | ctor `0x2b6e6` |
 | `+0x98` | u32 | audio register block base (runtime card address, read from `[A+0x30]`) | init `0x2c395`; must be non-zero or init fails |
@@ -126,20 +126,27 @@ pinned by at least one concrete access is listed:
 | `+0x1cc` | u32 | rate multiplier (small int), drives `+0x1f0 = +0x1cc * 0xbb80` (48000) when `+0x40 >= 8`; init `1` | ctor `0x2b6ec`, `0x2bd49` |
 | `+0x1d0` | u32 | rate bit-mask, tested by `0x2a710` (`test [+0x1d0], 1<<(rate-8)`) to choose buffer scaling | ctor zeroes, `0x2a74b` |
 | `+0x1d4` | u32 | high-bit sentinel (init `0x80000000`; ORed into `audio_base+0x80` writes in `0x2a820`) | ctor `0x2b6f6`, `0x2a8b4`; init swaps it |
-| `+0x1d8..+0x1e8` | u32×4 | zero-init (purpose unknown) | ctor `0x2b6fc`–`0x2b708` |
+| `+0x1d8` | u32 | previous clock-status bitmask snapshot; `0x2be10` stores the incoming mask here each poll and diffs against it | ctor `0x2b6fc`, `0x2be10` |
+| `+0x1dc`/`+0x1e0`/`+0x1e4`/`+0x1e8` | u32×4 | per-clock-source lock-debounce counters (one per bit of the `+0x1d8` mask): each increments while its source stays unlocked, and at `>99` the corresponding bit is committed into `+0x1d0`/`+0x1d4` and `+0x1ec` is reset to 40000; zeroed when the source reads locked | ctor `0x2b700`–`0x2b708`, `0x2be10` |
 | `+0x1ec` | u32 | 0x9c40 (40000) init; when 0, `0x2a820` ORs `0xfff10000` into `audio_base+0x80`; else ORs `0x10000` — a rate/mode qualifier | init `0x2c5a0`, `0x2a89a` |
 | `+0x1f0` | u32 | IRQ countdown target; each IRQ subtracts `[+0x260]`; on `<=0` calls `0x2a820`+`0x2a710` and zeroes +0x1f0 | ISR `0x2bcf8`–`0x2bd26`; set by `0x2bd59` |
-| `+0x25c` | u8 | zero-init (purpose unknown) | ctor `0x2b70e` |
+| `+0x1f4` | u8[100] | second CueMix/routing staging buffer (default byte `0x40` = unity via init memset): `0x29af0` byte-diffs a caller-supplied 100-byte block against it and, on any change, uploads 200 bytes to card `audio_base+0xac`, pokes an `audio_base+0x110` handshake, then copies the block back here. Distinct from the `+0x110` buffer | init memset, upload `0x29af0` |
+| `+0x258` | u32 | mode/select value; setter `0x2aff0` writes `[+0x258]=arg` and byte `[+0x25c]=arg2` together, then calls `0x2a8f0` (exact clock parameter not pinned) | `0x2aff0` |
+| `+0x25c` | u8 | second byte of the `0x2aff0` mode/select write (paired with `+0x258`); zero-init by ctor | ctor `0x2b70e`, `0x2aff0` |
 | `+0x260` | u32 | per-IRQ sample increment | ISR `0x2bb55` |
 | `+0x264` | u32 | per-IRQ sample accumulator (>= `0x800` ⇒ period boundary) | ISR `0x2bb5b` |
 | `+0x268` | u32 | max value of the position numerator (`base+0x12c / base+0x130`) | ISR `0x2bce6` |
 | `+0x26c` | u32 | max value of the position counter (`base+0x128`) | ISR `0x2bce0` |
-| `+0x270..+0x278` | u32×3 | zero-init (purpose unknown) | ctor `0x2b726`–`0x2b732` |
+| `+0x270`/`+0x274` | u32 | peak-hold VU-meter accumulators (playback/capture): `0x2a4a0` reads+clears `+0x268/+0x26c` under lock, decays these toward the new peak, clamps 0..1000, returns them to the caller | ctor `0x2b726`/`0x2b72c`, `0x2a4a0` |
+| `+0x278` | u32 | previous timer snapshot (`fcn.0002e740()*6/100`) used as the decay time-base for the `+0x270`/`+0x274` meters | ctor `0x2b732`, `0x2a4a0` |
 | `+0x27c`/`+0x280` | u32 | init `0xbb8` (3000); consumed by `0x2aab0` (`(+0x280 + 0x32) / 100 ≠`, then `*3` near `0x2ab2c`) — rate constant or sub-divider | ctor `0x2b738`/`0x2b73e` |
 | `+0x284` | u32 | rate-state field (`0x2a9e0` multiplies by `[+0x44]==0 ? 0x1b9 : 0x1e0` then by `0xcccccccd>>3` = `/25`) | `0x2aa16` |
 | `+0x288` | u32 | rate-state field (same path as +0x284, written to `audio_base+0xc4`) | `0x2aa07` |
 | `+0x28c` | u32 | computed in `0x2aab0` from `+0x280+0x32` then `/100`, stored before writing `audio_base+0x9c` | `0x2aae8` |
+| `+0x290` | u32 | SRC/phase-accumulator modulus = `[+0x280]*6`; used in `0x2b010` as `x - (x/[+0x290])*[+0x290]` (modulo wrap) | write `0x2aab0`, read `0x2b010` |
+| `+0x294` | u32 | second SRC modulus = `[+0x290]/10` (= `[+0x280]*6/10`); also pushed to card `audio_base+0xa0`, second modulo divisor in `0x2b010` | write `0x2aab0`, read `0x2b010` |
 | `+0x298` | embedded | large embedded sub-object (~0x2800 bytes; managed by `0x200b0`/`0x202c0` init and `0x20190`/`0x20280` teardown) | ctor `0x2b751`, init `0x2c164`, dtor `0x2c103` |
+| `+0x2a0` | u32 | clock/calibration value written to card `audio_base+0xf8` during the clock-relock routine `0x2b7f0` (which toggles `+0x8c` and polls `audio_base+0x100`); set elsewhere | `0x2b7f0` |
 | `+0x2a4` | u32 | flag checked early during init (init `0x2c150`: nonzero skips the "no resource" WMI log) | init `0x2c185` |
 
 Off the audio sub-object `A` (`[devext+0x70]`, 0x50 bytes, vtable `0x30ca8`,
@@ -156,9 +163,13 @@ init buffer (`WriteBlock8`-driven 8-dword block) is set up there too.
 stored at `+0x70`), an embedded sub-object at `+0x74` (vtable `0x30ca4`),
 and the ~0x2800-byte sub-object at `+0x298`. The total struct size is >0x2a8
 bytes (last touched offset `+0x2a4` plus the 0x2800-byte tail at `+0x298`
-pushes it well past 0x2a00). A complete layout is still out of reach: the
-purpose of `+0x1d8..+0x1e8`, `+0x25c`, `+0x270..+0x278` remains
-unidentified.
+pushes it well past 0x2a00). The previously-unidentified fields in the
+`+0x1d8..+0x2a0` range (clock-lock debounce counters `+0x1dc..+0x1e8`, the
+`+0x1f4` routing buffer, VU meters `+0x270..+0x278`, SRC moduli
+`+0x290/+0x294`, the `+0x258`/`+0x25c` mode word, calibration `+0x2a0`) were
+recovered via `rz-ghidra` and are now in the table above; what remains
+out of reach is the *internal* layout of the two large sub-objects
+(`+0x74`, `+0x298`), not the top-level devext.
 
 ### Breakout (AudioWire) enumeration — Phase 3.5 (RESOLVED, no card, via rz-ghidra)
 
