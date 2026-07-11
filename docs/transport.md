@@ -43,8 +43,36 @@ referenced at `0x255bb`) reads:
 
 - `len`       = ring size in **dword units**, device-ext `[esi-0xa8]`
 - `readHead`  = last consumed position,      device-ext `[esi-0x94]`
-- `dmaPoint`  = HW play/capture position (function argument)
+- `dmaPoint`  = HW play/capture position (function argument) — **see
+  `dmaPoint` register below for its concrete address**
 - `writeHead` = producer position
+
+### `dmaPoint` register (CONFIRMED — reader `fn 0x2a5c0`)
+
+`dmaPoint` is `READ_REGISTER_ULONG(audio_base + 0x2c)` where `[+0x98]` is the
+audio register block base. The reader (`fn 0x2a5c0`) then subtracts
+`[devext+0x10]` (the playback aperture base card address, cached here during
+init — confirms `[devext+0x10] = [A+0x18]`, the playback aperture base) and
+right-shifts by 2 (byte → dword), returning the **position in dwords** as
+expected by the bounds guard:
+
+```
+u32 fn_2a5c0(devext *this) {
+    u32 raw = READ_REGISTER_ULONG(this->audio_base + 0x2c);   // dmaPoint raw
+    return (raw - this->play_aperture_base) >> 2;              // dword offset
+}
+```
+
+So:
+
+| Card addr | Dir | Method VA | Meaning |
+|---|---|---|---|
+| `audio_base + 0x2c` | R | `0x2a5c3`→`0x2a5e7`/`0x2a600` | **`dmaPoint`**: raw HW position counter (bytes); returned as `(raw - aperture_base) >> 2` (dwords) |
+
+The sibling reader `fn 0x2a610` reads `audio_base + 0x34` (a second position
+or status counter) and is called from `0x266ab` and `0x2b029`; its semantics
+are OPEN but its existence confirms the audio-base register block has a
+small position/counter cluster at `+0x2c` / `+0x34`.
 
 Logic (paraphrased):
 
@@ -98,10 +126,13 @@ WRITE_REGISTER(dispatch(base+edi), 0)`) → `call 0x29500(A+0x10, A+0x14, A+0x18
 
 ## Open
 
-- Concrete card address of the `dmaPoint` register (the ALSA `.pointer` source);
-  `0x29500`'s three args (`A+0x10/0x14/0x18`) are the likely home.
 - Aperture `len` power-of-two assumption vs. the runtime `[A+0x1c]`/`[A+0x2c]`.
 - Endianness / channel packing of the aperture payload.
+- `audio_base + 0x34` (second position/counter reader `0x2a610`): is it the
+  *capture* `dmaPoint` counterpart to `audio_base + 0x2c` (playback)?
+  Apache-shape hypothesis — both are read via the same window dispatch, both
+  run through `>> 2` dword conversion differently — but the second reader
+  at `0x2a610` doesn't do the subtraction, so its semantics stay OPEN.
 - **Full-duplex page aliasing (design risk, code-reviewed, not RE'd further):**
   play and capture apertures are two independent runtime addresses; if they
   land in different 4 MB window-B pages, a single shared page-select register
