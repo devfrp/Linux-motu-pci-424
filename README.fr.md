@@ -213,10 +213,13 @@ Les rédactions détaillées, étiquetées par niveau de preuve, vivent dans `do
 [`cuemix-control-map.md`](docs/cuemix-control-map.md),
 [`vendor-driver-map.md`](docs/vendor-driver-map.md).
 
-Encore ouvert (nécessite la carte, une récupération de types niveau Ghidra, ou une
-RE plus poussée) : le registre/bits de sélection de source d'horloge et l'encodage
-du paramètre `base+0x64`, les valeurs numériques à l'exécution de la base audio /
-adresse d'ack, et le handshake d'upload du FPGA.
+Encore ouvert (nécessite la carte, ou un travail `rz-ghidra` plus poussé sur les
+deux sous-objets embarqués) : le registre/bits de sélection de source d'horloge et
+l'encodage du paramètre `base+0x64`, les valeurs numériques à l'exécution de la
+base audio / adresse d'ack. Le handshake d'upload du FPGA de la carte classique
+est réglé — le verdict de la RE ([`docs/fpga-upload.md`](docs/fpga-upload.md)) est
+qu'elle s'auto-configure depuis la flash embarquée et ne nécessite aucun envoi
+hôte.
 
 La feuille de route complète et par phases, d'ici à un pilote 100 % fonctionnel,
 vit dans [`docs/REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md).
