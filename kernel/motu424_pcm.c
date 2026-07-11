@@ -67,8 +67,18 @@ static int motu424_pcm_open(struct snd_pcm_substream *substream)
 static int motu424_pcm_close(struct snd_pcm_substream *substream)
 {
 	struct motu424 *chip = snd_pcm_substream_chip(substream);
+	struct motu424_stream *s = motu424_substream_stream(chip, substream);
 
-	motu424_substream_stream(chip, substream)->substream = NULL;
+	/*
+	 * Defensive: ALSA normally issues TRIGGER_STOP before close, but an
+	 * aborting client (or an error path in prepare) may close without
+	 * stopping. If `running` were left true, the next stream_start on
+	 * the *other* direction would skip the enable/strobe kick (its `first`
+	 * decision compares `!playback.running && !capture.running`), so the
+	 * card would never be re-armed. Stop also here to be safe.
+	 */
+	motu424_hw_stream_stop(chip, MOTU424_STREAM_IS_PLAYBACK(substream));
+	s->substream = NULL;
 	return 0;
 }
 

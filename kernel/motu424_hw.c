@@ -244,10 +244,16 @@ int motu424_hw_set_rate(struct motu424 *chip, unsigned int rate)
  * advancing the stream's host and ring positions. Called under chip->lock.
  * The ring is a power-of-two number of bytes in window B; bursts may wrap.
  *
+ * The card's HW position counter (MOTU424_AREG_DMAPOINT = audio_base + 0x2c)
+ * was confirmed at fn 0x2a5c0; at present we still drive the ALSA pointer and
+ * the ring head from the per-IRQ software accumulator (period_incr samples/
+ * IRQ), not from a HW read on every .pointer call.
+ *
  * TODO (RT latency): this runs a multi-KB memcpy_toio under chip->lock with
- * IRQs off. On the PREEMPT_RT target that is a latency spike; once the real
+ * IRQs off. On the PREEMPT_RT target that is a latency spike; now that the
  * dmaPoint register is known, move the copy out of the IRQ-off region (e.g.
- * a threaded handler or a bounded per-tick burst).
+ * a threaded handler or a bounded per-tick burst), and optionally read the
+ * HW position directly here for xrun recovery.
  */
 static void motu424_push_period(struct motu424 *chip, struct motu424_stream *s,
 				bool playback)
