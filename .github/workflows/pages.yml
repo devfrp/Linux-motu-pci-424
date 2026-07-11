@@ -1,17 +1,14 @@
-name: Deploy site to GitHub Pages
+name: Deploy GitHub Pages
 
-# Publishes docs/ via the official GitHub Pages Actions (artifact upload +
-# deploy-pages). REQUIRED ONE-TIME REPO SETTING: Settings -> Pages -> Build and
-# deployment -> Source = "GitHub Actions" (not "Deploy from a branch"). No
-# gh-pages branch is used or needed. Permissions are granted per-job below via
-# OIDC (id-token) — the repo's default workflow permissions do not matter here.
+# Same setup as the owner's other working Pages sites (REAPER-OS, sample-vault).
+# ONE-TIME REPO SETTING REQUIRED (per repo, not inherited):
+#   Settings -> Pages -> Build and deployment -> Source = "GitHub Actions".
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
     paths:
       - 'docs/**'
-      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
@@ -19,33 +16,24 @@ permissions:
   pages: write
   id-token: write
 
-# Allow one concurrent deployment; let a running one finish rather than cancel.
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload docs/ as the Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
