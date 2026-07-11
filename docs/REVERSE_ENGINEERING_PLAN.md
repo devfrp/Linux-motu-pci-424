@@ -39,14 +39,17 @@ Everything below turns these shapes into exact, implementable semantics.
 
 ## Phase 0 — Tooling & ground truth (no card)
 
-- [x] **0.1 Better disassembler.** **[DONE, lightweight]** — rather than
-  Ghidra/rizin (not installable here), built `tools/re/xref.py` (capstone-based,
-  runs in a venv). It does a resume-past-data linear sweep of `.text` and answers
-  `callers <va>`, `fn <va>`, `imm <val>`, `mem <disp>`, and `vcalls`. *Exit met:*
-  can list direct callers of any VA and locate virtual-dispatch sites by slot.
-  **Caveat:** it has no type recovery, so C++ object *identity/layout* (which
-  vtable a `this` register holds) still must be inferred by hand and stays
-  error-prone — the reason the fine-grained rate encoding below is still OPEN.
+- [x] **0.1 Better disassembler.** **[DONE]** Started lightweight with
+  `tools/re/xref.py` (capstone-based, runs in a venv): a resume-past-data linear
+  sweep of `.text` answering `callers <va>`, `fn <va>`, `imm <val>`,
+  `mem <disp>`, and `vcalls` — enough to list direct callers of any VA and
+  locate virtual-dispatch sites by slot, but with **no type recovery**, so C++
+  object identity/layout (which vtable a `this` holds) had to be inferred by
+  hand. **Update (2026-07-11): `rz-ghidra` is in fact available** (Arch
+  `extra/rizin` + `extra/rz-ghidra`); its `pdg` decompiler *does* the type
+  recovery `xref.py` lacked and resolved the interface-object dispatch that
+  closed Phase 3.5. Both tools are now in play — `xref.py` for fast callers/xref
+  queries, `rz-ghidra` when a function's C++ object graph must be decompiled.
 - [~] **0.2 Symbol/type recovery.** **[PARTIAL, no card]** MOTUAW.sys is C++
   with RTTI-ish strings and source names (`PCI424Driver.cpp`,
   `PCI424NanoDriver.cpp`, `AW2408.cpp`). Every field offset pinned by a
@@ -159,9 +162,15 @@ The single biggest unknown that gates *any* audio.
   Period-elapsed = per-IRQ accumulator `[+0x264] += [+0x260]` crossing `0x800`,
   then a DPC is queued via `[[devext+0x38]]`. Enable = `WRITE_PORT(+0x0,4)` +
   `WRITE_PORT(+0x4,1)` (method `0x298e0`). See `docs/register-map.md`.
-- [ ] **3.5 Breakout (AudioWire) enumeration.** How the host learns which
-  interface(s) are attached and their channel maps (`AW2408.cpp`). Enough to set
-  channel counts correctly; full per-interface control can be a later milestone.
+- [x] **3.5 Breakout (AudioWire) enumeration.** **[DONE, no card, via
+  rz-ghidra]** The host does *not* read a static channel-count table — it
+  **deserializes a descriptor blob** pulled from the connected interface. The
+  config builder `fn 0x1b900` reads, through a bounded byte-stream cursor
+  (adapter vtable `0x30d60`, reader slot `0x48` = `fn 0x2d870`), a 4-byte
+  **count** (slot `0x6c`, gated `> 2`), then per-channel byte configs into three
+  `0x1200`-byte banks + a 96-dword routing table. So channel counts are runtime
+  interface data, not a static constant — a Linux driver queries them on a card
+  or exposes them as config. Full detail in `docs/vendor-driver-map.md`.
 
 ## Phase 4 — Rearchitect the Linux driver to the real model (needs card to verify)
 
@@ -231,26 +240,28 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
 
 ## Immediate next actions
 
-**Update (2026-07-10): the objdump/xref.py-tractable static work is now
-exhausted.** Phases 0.1/0.3/1.1/1.2/1.3(partial)/2.1/2.3/3.1(partial)/3.3/3.4/
-4/6.4(partial) are done or as-done-as-possible without better tooling; Phase
-0.2 is consolidated into one field-map table (`vendor-driver-map.md`).
-Everything still open genuinely needs one of:
+**Update (2026-07-11): `rz-ghidra` was available after all** (Arch
+`extra/rizin` + `extra/rz-ghidra`; the earlier "not installable" note was
+wrong). Its decompiler (`pdg`) resolved the C++ virtual dispatch that
+`objdump`/`xref.py` could not, closing **Phase 3.5** (breakout channel
+enumeration = descriptor deserialization, not a static table — see above and
+`vendor-driver-map.md`). What remains open needs one of:
 
-- **A real disassembler with type recovery** (Ghidra/rizin, not installable
-  in this environment) — blocks: Phase 2.2 (FPGA handshake bit/byte order),
-  the full device-extension struct layout (0.2), and Phase 3.5 (breakout/
-  AudioWire channel enumeration — `strings` on `AW2408.cpp`/`AW24IO.cpp`/
-  `Awnano.cpp` turned up only the source filenames, no channel-count data;
-  the actual enumeration is behind virtual dispatch on an "interface object"
-  this repo's tooling cannot type-resolve).
+- **Deeper decompiler work** — the full device-extension struct layout (0.2)
+  is now *tractable* with `rz-ghidra` (type recovery over the `devext` object)
+  but not yet done; a follow-up pass could lift it. Phase 2.2 (FPGA handshake
+  bit/byte order) is **moot for the classic card**: the RE verdict is that the
+  classic PCI-324/424 self-configures its Altera FPGA from onboard flash and
+  the driver uploads nothing (`fpga-upload.md`); only the PCIe HD Express takes
+  a host image, and that image is already dissected.
 - **A card** — blocks: Phase 1.3 (bridge chip identity via readback), 3.2
-  (`dmaPoint` concrete address), 3.5 (confirm channel counts empirically
-  instead), and all of Phases 5–6 (kcontrol registration, real playback/
+  (`dmaPoint` concrete address), 3.5 empirical confirmation of the channel
+  counts, and all of Phases 5–6 (kcontrol registration, real playback/
   capture, soak testing). The driver already refuses to stream until the
   card-reported runtime addresses are supplied via module params
   (`audio_base=`/`ack_addr=`/`mix_base=`/`play_aperture=`/`cap_aperture=`),
   obtainable from `tools/motu424-probe` once a card is attached.
 
-There is no more useful static-RE brick to pick up without new tooling or
-hardware; the project's critical path is now **Phase 6.1 empirical bring-up**.
+Remaining static work is a device-extension type-recovery pass with
+`rz-ghidra` (optional, low urgency); the project's critical path is now
+**Phase 6.1 empirical bring-up** on real hardware.
