@@ -64,6 +64,11 @@
   #themetog{background:none;border:1px solid var(--line2);color:var(--dim);border-radius:5px;
     width:30px;height:30px;cursor:pointer;font-size:.9rem}
   #themetog:hover{color:var(--ink);border-color:var(--amber)}
+  .langsel{display:inline-flex;border:1px solid var(--line2);border-radius:5px;overflow:hidden;
+    font-family:var(--mono);font-size:.74rem}
+  .langsel a{padding:5px 9px;color:var(--dim);letter-spacing:.04em}
+  .langsel a:hover{color:var(--ink);text-decoration:none}
+  .langsel a.active{background:var(--amber);color:#0d1013}
   @media(max-width:680px){.bar nav a.opt{display:none}}
 
   /* hero */
@@ -179,6 +184,10 @@
     <a class="opt" href="#modules">Modules</a>
     <a class="opt" href="#re">Reverse&nbsp;eng.</a>
     <a href="#install">Install</a>
+    <span class="langsel" role="group" aria-label="Language">
+      <a href="index.html" class="active" aria-current="page">EN</a>
+      <a href="fr.html">FR</a>
+    </span>
     <a class="gh" href="https://github.com/devfrp/linux-motu-pci-424">GitHub&nbsp;↗</a>
     <button id="themetog" title="Toggle theme" aria-label="Toggle light/dark theme">◐</button>
   </nav>
