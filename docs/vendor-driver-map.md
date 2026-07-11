@@ -122,6 +122,38 @@ field above, so either multiple sub-classes share the vtable shape or the
 `this` identity varies by call site — this needs real type recovery, not
 achievable with `objdump`/`xref.py` alone).
 
+### Breakout (AudioWire) enumeration — Phase 3.5 (RESOLVED, no card, via rz-ghidra)
+
+The vendor learns an attached interface's channel map by **deserializing a
+descriptor blob**, not by reading a static channel-count table — which is why
+`strings`/`objdump` on `AW2408.cpp` only ever yielded filenames. Recovered with
+the `rz-ghidra` decompiler (`pdg`), which resolves the C++ dispatch `objdump`
+could not:
+
+- The config-build routine `fn 0x1b900` (called from `fn 0x1c380`) receives an
+  **adapter object** (vtable `0x30d60`, constructed at `fn 0x2d720`) that wraps
+  a byte buffer: `+0x08` = buffer base, `+0x10` = read cursor, `+0x14` = length.
+- That adapter's vtable slots are typed byte-stream *pulls* over a bounded
+  cursor primitive (slot `0x48` = `fn 0x2d870`: bounds-check
+  `cursor+n <= length`, `memcpy` `n` bytes, advance cursor, else error
+  `fn 0x142b0(0x2f3d0,…)`):
+  - slot `0x64` (`fn 0x2e530`) → pull **1 byte** (per-channel config);
+  - slot `0x68` (`fn 0x2e540`) → pull **2 bytes** (returned `& 0xffff`);
+  - slot `0x6c` (`fn 0x2e560`) → pull **4 bytes** — the **count**, gated
+    `> 2` in `fn 0x1b900` before the per-channel loops run.
+- `fn 0x1b900` then fills, into a target buffer (`in_ECX[5]`), **three
+  `0x1200`-byte banks** of per-channel bytes (slot `0x64`) followed by a
+  **`0x180`-byte / 96-dword** table (`0x3600..0x3780`, slot `0x6c`) — the
+  routing/channel map.
+
+**Conclusion:** channel counts and the routing map are **runtime descriptor
+data streamed from the connected breakout over AudioWire**, deserialized field
+by field; there is no static per-interface channel-count constant to lift into
+the Linux driver. A Linux driver must therefore either query the same
+descriptor on a real card or expose channel counts as configuration — this
+cannot be pinned further statically. (This matches, and now proves with a
+decompiler, the earlier "channel count is interface-supplied" hypothesis.)
+
 ## `MotuBus.sys` — PCI bus/multifunction enumerator (RE'd)
 
 Small (`~25 KB`, 44 NTOSKRNL imports, no other DLLs). Confirmed by its import
