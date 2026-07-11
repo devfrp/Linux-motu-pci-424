@@ -110,6 +110,13 @@
 #define MOTU424_AREG_ENABLE	0x54u	/* W: 1 = stream/DMA enable          */
 #define MOTU424_AREG_INCR	0x60u	/* W: period increment 0x10<<(2*fam) */
 #define MOTU424_AREG_PARAM	0x64u	/* W: rate param (encoding TODO)     */
+#define MOTU424_AREG_DMAPOINT	0x2cu	/* R: HW position counter (raw bytes);
+					 *   fn 0x2a5c0 returns
+					 *   (raw - aperture_base) >> 2 dwords
+					 */
+#define MOTU424_AREG_AUXPOS	0x34u	/* R: 2nd position/counter (semantics
+					 *   OPEN; reader fn 0x2a610)
+					 */
 #define MOTU424_AREG_POS	0x128u	/* R->W0: position counter           */
 #define MOTU424_AREG_NUM	0x12cu	/* R->W0: numerator                  */
 #define MOTU424_AREG_DIV	0x130u	/* R->W0: divisor                    */
@@ -214,7 +221,10 @@ struct motu424 {
 	unsigned int rate;		/* active sample rate (Hz)        */
 	unsigned int family;		/* 0/1/2 = 1x/2x/4x               */
 	unsigned int period_incr;	/* samples per IRQ, 0x10<<(2*fam) */
-	unsigned int channels;		/* active channel count per frame */
+	unsigned int channels;		/* last-prepared channel count;
+					 * informational only — not read by
+					 * motu424_hw.c (runtime->channels
+					 * is used in its place) */
 
 	char model[32];			/* human-readable model string */
 };
