@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-motu424-gui - graphical CueMix-style control panel for the MOTU PCI-324/424.
+motu424-gui - a CueMix FX-style mixing console for the MOTU PCI-324/424.
 
-A thin GTK4 front-end over `motu424-ctl` (the tested CLI is the single source of
-truth for talking to the driver's ALSA kcontrols). It auto-finds the MOTU card,
-lets you pick another card, and renders each control by type: switches for
-booleans, sliders for integers, dropdowns for enumerations - grouped the CueMix
-way (clock/format, inputs, per-bus mix matrix).
+A GTK4 front-end over `motu424-ctl` (the tested CLI is the single source of truth
+for talking to the driver's ALSA kcontrols). It reads `motu424-ctl list`, rebuilds
+the CueMix model from the kcontrol names (see docs/cuemix-control-map.md), and
+renders it like the real console:
 
-The driver's mixer is card-gated (Phase 5); with no MOTU card, or a card that
-only exposes PCM, the window still opens and shows whatever controls exist, so
-you can drive any ALSA card. It lights up fully once the driver registers its
-CueMix kcontrols - no GUI change needed.
+  * one tab per mix bus - a row of vertical channel strips (send fader + meter +
+    pan + mute/solo), plus a MASTER strip for the bus;
+  * an "Inputs" tab - per-input analog conditioning (trim fader, pad, phase,
+    stereo pair, mute);
+  * a "Clock & format" tab - clock source, locked rate, metering.
 
-Run:  motu424-gui        (needs python-gobject + gtk4; deps: ./install.sh --gui)
+The mixer is card-gated (driver Phase 5), so with no MOTU card the kcontrols do
+not exist yet and the console has nothing to populate. Run with `--demo` to see
+the full console against a synthetic 8-input / 3-bus card. On real hardware it
+fills in automatically once the driver registers its CueMix kcontrols.
+
+Run:  motu424-gui            (needs python-gobject + gtk4; deps: ./install.sh --gui)
+      motu424-gui --demo     (synthetic card, to preview the console)
 """
 import os
 import re
@@ -25,7 +31,7 @@ import sys
 try:
     import gi
     gi.require_version("Gtk", "4.0")
-    from gi.repository import Gtk, GLib, Gio
+    from gi.repository import Gtk, Gdk, GLib, Gio
 except Exception as e:  # noqa: BLE001
     sys.stderr.write(
         "motu424-gui needs PyGObject + GTK4.\n"
@@ -36,12 +42,43 @@ except Exception as e:  # noqa: BLE001
     sys.exit(1)
 
 APP_ID = "org.motu.motu424ctl"
+DEMO = "--demo" in sys.argv[1:]
+
+# CueMix-ish dark console theme, scoped to our widgets.
+CSS = b"""
+.console { background:#15181c; }
+.strip { background:#1b1f24; border:1px solid #262c33; border-radius:7px;
+         padding:8px 7px; margin:4px; }
+.strip.master { background:#20262e; border-color:#3a4a3f; }
+.strip .cap { font-family:monospace; font-size:10px; letter-spacing:.06em;
+              color:#8b97a1; }
+.strip.master .cap { color:#79c98a; }
+.strip .db { font-family:monospace; font-size:11px; color:#d7dee4; }
+.strip .sub { font-family:monospace; font-size:9px; color:#6f7b85;
+              letter-spacing:.08em; }
+scale.fader trough { min-width:7px; background:#0d1013; border-radius:4px; }
+scale.fader highlight { background:#3a4653; border-radius:4px; }
+scale.fader slider { min-width:22px; min-height:20px; margin:0; background:#c9d2da;
+                     border:1px solid #7c8791; border-radius:3px; }
+.strip.master scale.fader slider { background:#57c96a; border-color:#3a8f49; }
+scale.pan trough { min-height:5px; background:#0d1013; }
+scale.pan slider { min-width:16px; min-height:16px; margin:0; background:#9aa6b1;
+                   border-radius:50%; }
+levelbar.meter block { min-width:7px; border-radius:1px; }
+levelbar.meter block.filled { background:#57c96a; }
+levelbar.meter block.high   { background:#f0a63a; }
+levelbar.meter block.full   { background:#e5534b; }
+levelbar.meter block.empty  { background:#11151a; }
+.tbtn { font-family:monospace; font-size:10px; padding:2px 0; min-width:22px; }
+.tbtn.m:checked { background:#e5534b; color:#0d1013; }
+.tbtn.s:checked { background:#f0a63a; color:#0d1013; }
+.tbtn.p:checked { background:#5a8bd6; color:#0d1013; }
+"""
 
 
 # --------------------------------------------------------------------- backend
 
 def find_ctl():
-    """Locate the motu424-ctl binary (PATH, or next to this script)."""
     here = os.path.dirname(os.path.abspath(__file__))
     return (shutil.which("motu424-ctl")
             or (os.path.join(here, "motu424-ctl")
@@ -52,38 +89,29 @@ CTL = find_ctl()
 
 
 def run_ctl(args, dev=None):
-    """Run motu424-ctl; return (rc, stdout, stderr)."""
     if not CTL:
         return 127, "", "motu424-ctl not found in PATH"
-    cmd = [CTL]
-    if dev:
-        cmd += ["-D", dev]
-    cmd += args
+    cmd = [CTL] + (["-D", dev] if dev else []) + args
     p = subprocess.run(cmd, capture_output=True, text=True)
     return p.returncode, p.stdout, p.stderr
 
 
 def list_cards():
-    """Return [(dev, label)] from /proc/asound/cards, plus an Auto entry."""
     cards = [(None, "Auto (find MOTU)")]
     try:
         with open("/proc/asound/cards") as f:
             for line in f:
                 m = re.match(r"\s*(\d+)\s+\[.*?\]:\s*(.*)", line)
                 if m:
-                    cards.append((f"hw:{m.group(1)}", f"hw:{m.group(1)}  {m.group(2).strip()}"))
+                    cards.append((f"hw:{m.group(1)}",
+                                  f"hw:{m.group(1)}  {m.group(2).strip()}"))
     except OSError:
         pass
     return cards
 
 
 def parse_list(text):
-    """Parse `motu424-ctl list` into control dicts.
-
-    Line form (from the CLI):  "<name padded 32> <type 6> = <value>[ range]".
-    Names may contain spaces and exceed 32 chars, so split on ' = ' and take the
-    trailing token of the left side as the type.
-    """
+    """Parse `motu424-ctl list` into control dicts (name/type/value/min/max/items)."""
     out = []
     for line in text.splitlines():
         if " = " not in line:
@@ -106,150 +134,425 @@ def parse_list(text):
             ctrl["value"] = val.strip()
             ctrl["items"] = items.rstrip("}").split("|")
         if ctype not in ("int", "enum", "bool"):
-            continue  # only render controls we can drive
+            continue
         out.append(ctrl)
     return out
 
 
-def group_of(name):
-    """CueMix-style section for a control name."""
-    if name.startswith("Clock") or name.startswith("Meters") or name.startswith("Sample"):
-        return "Clock & format"
-    m = re.match(r"Mix (\d+)", name)
-    if m:
-        return f"Mix bus {int(m.group(1))}"
-    if name.startswith("Input "):
-        return "Inputs"
-    return "Other"
+# CueMix kcontrol-name grammar (docs/cuemix-control-map.md)
+_IN = re.compile(r"^Input (\d+) (Trim Volume|Pad Switch|Phase Switch|"
+                 r"Stereo Switch|Mute Switch)$")
+_MAS = re.compile(r"^Mix (\d+) Master Volume$")
+_MMU = re.compile(r"^Mix (\d+) Mute Switch$")
+_SND = re.compile(r"^Mix (\d+) Input (\d+) (Volume|Pan|Mute Switch|Solo Switch)$")
+_INKEY = {"Trim Volume": "trim", "Pad Switch": "pad", "Phase Switch": "phase",
+          "Stereo Switch": "stereo", "Mute Switch": "mute"}
+_SNDKEY = {"Volume": "vol", "Pan": "pan", "Mute Switch": "mute",
+           "Solo Switch": "solo"}
+
+
+def build_model(controls):
+    """Group flat controls into the CueMix matrix model."""
+    inputs, buses, glob, other = {}, {}, [], []
+    for c in controls:
+        n = c["name"]
+        m = _IN.match(n)
+        if m:
+            inputs.setdefault(int(m.group(1)), {})[_INKEY[m.group(2)]] = c
+            continue
+        m = _MAS.match(n)
+        if m:
+            buses.setdefault(int(m.group(1)), {}).setdefault("sends", {})
+            buses[int(m.group(1))]["master"] = c
+            continue
+        m = _MMU.match(n)
+        if m:
+            buses.setdefault(int(m.group(1)), {}).setdefault("sends", {})
+            buses[int(m.group(1))]["mute"] = c
+            continue
+        m = _SND.match(n)
+        if m:
+            k, nn, field = int(m.group(1)), int(m.group(2)), _SNDKEY[m.group(3)]
+            b = buses.setdefault(k, {})
+            b.setdefault("sends", {}).setdefault(nn, {})[field] = c
+            continue
+        if n.startswith(("Clock", "Sample", "Meters")):
+            glob.append(c)
+        else:
+            other.append(c)
+    return {"inputs": inputs, "buses": buses, "globals": glob, "other": other}
+
+
+def demo_controls(n_in=8, n_bus=3):
+    """Synthetic CueMix kcontrol set so the console can be previewed without a card."""
+    import random
+    out = [
+        {"name": "Clock Source", "type": "enum", "value": "Internal",
+         "items": ["Internal", "Word Clock", "ADAT", "SPDIF", "AES/EBU"],
+         "min": None, "max": None},
+        {"name": "Clock Rate", "type": "int", "value": "48000",
+         "min": 44100, "max": 192000},
+        {"name": "Meters", "type": "bool", "value": "on",
+         "min": None, "max": None, "items": None},
+    ]
+    def i(name, v, lo, hi):
+        return {"name": name, "type": "int", "value": str(v),
+                "min": lo, "max": hi, "items": None}
+    def b(name, v):
+        return {"name": name, "type": "bool", "value": v,
+                "min": None, "max": None, "items": None}
+    for nn in range(n_in):
+        p = f"Input {nn:02d} "
+        out += [i(p + "Trim Volume", random.randint(0, 60), 0, 60),
+                b(p + "Pad Switch", "off"), b(p + "Phase Switch", "off"),
+                b(p + "Stereo Switch", "on" if nn % 2 == 0 else "off"),
+                b(p + "Mute Switch", "off")]
+    for kk in range(n_bus):
+        mp = f"Mix {kk:02d} "
+        out += [i(mp + "Master Volume", 100, 0, 127), b(mp + "Mute Switch", "off")]
+        for nn in range(n_in):
+            sp = f"Mix {kk:02d} Input {nn:02d} "
+            out += [i(sp + "Volume", random.randint(40, 110), 0, 127),
+                    i(sp + "Pan", random.randint(-60, 60), -100, 100),
+                    b(sp + "Mute Switch", "off"), b(sp + "Solo Switch", "off")]
+    return out
 
 
 # ------------------------------------------------------------------------- gui
 
+def _install_css():
+    prov = Gtk.CssProvider()
+    prov.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_display(
+        Gdk.Display.get_default(), prov,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+
 class Panel(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="motu424 — CueMix")
-        self.set_default_size(560, 720)
-        self.dev = None
-        self._loading = False
+        self.set_default_size(900, 620)
+        self.meters = []          # (levelbar, phase) for the demo animation
 
         header = Gtk.HeaderBar()
         self.set_titlebar(header)
 
-        cards = list_cards()
-        self.cards = cards
-        self.card_dd = Gtk.DropDown.new_from_strings([c[1] for c in cards])
-        self.card_dd.connect("notify::selected", self.on_card_changed)
+        self.cards = list_cards()
+        self.card_dd = Gtk.DropDown.new_from_strings([c[1] for c in self.cards])
+        self.card_dd.connect("notify::selected", lambda *_: self.reload())
         header.pack_start(self.card_dd)
+        if DEMO:
+            tag = Gtk.Label(label="demo")
+            tag.add_css_class("dim-label")
+            header.pack_start(tag)
 
         refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
         refresh.set_tooltip_text("Reload controls")
         refresh.connect("clicked", lambda *_: self.reload())
         header.pack_end(refresh)
 
-        self.scroller = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
-        self.set_child(self.scroller)
+        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.body.add_css_class("console")
+        self.set_child(self.body)
         self.reload()
+        GLib.timeout_add(80, self._tick_meters)
 
-    # -- data ----------------------------------------------------------------
+    # -- data ---------------------------------------------------------------
     def current_dev(self):
         return self.cards[self.card_dd.get_selected()][0]
 
-    def on_card_changed(self, *_):
-        self.reload()
-
     def reload(self):
-        dev = self.current_dev()
-        rc, out, err = run_ctl(["list"], dev)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
-                      margin_top=12, margin_bottom=12,
-                      margin_start=12, margin_end=12)
-        if rc != 0:
-            box.append(self._notice(err.strip() or "no MOTU card found.",
-                                    "Pick a card above, or load the module."))
-            self.scroller.set_child(box)
-            return
-        controls = parse_list(out)
-        if not controls:
-            box.append(self._notice(
+        self.meters = []
+        child = self.body.get_first_child()
+        while child:
+            self.body.remove(child)
+            child = self.body.get_first_child()
+
+        if DEMO:
+            controls = parse_list_or(demo_controls())
+        else:
+            rc, out, err = run_ctl(["list"], self.current_dev())
+            if rc != 0:
+                self.body.append(self._notice(
+                    err.strip() or "No MOTU card found.",
+                    "Pick a card above, load the module, or run with --demo."))
+                return
+            controls = parse_list(out)
+
+        model = build_model(controls)
+        if not model["buses"] and not model["inputs"] and not model["other"]:
+            self.body.append(self._notice(
                 "This card exposes no adjustable controls yet.",
-                "The CueMix mixer is Phase 5 (needs the driver to register "
-                "kcontrols on real hardware)."))
-            self.scroller.set_child(box)
+                "The CueMix mixer is driver Phase 5 (needs kcontrols on real "
+                "hardware). Try  motu424-gui --demo  to preview the console."))
+            return
+        if not model["buses"] and not model["inputs"]:
+            # generic ALSA card: fall back to a plain control list
+            self.body.append(self._generic(model["other"]))
             return
 
-        groups = {}
-        for c in controls:
-            groups.setdefault(group_of(c["name"]), []).append(c)
-        order = ["Clock & format", "Inputs"] + \
-                sorted(g for g in groups if g.startswith("Mix bus")) + ["Other"]
-        for g in order:
-            if g not in groups:
-                continue
-            box.append(self._section(g))
-            grid = Gtk.Grid(row_spacing=6, column_spacing=12,
-                            margin_start=6, margin_end=6)
-            for row, c in enumerate(groups[g]):
-                lbl = Gtk.Label(label=c["name"], xalign=0, hexpand=True)
-                lbl.add_css_class("dim-label")
-                grid.attach(lbl, 0, row, 1, 1)
-                grid.attach(self._widget(c), 1, row, 1, 1)
-            box.append(grid)
-        self.scroller.set_child(box)
+        nb = Gtk.Notebook(scrollable=True)
+        nb.set_vexpand(True)
+        for kk in sorted(model["buses"]):
+            nb.append_page(self._bus_page(kk, model),
+                           Gtk.Label(label=f"Mix {kk:02d}"))
+        if model["inputs"]:
+            nb.append_page(self._inputs_page(model["inputs"]),
+                           Gtk.Label(label="Inputs"))
+        if model["globals"] or model["other"]:
+            nb.append_page(self._clock_page(model["globals"] + model["other"]),
+                           Gtk.Label(label="Clock & format"))
+        self.body.append(nb)
 
-    # -- widgets -------------------------------------------------------------
-    def _section(self, title):
-        lbl = Gtk.Label(xalign=0, margin_top=10)
-        lbl.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
-        return lbl
+    # -- pages --------------------------------------------------------------
+    def _bus_page(self, kk, model):
+        sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        sc.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
+                      margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
+        sends = model["buses"][kk].get("sends", {})
+        for nn in sorted(sends):
+            row.append(self._send_strip(kk, nn, sends[nn], model["inputs"].get(nn)))
+        row.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        row.append(self._master_strip(kk, model["buses"][kk]))
+        sc.set_child(row)
+        return sc
+
+    def _inputs_page(self, inputs):
+        sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        sc.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
+                      margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
+        for nn in sorted(inputs):
+            row.append(self._input_strip(nn, inputs[nn]))
+        sc.set_child(row)
+        return sc
+
+    def _clock_page(self, ctrls):
+        sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        grid = Gtk.Grid(row_spacing=8, column_spacing=14, margin_top=16,
+                        margin_bottom=16, margin_start=16, margin_end=16)
+        for r, c in enumerate(ctrls):
+            lbl = Gtk.Label(label=c["name"], xalign=0, hexpand=True)
+            lbl.add_css_class("dim-label")
+            grid.attach(lbl, 0, r, 1, 1)
+            grid.attach(self._inline_widget(c), 1, r, 1, 1)
+        sc.set_child(grid)
+        return sc
+
+    # -- strips -------------------------------------------------------------
+    def _send_strip(self, kk, nn, send, inp):
+        box = self._strip_box(f"IN {nn:02d}", master=False)
+        # meter + fader
+        vol = send.get("vol")
+        box.append(self._fader_row(vol))
+        # pan
+        pan = send.get("pan")
+        if pan:
+            box.append(self._pan(pan))
+        # mute / solo
+        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4,
+                       halign=Gtk.Align.CENTER)
+        if send.get("mute"):
+            btns.append(self._toggle(send["mute"], "M", "m"))
+        if send.get("solo"):
+            btns.append(self._toggle(send["solo"], "S", "s"))
+        box.append(btns)
+        return box
+
+    def _master_strip(self, kk, bus):
+        box = self._strip_box(f"MIX {kk:02d}", master=True)
+        box.append(self._fader_row(bus.get("master")))
+        if bus.get("mute"):
+            btn = self._toggle(bus["mute"], "MUTE", "m")
+            btn.set_halign(Gtk.Align.CENTER)
+            box.append(btn)
+        return box
+
+    def _input_strip(self, nn, inp):
+        box = self._strip_box(f"IN {nn:02d}", master=False)
+        box.append(self._fader_row(inp.get("trim"), meter=False))
+        sub = Gtk.Label(label="TRIM", xalign=0.5)
+        sub.add_css_class("sub")
+        box.append(sub)
+        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3,
+                       halign=Gtk.Align.CENTER)
+        for key, cap, cls in (("pad", "PAD", "p"), ("phase", "Ø", "p"),
+                              ("stereo", "ST", "p"), ("mute", "M", "m")):
+            if inp.get(key):
+                btns.append(self._toggle(inp[key], cap, cls))
+        box.append(btns)
+        return box
+
+    def _strip_box(self, caption, master):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                      halign=Gtk.Align.CENTER)
+        box.add_css_class("strip")
+        if master:
+            box.add_css_class("master")
+        cap = Gtk.Label(label=caption)
+        cap.add_css_class("cap")
+        box.append(cap)
+        return box
+
+    def _fader_row(self, c, meter=True):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5,
+                      halign=Gtk.Align.CENTER)
+        if meter:
+            lb = Gtk.LevelBar.new_for_interval(0, 1)
+            lb.set_orientation(Gtk.Orientation.VERTICAL)
+            lb.set_inverted(True)
+            lb.set_mode(Gtk.LevelBarMode.CONTINUOUS)
+            lb.add_css_class("meter")
+            lb.set_size_request(9, 168)
+            lb.set_value(0.0)
+            self.meters.append([lb, len(self.meters) * 0.7])
+            row.append(lb)
+        lo = c["min"] if c and c["min"] is not None else 0
+        hi = c["max"] if c and c["max"] is not None else 127
+        if hi <= lo:
+            hi = lo + 1
+        f = Gtk.Scale.new_with_range(Gtk.Orientation.VERTICAL, lo, hi, 1)
+        f.add_css_class("fader")
+        f.set_inverted(True)
+        f.set_draw_value(False)
+        f.set_size_request(-1, 168)
+        val = Gtk.Label()
+        val.add_css_class("db")
+        try:
+            f.set_value(int(c["value"].split(",")[0]) if c else lo)
+        except (ValueError, AttributeError):
+            f.set_value(lo)
+        val.set_text(str(int(f.get_value())))
+        if c:
+            f.connect("value-changed", self._on_fader, c["name"], val)
+        row_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3,
+                           halign=Gtk.Align.CENTER)
+        row.append(f)
+        row_wrap.append(row)
+        row_wrap.append(val)
+        return row_wrap
+
+    def _pan(self, c):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1,
+                      halign=Gtk.Align.CENTER)
+        lo = c["min"] if c["min"] is not None else -100
+        hi = c["max"] if c["max"] is not None else 100
+        s = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, lo, hi, 1)
+        s.add_css_class("pan")
+        s.set_draw_value(False)
+        s.set_size_request(54, -1)
+        s.add_mark((lo + hi) / 2, Gtk.PositionType.BOTTOM, None)
+        try:
+            s.set_value(int(c["value"].split(",")[0]))
+        except (ValueError, AttributeError):
+            s.set_value((lo + hi) / 2)
+        s.connect("value-changed", self._on_scale, c["name"])
+        cap = Gtk.Label(label="PAN")
+        cap.add_css_class("sub")
+        box.append(s)
+        box.append(cap)
+        return box
+
+    def _toggle(self, c, cap, cls):
+        b = Gtk.ToggleButton(label=cap)
+        b.add_css_class("tbtn")
+        b.add_css_class(cls)
+        b.set_active(c["value"].split(",")[0].strip() == "on")
+        b.connect("toggled", self._on_toggle, c["name"])
+        return b
+
+    def _inline_widget(self, c):
+        if c["type"] == "bool":
+            sw = Gtk.Switch(halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
+            sw.set_active(c["value"].split(",")[0].strip() == "on")
+            sw.connect("state-set", self._on_switch, c["name"])
+            return sw
+        if c["type"] == "enum":
+            items = c["items"] or []
+            dd = Gtk.DropDown.new_from_strings(items)
+            if c["value"].strip() in items:
+                dd.set_selected(items.index(c["value"].strip()))
+            dd.connect("notify::selected", self._on_enum, c["name"], items)
+            return dd
+        lo = c["min"] if c["min"] is not None else 0
+        hi = c["max"] if c["max"] is not None else 100
+        lbl = Gtk.Label(label=c["value"], xalign=0)
+        lbl.add_css_class("db")
+        return lbl  # RO-ish (e.g. Clock Rate); editable ints live in strips
+
+    def _generic(self, ctrls):
+        sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        grid = Gtk.Grid(row_spacing=8, column_spacing=14, margin_top=16,
+                        margin_bottom=16, margin_start=16, margin_end=16)
+        for r, c in enumerate(ctrls):
+            lbl = Gtk.Label(label=c["name"], xalign=0, hexpand=True)
+            lbl.add_css_class("dim-label")
+            grid.attach(lbl, 0, r, 1, 1)
+            if c["type"] == "int":
+                w = Gtk.Scale.new_with_range(
+                    Gtk.Orientation.HORIZONTAL,
+                    c["min"] if c["min"] is not None else 0,
+                    max((c["max"] if c["max"] is not None else 100),
+                        (c["min"] or 0) + 1), 1)
+                w.set_hexpand(True)
+                w.set_size_request(220, -1)
+                w.set_draw_value(True)
+                try:
+                    w.set_value(int(c["value"].split(",")[0]))
+                except ValueError:
+                    pass
+                w.connect("value-changed", self._on_scale, c["name"])
+            else:
+                w = self._inline_widget(c)
+            grid.attach(w, 1, r, 1, 1)
+        sc.set_child(grid)
+        return sc
 
     def _notice(self, title, subtitle):
-        b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+        b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
                     valign=Gtk.Align.CENTER, vexpand=True)
         t = Gtk.Label()
         t.set_markup(f"<big>{GLib.markup_escape_text(title)}</big>")
-        s = Gtk.Label(label=subtitle, wrap=True, justify=Gtk.Justification.CENTER)
+        s = Gtk.Label(label=subtitle, wrap=True,
+                      justify=Gtk.Justification.CENTER)
         s.add_css_class("dim-label")
         b.append(t)
         b.append(s)
         return b
 
-    def _widget(self, c):
-        name, ctype = c["name"], c["type"]
-        if ctype == "bool":
-            sw = Gtk.Switch(halign=Gtk.Align.END, valign=Gtk.Align.CENTER)
-            sw.set_active(c["value"].split(",")[0].strip() == "on")
-            sw.connect("state-set", self._on_switch, name)
-            return sw
-        if ctype == "enum":
-            items = c["items"] or []
-            dd = Gtk.DropDown.new_from_strings(items)
-            cur = c["value"].strip()
-            if cur in items:
-                dd.set_selected(items.index(cur))
-            dd.connect("notify::selected", self._on_enum, name, items)
-            return dd
-        # int
-        lo = c["min"] if c["min"] is not None else 0
-        hi = c["max"] if c["max"] is not None else 100
-        if hi <= lo:
-            hi = lo + 1
-        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, lo, hi, 1)
-        scale.set_hexpand(True)
-        scale.set_size_request(220, -1)
-        scale.set_draw_value(True)
-        scale.set_digits(0)
-        try:
-            scale.set_value(int(c["value"].split(",")[0]))
-        except ValueError:
-            pass
-        scale.connect("value-changed", self._on_scale, name)
-        return scale
+    # -- meter animation (demo only; no per-channel level kcontrol exists) ---
+    def _tick_meters(self):
+        if not DEMO or not self.meters:
+            return True
+        import math
+        import time
+        t = time.monotonic()
+        for m in self.meters:
+            lb, ph = m
+            v = 0.5 + 0.5 * math.sin(t * 3 + ph)
+            v *= 0.35 + 0.6 * (0.5 + 0.5 * math.sin(t * 0.7 + ph * 2))
+            lb.set_value(max(0.0, min(1.0, v)))
+        return True
 
-    # -- handlers (write through motu424-ctl) --------------------------------
+    # -- handlers -----------------------------------------------------------
     def _apply(self, name, value):
-        rc, _out, err = run_ctl(["set", name, value], self.current_dev())
+        if DEMO:
+            return
+        rc, _o, err = run_ctl(["set", name, value], self.current_dev())
         if rc != 0:
-            self._toast(f"set '{name}' failed: {err.strip()}")
+            sys.stderr.write(f"set '{name}' failed: {err.strip()}\n")
+
+    def _on_fader(self, scale, name, val_label):
+        v = int(scale.get_value())
+        val_label.set_text(str(v))
+        self._apply(name, str(v))
+
+    def _on_scale(self, scale, name):
+        self._apply(name, str(int(scale.get_value())))
+
+    def _on_toggle(self, btn, name):
+        self._apply(name, "on" if btn.get_active() else "off")
 
     def _on_switch(self, _sw, state, name):
         self._apply(name, "on" if state else "off")
@@ -260,11 +563,10 @@ class Panel(Gtk.ApplicationWindow):
         if 0 <= i < len(items):
             self._apply(name, items[i])
 
-    def _on_scale(self, scale, name):
-        self._apply(name, str(int(scale.get_value())))
 
-    def _toast(self, msg):
-        sys.stderr.write(msg + "\n")
+def parse_list_or(controls):
+    """Demo path: controls are already dicts; pass through."""
+    return controls
 
 
 class App(Gtk.Application):
@@ -273,17 +575,19 @@ class App(Gtk.Application):
                          flags=Gio.ApplicationFlags.FLAGS_NONE)
 
     def do_activate(self):
+        _install_css()
         win = self.props.active_window or Panel(self)
         win.present()
 
 
 def main():
-    if not CTL:
+    if not CTL and not DEMO:
         sys.stderr.write(
             "motu424-ctl not found. Build/install it first "
-            "(make tools, or ./install.sh).\n")
+            "(make tools, or ./install.sh), or preview with --demo.\n")
         return 1
-    return App().run(sys.argv)
+    # Gtk.Application would choke on --demo; hand it only the program name.
+    return App().run([sys.argv[0]])
 
 
 if __name__ == "__main__":
