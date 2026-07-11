@@ -149,14 +149,22 @@ pinned by at least one concrete access is listed:
 | `+0x2a0` | u32 | clock/calibration value written to card `audio_base+0xf8` during the clock-relock routine `0x2b7f0` (which toggles `+0x8c` and polls `audio_base+0x100`); set elsewhere | `0x2b7f0` |
 | `+0x2a4` | u32 | flag checked early during init (init `0x2c150`: nonzero skips the "no resource" WMI log) | init `0x2c185` |
 
-Off the audio sub-object `A` (`[devext+0x70]`, 0x50 bytes, vtable `0x30ca8`,
-constructed at `0x2b560`): `[A+0x04]` ack, `[A+0x18]`/`[A+0x1c]` playback
+The audio sub-object `A` is actually a **single global/static object at VA
+`0x61f50`** (image base 0x10000), *not* a per-devext allocation: the getter is
+devext-vtable (`0x30cc0`) slot `0x44` = `fn 0x29100`, whose entire body is
+`return 0x61f50`. `devext+0x70` just caches a pointer to this singleton (so the
+driver assumes one card). It is reached only through that virtual getter — it
+has no direct code xrefs — and `0x2b560` is its ctor (`[A+0]` = vtable `0x30ca8`).
+
+Fields off `A` (0x50 bytes): `[A+0x04]` ack, `[A+0x18]`/`[A+0x1c]` playback
 aperture base/len, `[A+0x20]`/`[A+0x24]`/`[A+0x28]`/`[A+0x2c]` capture
 aperture base/flag/len (gated by `[A+0x24]!=0`), `[A+0x30]` audio_base card
 address, `[A+0x34]` initial register value backing `audio_base+0x8` write
 (see `transport.md`). Defaults set by the ctor: `[A+0x14]=0x20000001`,
-`[A+0x24]=0x3800`, `[A+0x34]=0x20000001`, `[A+0x44]=0x3100`; the per-bank
-init buffer (`WriteBlock8`-driven 8-dword block) is set up there too.
+`[A+0x24]=0x3800`, `[A+0x34]=0x20000001`, `[A+0x44]=0x3100`; **the ctor zeroes
+`[A+0x30]`**, so the audio_base card address is written later at runtime (via
+the virtual-dispatch path, not a static constant — see the bring-up note below);
+the per-bank init buffer (`WriteBlock8`-driven 8-dword block) is set up here too.
 
 **Sub-objects (all three now identified, plan 0.2 fully closed):** the devext
 owns (1) the 0x50-byte audio sub-object `A` (vtable `0x30ca8`, stored at `+0x70`,
@@ -191,13 +199,17 @@ access:
 4. Then, from `audio_base`: `READ_REGISTER(audio_base+0)` → `+0x9c` (mix_base),
    `+4`→`+0xa0`, `+8`→`+0xa4`, `+0x14`→`+0xa8`, `+0x18`→`+0xac` (the mirrors).
 
-**Driver implication (card-gated to confirm):** the runtime addresses the Linux
-driver refuses to stream without (`audio_base`/`ack_addr`/`mix_base`) are *not*
-fundamentally unknowable — they are published by the card after this
-strobe-and-poll on `[A+0x30]`. If `[A+0x30]`'s value (a card address, set from
-the resource/config data at init) can be recovered on real hardware, the driver
-could **auto-discover** these instead of requiring module params. Still needs a
-card to exercise; documented here as the concrete bring-up path for Phase 6.1.
+**Driver implication (still card-gated — tempered):** the runtime addresses the
+Linux driver refuses to stream without (`audio_base`/`ack_addr`/`mix_base`) are
+*published by the card* after this strobe-and-poll, so the *mechanism* is known
+and reproducible. **But the missing input `[A+0x30]` is not a static constant:**
+`A`'s ctor zeroes it and it is written later through the virtual-dispatch path
+(the object is only reached via the slot-`0x44` getter, so the write site has no
+static xref and was not cheaply traceable here). So auto-discovery is not free
+statically — on real hardware, either dump `[A+0x30]` from the running vendor
+driver, or trace its writer with deeper `rz-ghidra` type recovery over the
+slot-`0x44` call sites. Recorded as the concrete bring-up path for Phase 6.1; the
+one value still needed is `[A+0x30]`.
 
 ### Breakout (AudioWire) enumeration — Phase 3.5 (RESOLVED, no card, via rz-ghidra)
 
