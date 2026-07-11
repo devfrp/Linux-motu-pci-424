@@ -224,7 +224,8 @@ struct motu424 {
 	unsigned int channels;		/* last-prepared channel count;
 					 * informational only — not read by
 					 * motu424_hw.c (runtime->channels
-					 * is used in its place) */
+					 * is used in its place)
+					 */
 
 	char model[32];			/* human-readable model string */
 };
