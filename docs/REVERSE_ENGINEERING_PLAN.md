@@ -240,9 +240,12 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
   handshake"):* the vendor obtains `audio_base`/`mix_base` at init by writing the
   port strobe `port+4 ← 2` and polling `READ_REGISTER(decode([A+0x30]))` until
   non-zero. On hardware, try replicating this to **auto-discover** the runtime
-  addresses instead of requiring the `audio_base=`/`mix_base=` module params —
-  the missing input is `[A+0x30]`'s value (a card address from the resource/
-  config data), observable once a card is present.
+  addresses instead of requiring the `audio_base=`/`mix_base=` module params.
+  Caveat (this session): `A` is the global singleton at `0x61f50` (getter
+  `fn 0x29100`) and its ctor zeroes `[A+0x30]`, so that card address is written
+  at runtime via virtual dispatch — the one value still missing. Get it either by
+  dumping `[A+0x30]` from the live vendor driver on a card, or by tracing its
+  writer with deeper `rz-ghidra` type recovery over the slot-`0x44` call sites.
 - [ ] **6.2 Register diffing** with `tools/motu424-probe` (driver unbound): dump
   idle vs. streaming to confirm the `dmaPoint`/status offsets from phase 3.
 - [ ] **6.3 Soak & edge cases**: all rates, both directions simultaneously,
