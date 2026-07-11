@@ -106,7 +106,7 @@ pinned by at least one concrete access is listed:
 | `+0x50` | u32 | pending-error/status, gates `MmMapIoSpace`+WMI-log | StartDevice trace (`fn 0x28e60`) |
 | `+0x6c` | ptr | interrupt object (`IoConnectInterrupt` result) | ISR shim guard (`0x201f0`), teardown `0x201d0` |
 | `+0x70` | ptr | audio sub-object `A` (allocated 0x50 bytes via `0x2b610`); obtained in init via vtable slot `0x44` of `this` | init `0x2c15c`, sub-ctor `0x2b560` |
-| `+0x74` | vtable ptr | embedded sub-object vtable `0x30ca4`; freed by `0x2b4f0` | ctor `0x2b67c`, dtor `0x2b7d6` |
+| `+0x74` | embedded | **windowed-MMIO aperture manager** (vtable `0x30ca4`): `+0x04`→window-0 descriptor (4 MB, mask `0x3fffff`), `+0x08`→window-1 (8 MB, mask `0x7fffff`), each a `'MOTU'`-tagged pool block; owns the two `MmMapIoSpace` mappings and the address-decode rule. Freed by `0x2b4f0` | ctor `0x2b67c`, dtor `0x2b7d6` |
 | `+0x78` | ptr | window-B MMIO base (mapped VA, 4 MiB) | `motu424_addr()` dispatch everywhere |
 | `+0x7c` | ptr | window-A MMIO base (mapped VA, 8 MiB) | `motu424_addr()` dispatch everywhere |
 | `+0x80` | ptr | I/O-port BAR base (mapped VA) | ISR `0x2baf0`, enable `0x298f3` |
@@ -145,7 +145,7 @@ pinned by at least one concrete access is listed:
 | `+0x28c` | u32 | computed in `0x2aab0` from `+0x280+0x32` then `/100`, stored before writing `audio_base+0x9c` | `0x2aae8` |
 | `+0x290` | u32 | SRC/phase-accumulator modulus = `[+0x280]*6`; used in `0x2b010` as `x - (x/[+0x290])*[+0x290]` (modulo wrap) | write `0x2aab0`, read `0x2b010` |
 | `+0x294` | u32 | second SRC modulus = `[+0x290]/10` (= `[+0x280]*6/10`); also pushed to card `audio_base+0xa0`, second modulo divisor in `0x2b010` | write `0x2aab0`, read `0x2b010` |
-| `+0x298` | embedded | large embedded sub-object (~0x2800 bytes; managed by `0x200b0`/`0x202c0` init and `0x20190`/`0x20280` teardown) | ctor `0x2b751`, init `0x2c164`, dtor `0x2c103` |
+| `+0x298` | embedded | **DMA common-buffer wrapper** (vtable `0x30720`, ~0x30 bytes; the `0x2800` is the *buffer size*, not the object size). `0x200b0` builds a `DEVICE_DESCRIPTION` + `IoGetDmaAdapter`; `0x202c0` calls `DMA_OPS->AllocateCommonBuffer` for a 0x2800-byte coherent buffer. Fields: `+0x08` bus/logical addr, `+0x0c` CPU virtual addr, `+0x10` len `0x2800`, `+0x28` `DMA_ADAPTER*`. **Not in the audio path** — the audio bring-up (`0x2c150`) never touches it; likely control/descriptor/scratch. Does NOT overturn the PIO transport model. | ctor `0x2b751`, init `0x2c164`, dtor `0x2c103` |
 | `+0x2a0` | u32 | clock/calibration value written to card `audio_base+0xf8` during the clock-relock routine `0x2b7f0` (which toggles `+0x8c` and polls `audio_base+0x100`); set elsewhere | `0x2b7f0` |
 | `+0x2a4` | u32 | flag checked early during init (init `0x2c150`: nonzero skips the "no resource" WMI log) | init `0x2c185` |
 
@@ -158,18 +158,46 @@ address, `[A+0x34]` initial register value backing `audio_base+0x8` write
 `[A+0x24]=0x3800`, `[A+0x34]=0x20000001`, `[A+0x44]=0x3100`; the per-bank
 init buffer (`WriteBlock8`-driven 8-dword block) is set up there too.
 
-**Outstanding layout question:** the devext contains three sub-objects — the
-0x50-byte audio sub-object `A` (vtable `0x30ca8`, allocated via `0x2b610`,
-stored at `+0x70`), an embedded sub-object at `+0x74` (vtable `0x30ca4`),
-and the ~0x2800-byte sub-object at `+0x298`. The total struct size is >0x2a8
-bytes (last touched offset `+0x2a4` plus the 0x2800-byte tail at `+0x298`
-pushes it well past 0x2a00). The previously-unidentified fields in the
-`+0x1d8..+0x2a0` range (clock-lock debounce counters `+0x1dc..+0x1e8`, the
-`+0x1f4` routing buffer, VU meters `+0x270..+0x278`, SRC moduli
-`+0x290/+0x294`, the `+0x258`/`+0x25c` mode word, calibration `+0x2a0`) were
-recovered via `rz-ghidra` and are now in the table above; what remains
-out of reach is the *internal* layout of the two large sub-objects
-(`+0x74`, `+0x298`), not the top-level devext.
+**Sub-objects (all three now identified, plan 0.2 fully closed):** the devext
+owns (1) the 0x50-byte audio sub-object `A` (vtable `0x30ca8`, stored at `+0x70`,
+holds the ack/aperture/audio-base card addresses); (2) an embedded
+**windowed-MMIO aperture manager** at `+0x74` (vtable `0x30ca4`) — it owns the
+two `MmMapIoSpace`'d windows as `'MOTU'`-tagged descriptors: `+0x04`→window-0
+(4 MB, mask `0x3fffff`), `+0x08`→window-1 (8 MB, mask `0x7fffff`), and is the
+concrete backing of the `(addr & 0xff800000)==0x1800000 ? win1 : win0` decode
+used everywhere; and (3) the DMA common-buffer wrapper at `+0x298` (see the
+table row — a coherent buffer *not* on the audio path). The `+0x1d8..+0x2a0`
+fields were recovered earlier via `rz-ghidra` and are in the table above.
+Nothing in the top-level devext layout remains open; the only unmapped detail
+is the internal field layout of the small `A`/`+0x74`/`+0x298` sub-objects
+beyond the fields listed, which has no driver value.
+
+### Audio bring-up handshake — how `audio_base`/`mix_base` are discovered (CONFIRMED, `fn 0x2c150`, rz-ghidra)
+
+This is the sequence the vendor uses to obtain the *runtime card-reported
+addresses* our Linux driver currently takes as module params. Verified against
+the decompiler (thunks: `READ_REGISTER_ULONG` `ds:0x300f8`, `WRITE_REGISTER_ULONG`
+`ds:0x300fc`, `WRITE_PORT_ULONG` `ds:0x30004`, `KeStallExecutionProcessor`
+`ds:0x30008`). `A = [devext+0x70]`, window bases at `devext+0x78/+0x7c`, port
+base at `devext+0x80`. All card addresses are decoded through the windows before
+access:
+
+1. `WRITE_PORT(port+0, 0)`; then `WRITE_REGISTER(decode([A+0x30]), 0)` — clear the
+   card cell at the card address held in `[A+0x30]`.
+2. `WRITE_PORT(port+4, 2)` — the kick/strobe that tells the card to publish.
+3. **Poll loop:** `audio_base = READ_REGISTER(decode([A+0x30]))` until non-zero,
+   `KeStallExecutionProcessor(5)` between reads, time-bounded (~15 units via
+   `fcn 0x2e740`). The non-zero value is stored at **`devext+0x98` = audio_base**.
+4. Then, from `audio_base`: `READ_REGISTER(audio_base+0)` → `+0x9c` (mix_base),
+   `+4`→`+0xa0`, `+8`→`+0xa4`, `+0x14`→`+0xa8`, `+0x18`→`+0xac` (the mirrors).
+
+**Driver implication (card-gated to confirm):** the runtime addresses the Linux
+driver refuses to stream without (`audio_base`/`ack_addr`/`mix_base`) are *not*
+fundamentally unknowable — they are published by the card after this
+strobe-and-poll on `[A+0x30]`. If `[A+0x30]`'s value (a card address, set from
+the resource/config data at init) can be recovered on real hardware, the driver
+could **auto-discover** these instead of requiring module params. Still needs a
+card to exercise; documented here as the concrete bring-up path for Phase 6.1.
 
 ### Breakout (AudioWire) enumeration — Phase 3.5 (RESOLVED, no card, via rz-ghidra)
 

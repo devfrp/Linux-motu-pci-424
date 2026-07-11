@@ -50,8 +50,8 @@ Everything below turns these shapes into exact, implementable semantics.
   recovery `xref.py` lacked and resolved the interface-object dispatch that
   closed Phase 3.5. Both tools are now in play — `xref.py` for fast callers/xref
   queries, `rz-ghidra` when a function's C++ object graph must be decompiled.
-- [~] **0.2 Symbol/type recovery.** **[CLOSED for the top-level struct, no
-  card — commit `2bba5b4`]** MOTUAW.sys is C++ with RTTI-ish strings and source
+- [x] **0.2 Symbol/type recovery.** **[CLOSED — top-level struct + all three
+  sub-objects identified]** MOTUAW.sys is C++ with RTTI-ish strings and source
   names (`PCI424Driver.cpp`, `PCI424NanoDriver.cpp`, `AW2408.cpp`). Every field
   offset pinned by a concrete access site (across all RE sessions, including the
   `rz-ghidra` type-recovery pass) is now consolidated into one table in
@@ -63,9 +63,12 @@ Everything below turns these shapes into exact, implementable semantics.
   additionally identified `+0x1dc..+0x1e8` lock-debounce counters, `+0x1f4`
   routing staging buffer, `+0x258/+0x25c` mode-select word, `+0x270..+0x278`
   VU peak-hold meters, `+0x290/+0x294` SRC moduli, `+0x2a0` calibration.
-  *Still open (low value, rz-ghidra-only):* the **internal** layout of the two
-  embedded sub-objects (`+0x74` vtable `0x30ca4`; `+0x298` ~0x2800 bytes) —
-  needs the Ghidra decompiler's type recovery over the sub-object vtables.
+  The two remaining sub-objects are now identified too (`rz-ghidra`): `+0x74`
+  (vtable `0x30ca4`) is the **windowed-MMIO aperture manager** (owns the two
+  `'MOTU'`-tagged `MmMapIoSpace` windows, 4 MB/8 MB, and the address decode);
+  `+0x298` (vtable `0x30720`) is a **DMA common-buffer wrapper** (`IoGetDmaAdapter`
+  + `AllocateCommonBuffer`, 0x2800-byte coherent buffer) that is *not* on the
+  audio path and does not overturn the PIO model. See `docs/vendor-driver-map.md`.
 - [x] **0.3 Role of each binary.**
   - `MotuBus.sys` — PCI bus/function enumeration & child device creation.
   - `MOTUAW.sys` — the audio function driver (register + DMA + FPGA logic).
@@ -233,6 +236,13 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
 - [ ] **6.1 Empirical bring-up** on a real card: `make load`, `dmesg`,
   `aplay -l`/`arecord -l`, then a real playback/capture loopback with a known
   signal; verify no `XRUN` storms and correct pitch (rate correctness).
+  *Lead recovered (`fn 0x2c150`, see `vendor-driver-map.md` "Audio bring-up
+  handshake"):* the vendor obtains `audio_base`/`mix_base` at init by writing the
+  port strobe `port+4 ← 2` and polling `READ_REGISTER(decode([A+0x30]))` until
+  non-zero. On hardware, try replicating this to **auto-discover** the runtime
+  addresses instead of requiring the `audio_base=`/`mix_base=` module params —
+  the missing input is `[A+0x30]`'s value (a card address from the resource/
+  config data), observable once a card is present.
 - [ ] **6.2 Register diffing** with `tools/motu424-probe` (driver unbound): dump
   idle vs. streaming to confirm the `dmaPoint`/status offsets from phase 3.
 - [ ] **6.3 Soak & edge cases**: all rates, both directions simultaneously,
@@ -255,10 +265,13 @@ wrong). Its decompiler (`pdg`) resolved the C++ virtual dispatch that
 enumeration = descriptor deserialization, not a static table — see above and
 `vendor-driver-map.md`). What remains open needs one of:
 
-- **Deeper decompiler work** — the **top-level** device-extension struct
-  layout (0.2) is now **DONE** (commit `2bba5b4`, `rz-ghidra` type recovery);
-  only the *internal* layout of the two embedded sub-objects (`+0x74`,
-  `+0x298`) remains — low value, `rz-ghidra`-only. Phase 2.2 (FPGA handshake
+- **Deeper decompiler work** — **exhausted.** Device-extension type recovery
+  (0.2) is fully **DONE**: the top-level struct (commit `2bba5b4`) *and* all
+  three sub-objects — `+0x70` audio object, `+0x74` windowed-MMIO aperture
+  manager, `+0x298` DMA common-buffer wrapper — are identified (`rz-ghidra`).
+  The audio bring-up handshake that discovers `audio_base`/`mix_base` is also
+  recovered (`fn 0x2c150`, see 6.1). Nothing statically tractable remains.
+  Phase 2.2 (FPGA handshake
   bit/byte order) is **moot for the classic card**: the RE verdict is that the
   classic PCI-324/424 self-configures its Altera FPGA from onboard flash and
   the driver uploads nothing (`fpga-upload.md`); only the PCIe HD Express takes
