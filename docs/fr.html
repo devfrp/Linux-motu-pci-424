@@ -198,7 +198,7 @@
   <div class="wrap">
     <span class="tag"><span class="led"></span><span class="lab">Carte hôte AudioWire · pilote Linux hors-arbre</span></span>
     <h1>MOTU <span class="u">PCI-324 / PCI-424</span>,<br>réinventée pour Linux.</h1>
-    <p class="sub">Un pilote noyau ALSA écrit de zéro, une application de contrôle façon CueMix (CLI&nbsp;+&nbsp;GTK) et une
+    <p class="sub">Un pilote noyau ALSA écrit de A à Z, une application de contrôle façon CueMix (CLI&nbsp;+&nbsp;GTK) et une
     rétro-ingénierie clean-room d'une carte son que le constructeur n'a jamais documentée.</p>
     <div class="cta">
       <a class="btn p" href="#install">Installer en une ligne</a>
@@ -218,13 +218,13 @@
 </section>
 
 <section class="sec" id="about"><div class="wrap">
-  <div class="head"><span class="idx">00</span><h2>Une carte non documentée, mise en route au grand jour</h2></div>
+  <div class="head"><span class="idx">00</span><h2>Une carte non documentée, portée sur Linux au grand jour</h2></div>
   <p class="lede">La PCI-324/424 est une carte hôte pour les interfaces MOTU AudioWire — les 2408, 24I/O,
-  828, HD192, 896HD et consorts. Il n'existe aucune documentation constructeur : la table des registres et
-  le transport sont donc reconstruits à partir du pilote Windows — la rétro-ingénierie statique est terminée,
-  et la validation empirique sur une vraie carte est l'étape restante. Le câblage PCI, DMA, IRQ et ALSA est
-  déjà en place ; tout ce qui reste incertain est confiné à deux fichiers, si bien que les faits confirmés
-  atterrissent à un seul endroit.</p>
+  828, HD192, 896HD et consorts. Faute de documentation du constructeur, la table des registres et le
+  protocole de transport ont été reconstitués à partir du pilote Windows : la rétro-ingénierie statique est
+  terminée, seule la validation sur une vraie carte reste à faire. Toute l'infrastructure PCI, DMA, IRQ et
+  ALSA est déjà en place ; tout ce qui demeure incertain est confiné à deux fichiers, de sorte que les faits
+  confirmés se concentrent en un seul endroit.</p>
 </div></section>
 
 <section class="sec" id="modules"><div class="wrap">
@@ -232,51 +232,51 @@
   <p class="lede">Un pilote, deux applications de contrôle et un installeur qui fonctionne sur n'importe quelle distribution.</p>
   <div class="mods">
     <div class="mod"><div class="lab">Noyau</div><h3>Module ALSA</h3>
-      <p>Découpage propre en trois couches, entièrement géré par devm/pcim, packagé en DKMS pour se recompiler à chaque mise à jour du noyau.</p></div>
+      <p>Découpage net en trois couches, entièrement géré par devm/pcim, empaqueté en DKMS pour se recompiler à chaque mise à jour du noyau.</p></div>
     <div class="mod"><div class="lab">Contrôle · CLI</div><h3><code>motu424-ctl</code></h3>
-      <p>Le CueMix FX version Linux sur alsa-lib : source d'horloge, fréquence d'échantillonnage, trim/pad/phase par entrée et la matrice de monitoring entrées×bus.</p></div>
+      <p>Le CueMix FX version Linux, sur alsa-lib : source d'horloge, fréquence d'échantillonnage, gain/atténuation/phase par entrée et la matrice d'écoute entrées×bus.</p></div>
     <div class="mod"><div class="lab">Contrôle · GUI</div><h3><code>motu424-gui</code></h3>
-      <p>Un panneau GTK4 qui rend chaque contrôle en interrupteur, curseur ou liste déroulante — regroupés comme CueMix les présente.</p></div>
-    <div class="mod"><div class="lab">Installation</div><h3>Toute distro</h3>
-      <p>Détecte pacman/apt/dnf/zypper/apk/xbps, installe les dépendances puis le module via DKMS. Non-interactif sous <code>curl | sh</code>.</p></div>
+      <p>Un panneau GTK4 qui affiche chaque réglage en interrupteur, curseur ou liste déroulante — regroupés comme dans CueMix.</p></div>
+    <div class="mod"><div class="lab">Installation</div><h3>Toute distribution</h3>
+      <p>Détecte pacman/apt/dnf/zypper/apk/xbps, installe les dépendances puis le module via DKMS. Non interactif sous <code>curl | sh</code>.</p></div>
     <div class="mod"><div class="lab">Outillage</div><h3>RE clean-room</h3>
-      <p>Un référenceur croisé capstone et un résolveur de vtables C++ ; chaque fait recouvré est consigné avec sa preuve.</p></div>
+      <p>Un analyseur de références croisées capstone et un résolveur de vtables C++ ; chaque fait reconstitué est consigné avec sa preuve.</p></div>
     <div class="mod"><div class="lab">Licence</div><h3>Faits seuls, GPL</h3>
-      <p>Seuls les offsets, formats et séquences entrent dans les sources GPL-2.0. Les binaires du constructeur ne sont jamais redistribués.</p></div>
+      <p>Seuls les décalages, formats et séquences entrent dans les sources GPL-2.0. Les binaires du constructeur ne sont jamais redistribués.</p></div>
   </div>
 </div></section>
 
 <section class="sec" id="re"><div class="wrap">
   <div class="head"><span class="idx">02</span><h2>Ce que la rétro-ingénierie a établi</h2></div>
-  <p class="lede">Recouvré statiquement depuis le pilote Windows du constructeur — sans carte — avec
-  <code class="mono">objdump</code>, un référenceur croisé capstone et le décompileur <code class="mono">rz-ghidra</code>
-  pour le graphe d'objets C++. La RE statique est désormais terminée.</p>
+  <p class="lede">Reconstitué statiquement à partir du pilote Windows du constructeur — sans carte — avec
+  <code class="mono">objdump</code>, un analyseur de références croisées capstone et le décompileur
+  <code class="mono">rz-ghidra</code> pour le graphe d'objets C++. La RE statique est désormais terminée.</p>
   <div class="rdout"><table>
     <thead><tr><th>Découverte</th><th>Valeur</th><th>État</th></tr></thead>
     <tbody>
-      <tr><td><b>Espace d'adressage MMIO fenêtré</b><br><span>routé par le bit-tag 0x01800000 — fenêtre A de 8&nbsp;Mo / fenêtre B de 4&nbsp;Mo</span></td><td class="v">& 0xff800000</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Chemin d'interruption</b><br><span>l'ISR est une méthode virtuelle C++ ; en attente = bit 1 du port</span></td><td class="v">ack ← 0x10 @ +0x88</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Transport</b><br><span>PIO dans une ouverture de la carte, dmaPoint matériel + anneau logiciel — pas de DMA bus-master hôte</span></td><td class="v">WRITE_REGISTER_BUFFER</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Handshake de mise en route audio</b><br><span>la carte <em>publie</em> sa base audio d'exécution après un strobe port, relue par scrutation</span></td><td class="v">strobe port+4 ← 2</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Carte des canaux du boîtier</b><br><span>les comptes sont un descripteur d'exécution issu de l'interface connectée — pas une table statique</span></td><td class="v">descripteur runtime</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Modèle d'objets du périphérique</b><br><span>l'objet audio est un singleton global ; sous-objets gestionnaire MMIO fenêtré + tampon DMA commun</span></td><td class="v">A @ 0x61f50</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Firmware FPGA</b><br><span>la carte classique se configure depuis sa flash embarquée — aucun envoi hôte</span></td><td class="v">pas de request_firmware</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Puits du mixeur CueMix</b><br><span>coefficients écrits par plage modifiée vers une base rapportée par la carte</span></td><td class="v">[dev + 0x9c]</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Paramètre de débit &amp; sélection d'horloge</b><br><span>liés à l'interface/la carte — les dernières valeurs demandent une carte pour être observées</span></td><td class="v">base + 0x64</td><td class="s open">CARTE</td></tr>
+      <tr><td><b>Espace d'adressage MMIO fenêtré</b><br><span>aiguillé par le bit-repère 0x01800000 — fenêtre A de 8&nbsp;Mo / fenêtre B de 4&nbsp;Mo</span></td><td class="v">& 0xff800000</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Chemin d'interruption</b><br><span>l'ISR est une méthode virtuelle C++ ; interruption en attente = bit 1 du port</span></td><td class="v">ack ← 0x10 @ +0x88</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Transport</b><br><span>PIO vers une fenêtre de la carte, dmaPoint matériel + anneau logiciel — pas de DMA bus-master côté hôte</span></td><td class="v">WRITE_REGISTER_BUFFER</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Séquence d'initialisation audio</b><br><span>la carte <em>publie</em> son adresse de base audio après une impulsion sur le port, relue par scrutation</span></td><td class="v">impulsion port+4 ← 2</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Cartographie des canaux du boîtier</b><br><span>le nombre de canaux est lu dans un descripteur fourni par l'interface connectée — pas dans une table statique</span></td><td class="v">descripteur à l'exécution</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Modèle d'objets du périphérique</b><br><span>l'objet audio est un singleton global ; sous-objets : gestionnaire de fenêtres MMIO + tampon DMA partagé</span></td><td class="v">A @ 0x61f50</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Firmware FPGA</b><br><span>la carte classique se configure depuis sa flash embarquée — aucun envoi depuis l'hôte</span></td><td class="v">pas de request_firmware</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Destination du mixeur CueMix</b><br><span>coefficients transférés par plage modifiée vers une base indiquée par la carte</span></td><td class="v">[dev + 0x9c]</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Paramètre de fréquence &amp; sélection d'horloge</b><br><span>liés à l'interface et à la carte — ces dernières valeurs ne s'observent que sur du matériel</span></td><td class="v">base + 0x64</td><td class="s open">SUR CARTE</td></tr>
     </tbody>
   </table></div>
 </div></section>
 
 <section class="sec" id="arch"><div class="wrap">
   <div class="head"><span class="idx">03</span><h2>Chemin du signal</h2></div>
-  <p class="lede">Les couches PCI et PCM restent agnostiques au matériel ; chaque offset de registre et chaque
-  encodage vivent uniquement dans le nœud du bas.</p>
+  <p class="lede">Les couches PCI et PCM restent indépendantes du matériel ; chaque décalage de registre et chaque
+  encodage résident uniquement dans le nœud du bas.</p>
   <div class="flow">
     <div class="node"><span class="n">motu424_main.c</span><span class="d">attache PCI · mappe les BAR · vecteur IRQ · création de la carte ALSA — l'interruption appelle <code class="mono">motu424_hw_irq_ack()</code></span></div>
     <div class="arrow">↓</div>
     <div class="node"><span class="n">motu424_pcm.c</span><span class="d">opérations PCM d'ALSA — traduit open/prepare/trigger/pointer en appels <code class="mono">motu424_hw_*</code></span></div>
     <div class="arrow">↓</div>
-    <div class="node hw"><span class="n">motu424_hw.c</span><span class="d">registres · horloge/débit · anneau DMA · ack IRQ — <b>la vérité matérielle vit ici</b></span></div>
+    <div class="node hw"><span class="n">motu424_hw.c</span><span class="d">registres · horloge/fréquence · anneau DMA · ack IRQ — <b>la vérité matérielle réside ici</b></span></div>
   </div>
 </div></section>
 
@@ -307,22 +307,22 @@ motu424-gui             <span class="c"># panneau graphique</span></pre>
 
 <section class="sec" id="roadmap"><div class="wrap">
   <div class="head"><span class="idx">05</span><h2>Où en est le projet</h2></div>
-  <p class="lede">La rétro-ingénierie statique est terminée — chaque découverte accessible sans matériel est recouvrée.
-  Le reste est empirique et demande une vraie carte sur l'établi.</p>
+  <p class="lede">La rétro-ingénierie statique est terminée — tout ce qui est accessible sans matériel est acquis.
+  Le reste est empirique et demande une vraie carte sur le banc.</p>
   <ul class="steps">
-    <li><span class="chip c-done">FAIT</span><div><b>Cadre &amp; outillage</b> · <span class="d">échafaudage PCI/DMA/IRQ/ALSA, installeur multi-distro, CLI + GUI, chaîne d'outils RE.</span></div></li>
-    <li><span class="chip c-done">FAIT</span><div><b>Modèle registres, IRQ &amp; transport</b> · <span class="d">MMIO fenêtré, ack IRQ, anneau PIO, l'interface IOCTL complète, le verdict firmware.</span></div></li>
-    <li><span class="chip c-done">FAIT</span><div><b>Modèle d'objets &amp; mise en route</b> · <span class="d">toute la structure d'extension du périphérique, l'objet audio &amp; ses sous-objets, et le handshake qui publie la base audio d'exécution.</span></div></li>
-    <li><span class="chip c-part">PARTIEL</span><div><b>Encodage horloge &amp; débit</b> · <span class="d">familles de débit, activation et incrément recouvrés ; la sélection d'horloge et le paramètre de débit sont liés à l'interface — leurs valeurs demandent une carte.</span></div></li>
-    <li><span class="chip c-card">CARTE REQUISE</span><div><b>Mise en route &amp; validation</b> · <span class="d">dumper les adresses d'exécution, lecture/capture à chaque débit, le mixeur CueMix, tests d'endurance — le dernier pas jusqu'au son.</span></div></li>
+    <li><span class="chip c-done">FAIT</span><div><b>Cadre &amp; outillage</b> · <span class="d">ossature PCI/DMA/IRQ/ALSA, installeur multi-distribution, CLI + GUI, chaîne d'outils RE.</span></div></li>
+    <li><span class="chip c-done">FAIT</span><div><b>Modèle registres, IRQ &amp; transport</b> · <span class="d">MMIO fenêtré, ack IRQ, anneau PIO, l'interface IOCTL complète, le verdict sur le firmware.</span></div></li>
+    <li><span class="chip c-done">FAIT</span><div><b>Modèle d'objets &amp; initialisation</b> · <span class="d">toute la structure d'extension du périphérique, l'objet audio &amp; ses sous-objets, et la séquence qui publie l'adresse de base audio.</span></div></li>
+    <li><span class="chip c-part">PARTIEL</span><div><b>Encodage horloge &amp; fréquence</b> · <span class="d">familles de fréquence, activation et incrément obtenus ; la sélection d'horloge et le paramètre de fréquence sont liés à l'interface — leurs valeurs demandent une carte.</span></div></li>
+    <li><span class="chip c-card">CARTE REQUISE</span><div><b>Initialisation &amp; validation</b> · <span class="d">relever les adresses d'exécution, lecture/capture à chaque fréquence, le mixeur CueMix, tests d'endurance — le dernier pas avant le son.</span></div></li>
   </ul>
 </div></section>
 </main>
 
 <footer><div class="wrap">
   <div class="disc"><b class="mono">motu-pci-424</b> · GPL-2.0-or-later.<br>
-    Rétro-ingénierie pour l'interopérabilité avec du matériel que nous possédons ; seuls des faits entrent dans
-    les sources, les binaires du constructeur ne sont jamais redistribués. Ni affilié ni approuvé par Mark of the Unicorn,&nbsp;Inc.</div>
+    Rétro-ingénierie menée pour l'interopérabilité avec du matériel que nous possédons ; seuls des faits entrent
+    dans les sources, les binaires du constructeur ne sont jamais redistribués. Projet ni affilié ni approuvé par Mark of the Unicorn,&nbsp;Inc.</div>
   <div class="links">
     <a href="https://github.com/devfrp/linux-motu-pci-424">GitHub</a><span>·</span>
     <a href="https://github.com/devfrp/linux-motu-pci-424/blob/main/docs/REVERSE_ENGINEERING_PLAN.md">Plan&nbsp;RE</a><span>·</span>
