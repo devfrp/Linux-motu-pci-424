@@ -74,16 +74,50 @@ base and go through the same window dispatch:
 
 | Reg (base+off) | Dir | Method VA | Meaning (recovered) |
 |---|---|---|---|
+| `base+0x4` | R | init `0x2c425` | read at init; mirror gets stored in devext `+0x9c` (mix base) |
+| `base+0x8` | R | init `0x2c45b` | read at init; mirror gets stored in devext `+0xa0` (purpose UNKNOWN) |
+| `base+0x14` | R | init `0x2c4c7` | read at init; mirror gets stored in devext `+0xa8` (purpose UNKNOWN) |
+| `base+0x18` | R | init `0x2c4fd` | read at init; mirror gets stored in devext `+0xac` (purpose UNKNOWN) |
+| `base+0x34` | W | init `0x2c615` | initial register value from `[A+0x34]` (written via `audio_base+0x8`'s sibling during bring-up) — purpose OPEN |
+| `base+0x50` | W `1` | init `0x2c5ff` | bring-up **enable** at end of the init routine (`0x2c5d3` address) |
 | `base+0x54` | W `1` | `0x29660` (slot 1) | stream/DMA **enable** (writes 1 when arg≠0) |
 | `base+0x5c` | W | `0x29840` | secondary param (writes `[this+0x10]`); purpose OPEN |
 | `base+0x60` | W | `0x295e0` (slot 0) | **period increment** = `0x10 << (2*family)` (×2 if `[+0x1cc]>1`); samples-per-IRQ / block size |
 | `base+0x64` | W | `0x297f0` (slot 2) | rate/clock **parameter** (caller-supplied dword, no encoding in the setter) |
+| `base+0x80` | W | `0x2a820` (`0x2a8c2`) | **rate/mode register**: `lookup_table[rate_mode] (at 0x30c74)` OR `[+0x1d4]` (high-bit sentinel) OR `(0x10000 or 0xf0000` based on `[+0x1ec]`); also influenced by `+0x1ec` `OR` mask `0xfff10000` |
+| `base+0x88` | W | `0x2a710` (`0x2a7a2`) | **period buffer size** (e.g. `0x80000` default, `0x40000` for rate class 2, scaled for 2x/4x families) |
+| `base+0x8c` | W | `0x2a710` (`0x2a7d7`) | **aperture/buffer length** (computed per rate family: `0x80000`, `0x40000`, or `1 << (rate-8+0xe)` if `[+0x1d0]` bit set, else `0x20000`) |
+| `base+0x90` | W | `0x2a710` (`0x2a803`) | secondary period value `[ebp-4]` (purpose OPEN; zero-init default) |
+| `base+0x9c` | W | `0x2aab0` (`0x2ab08`) | rate-state write: `([+0x280]+0x32)/100` (the CueMix base mirror's +0x9c is read at init; this writes the audio-block register) — also written by `+0x288` path |
+| `base+0xac` | W | `0x2a820` (`0x2a88c`) | **transport-arm length**: `(rate_mode-4)*25 + 24` (only written when 4 ≤ rate_mode < 8) |
+| `base+0xc4` | W | `0x2a9e0` (`0x2aa50`) | rate-state write: `[+0x284]` (scaled by `[+0x44]==0 ? 0x1b9 : 0x1e0` then `/25` via `0xcccccccd`) |
 | `base+0x128` | R→W`0` | ISR `0x2bae0` | position counter; read each period, then zeroed |
 | `base+0x12c` | R→W`0` | ISR `0x2bae0` | numerator; read, divided by `base+0x130`, then zeroed |
 | `base+0x130` | R→W`0` | ISR `0x2bae0` | divisor; read then zeroed |
 
 The **ack register is a separate card address in device-ext `+0x88`** (from the
 same sub-object, field `+0x4`; method `0x2c150`).
+
+## Rate-mode lookup table (CONFIRMED — rdata at VA `0x30c74`)
+
+The transport-arm routine `0x2a820` writes `audio_base+0x80` with
+`lookup[rate_mode] OR [+0x1d4] OR (conditional 0x10000/0xf0000)`, where
+`lookup = dword[rate_mode*4 + 0x30c74]`. The first 16 entries (recovered via
+`pefile`/`struct.unpack`):
+
+| idx | value | idx | value |
+|---|---|---|---|
+| 0 | `0x00000200` | 8 | `0x00000400` |
+| 1 | `0x00000200` | 9 | `0x00000500` |
+| 2 | `0x00000800` | 10 | `0x00000600` |
+| 3 | `0x00000201` | 11 | `0x00000700` |
+| 4 | `0x00000202` | 12 | `0x0002c0a0` |
+| 5 | `0x00000202` | 13 | `0x0002b5e0` |
+| 6 | `0x00000202` | 14 | `0x000292b0` |
+| 7 | `0x00000202` | 15 | `0x00029220` |
+
+Indices 0–11 carry small mode/flag dwords; 12–15 look like card-relative
+addresses or function pointers — purpose of the upper slots is OPEN.
 
 ## Mixer coefficient region (CONFIRMED via the bulk-write destinations)
 

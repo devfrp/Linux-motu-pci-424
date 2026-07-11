@@ -91,36 +91,74 @@ guards on the same `[ctx+0x6c]` before dispatching to vtable slot `0x28`.
 ### Device-extension field map (Phase 0.2, partial — no full type recovery)
 
 Consolidated from every setter/getter site identified so far (register-map.md,
-transport.md, and the StartDevice trace above). This is the hardware object's
-"this" as seen by `WriteRegister`/`ReadRegister` and the ISR — **not** a
-complete struct layout (no Ghidra-grade type recovery was done), just every
-field offset whose meaning is pinned by at least one concrete access:
+transport.md, the StartDevice trace above, and the constructor/init trace below).
+This is the hardware object's `this` (vtable `0x30cc0`) as seen by
+`WriteRegister`/`ReadRegister`/ISR — **not** a complete struct layout (no
+Ghidra grade type recovery was done), but every field offset whose meaning is
+pinned by at least one concrete access is listed:
 
-| Offset | Meaning | Evidence |
-|---|---|---|
-| `+0x28` | HAL DMA-adapter pointer (`IoGetDmaAdapter` result) | StartDevice trace (`fn 0x20100`/`0x20190`); unused by the audio path |
-| `+0x38` | `[[+0x38]]` DPC object, queued on period-elapsed | ISR (`0x2bae0`) |
-| `+0x50` | pending-error/status code, gates `MmMapIoSpace`+WMI-log helper | StartDevice trace (`fn 0x28e60`) |
-| `+0x6c` | interrupt object (`IoConnectInterrupt` result) | ISR shim guard (`0x201f0`), teardown (`fn 0x201d0` → `IoDisconnectInterrupt`) |
-| `+0x70` | audio sub-object pointer `A` (vtable slot `0x44`) | arm routine `0x2c150` |
-| `+0x78` | window-B MMIO base (mapped VA) | `motu424_addr()` dispatch |
-| `+0x7c` | window-A MMIO base (mapped VA) | `motu424_addr()` dispatch |
-| `+0x80` | I/O-port BAR base (mapped VA) | port accessors |
-| `+0x88` | IRQ ack card-address (runtime) | ISR (write `0x10`) |
-| `+0x98` | audio register block base (runtime card address) | init read (`0x2c360`) |
-| `+0x9c` | CueMix mixer coefficient base (runtime card address) | init read (`0x2c360`) |
-| `+0x110` | inline CueMix staging buffer (~45 dwords) | `0x29aa0` |
-| `+0x1c4`/`+0x1c8` | CueMix dirty-range markers | `0x29aa0` |
-| `+0x260` | per-IRQ sample increment | ISR |
-| `+0x264` | per-IRQ sample accumulator | ISR |
+| Offset | Type | Meaning | Evidence |
+|---|---|---|---|
+| `+0x00` | vtable ptr | C++ class vtable `0x30cc0` | constructor `0x2b674` |
+| `+0x28` | ptr | HAL DMA-adapter (`IoGetDmaAdapter` result), unused by audio path | StartDevice trace (`fn 0x20100`/`0x20190`) |
+| `+0x38` | ptr | `[[+0x38]]` DPC object, queued on period-elapsed | ISR (`0x2bae0`) → `call [[[[edi+0x38]]]]` at `0x2bd2e` |
+| `+0x40` | s32 | rate family / mode (`<8` = 1x, `≥8` = 2x/4x); drives buffer size + IRQ countdown | `0x2a710`, `0x2bd40`→`imul +0x1cc, 0xbb80` |
+| `+0x50` | u32 | pending-error/status, gates `MmMapIoSpace`+WMI-log | StartDevice trace (`fn 0x28e60`) |
+| `+0x6c` | ptr | interrupt object (`IoConnectInterrupt` result) | ISR shim guard (`0x201f0`), teardown `0x201d0` |
+| `+0x70` | ptr | audio sub-object `A` (allocated 0x50 bytes via `0x2b610`); obtained in init via vtable slot `0x44` of `this` | init `0x2c15c`, sub-ctor `0x2b560` |
+| `+0x74` | vtable ptr | embedded sub-object vtable `0x30ca4`; freed by `0x2b4f0` | ctor `0x2b67c`, dtor `0x2b7d6` |
+| `+0x78` | ptr | window-B MMIO base (mapped VA, 4 MiB) | `motu424_addr()` dispatch everywhere |
+| `+0x7c` | ptr | window-A MMIO base (mapped VA, 8 MiB) | `motu424_addr()` dispatch everywhere |
+| `+0x80` | ptr | I/O-port BAR base (mapped VA) | ISR `0x2baf0`, enable `0x298f3` |
+| `+0x84` | u32 | port `+0x8` page-select value cache (`apertureBase >> 22`) | arm `0x2c1ec`/`0x2c27e`, ctor zeroes it |
+| `+0x88` | u32 | IRQ ack card-address (runtime; comes from `[A+0x04]`) | ISR (write `0x10`), init `0x2c16a` |
+| `+0x8c` | u32 | zero-init; written through `audio_base+0x8c` mirror | ctor `0x2b6da` |
+| `+0x90` | u32 | zero-init; written through `audio_base+0x90` mirror | ctor `0x2b6e0` |
+| `+0x94` | u32 | zero-init | ctor `0x2b6e6` |
+| `+0x98` | u32 | audio register block base (runtime card address, read from `[A+0x30]`) | init `0x2c395`; must be non-zero or init fails |
+| `+0x9c` | u32 | CueMix mixer coefficient base (runtime card address; read from `audio_base+0x4`) | init `0x2c427` |
+| `+0xa0` | u32 | audio_base+0x4 mirror (read-back at init) | init `0x2c45d` |
+| `+0xa4` | u32 | audio_base+0x8 mirror (read-back at init) | init `0x2c493` |
+| `+0xa8` | u32 | audio_base+0x14 mirror (read-back at init) | init `0x2c4c9` |
+| `+0xac` | u32 | audio_base+0x18 mirror (read-back at init) | init `0x2c50e` |
+| `+0x110` | u8[0xb4] | inline CueMix staging buffer (45 dwords), memset `0xb4` at init | init `0x2c4ff`→`0x2c519`, flusher `0x29aa0` |
+| `+0x1c4`/`+0x1c8` | u32 | CueMix dirty-range markers (init `0`/`0x2c`; reset to `0xffffffff` later) | init `0x2c52c`, flusher |
+| `+0x1cc` | u32 | rate multiplier (small int), drives `+0x1f0 = +0x1cc * 0xbb80` (48000) when `+0x40 >= 8`; init `1` | ctor `0x2b6ec`, `0x2bd49` |
+| `+0x1d0` | u32 | rate bit-mask, tested by `0x2a710` (`test [+0x1d0], 1<<(rate-8)`) to choose buffer scaling | ctor zeroes, `0x2a74b` |
+| `+0x1d4` | u32 | high-bit sentinel (init `0x80000000`; ORed into `audio_base+0x80` writes in `0x2a820`) | ctor `0x2b6f6`, `0x2a8b4`; init swaps it |
+| `+0x1d8..+0x1e8` | u32×4 | zero-init (purpose unknown) | ctor `0x2b6fc`–`0x2b708` |
+| `+0x1ec` | u32 | 0x9c40 (40000) init; when 0, `0x2a820` ORs `0xfff10000` into `audio_base+0x80`; else ORs `0x10000` — a rate/mode qualifier | init `0x2c5a0`, `0x2a89a` |
+| `+0x1f0` | u32 | IRQ countdown target; each IRQ subtracts `[+0x260]`; on `<=0` calls `0x2a820`+`0x2a710` and zeroes +0x1f0 | ISR `0x2bcf8`–`0x2bd26`; set by `0x2bd59` |
+| `+0x25c` | u8 | zero-init (purpose unknown) | ctor `0x2b70e` |
+| `+0x260` | u32 | per-IRQ sample increment | ISR `0x2bb55` |
+| `+0x264` | u32 | per-IRQ sample accumulator (>= `0x800` ⇒ period boundary) | ISR `0x2bb5b` |
+| `+0x268` | u32 | max value of the position numerator (`base+0x12c / base+0x130`) | ISR `0x2bce6` |
+| `+0x26c` | u32 | max value of the position counter (`base+0x128`) | ISR `0x2bce0` |
+| `+0x270..+0x278` | u32×3 | zero-init (purpose unknown) | ctor `0x2b726`–`0x2b732` |
+| `+0x27c`/`+0x280` | u32 | init `0xbb8` (3000); consumed by `0x2aab0` (`(+0x280 + 0x32) / 100 ≠`, then `*3` near `0x2ab2c`) — rate constant or sub-divider | ctor `0x2b738`/`0x2b73e` |
+| `+0x284` | u32 | rate-state field (`0x2a9e0` multiplies by `[+0x44]==0 ? 0x1b9 : 0x1e0` then by `0xcccccccd>>3` = `/25`) | `0x2aa16` |
+| `+0x288` | u32 | rate-state field (same path as +0x284, written to `audio_base+0xc4`) | `0x2aa07` |
+| `+0x28c` | u32 | computed in `0x2aab0` from `+0x280+0x32` then `/100`, stored before writing `audio_base+0x9c` | `0x2aae8` |
+| `+0x298` | embedded | large embedded sub-object (~0x2800 bytes; managed by `0x200b0`/`0x202c0` init and `0x20190`/`0x20280` teardown) | ctor `0x2b751`, init `0x2c164`, dtor `0x2c103` |
+| `+0x2a4` | u32 | flag checked early during init (init `0x2c150`: nonzero skips the "no resource" WMI log) | init `0x2c185` |
 
-Off the audio sub-object `A` (`[devext+0x70]`): `[A+0x04]` ack, `[A+0x18]`/
-`[A+0x1c]` playback aperture base/len, `[A+0x28]`/`[A+0x2c]` capture aperture
-base/len (see `transport.md`). Genuinely open: the object's total size/full
-layout (the `0x50`-byte allocation seen at `fn 0x2b610` cannot hold every
-field above, so either multiple sub-classes share the vtable shape or the
-`this` identity varies by call site — this needs real type recovery, not
-achievable with `objdump`/`xref.py` alone).
+Off the audio sub-object `A` (`[devext+0x70]`, 0x50 bytes, vtable `0x30ca8`,
+constructed at `0x2b560`): `[A+0x04]` ack, `[A+0x18]`/`[A+0x1c]` playback
+aperture base/len, `[A+0x20]`/`[A+0x24]`/`[A+0x28]`/`[A+0x2c]` capture
+aperture base/flag/len (gated by `[A+0x24]!=0`), `[A+0x30]` audio_base card
+address, `[A+0x34]` initial register value backing `audio_base+0x8` write
+(see `transport.md`). Defaults set by the ctor: `[A+0x14]=0x20000001`,
+`[A+0x24]=0x3800`, `[A+0x34]=0x20000001`, `[A+0x44]=0x3100`; the per-bank
+init buffer (`WriteBlock8`-driven 8-dword block) is set up there too.
+
+**Outstanding layout question:** the devext contains three sub-objects — the
+0x50-byte audio sub-object `A` (vtable `0x30ca8`, allocated via `0x2b610`,
+stored at `+0x70`), an embedded sub-object at `+0x74` (vtable `0x30ca4`),
+and the ~0x2800-byte sub-object at `+0x298`. The total struct size is >0x2a8
+bytes (last touched offset `+0x2a4` plus the 0x2800-byte tail at `+0x298`
+pushes it well past 0x2a00). A complete layout is still out of reach: the
+purpose of `+0x1d8..+0x1e8`, `+0x25c`, `+0x270..+0x278` remains
+unidentified.
 
 ### Breakout (AudioWire) enumeration — Phase 3.5 (RESOLVED, no card, via rz-ghidra)
 
