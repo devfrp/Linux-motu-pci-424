@@ -1,8 +1,10 @@
 name: Deploy site to GitHub Pages
 
-# Publishes docs/ by pushing it to a `gh-pages` branch. GitHub auto-serves a
-# public repo's `gh-pages` branch as Pages, so this needs no Settings toggle and
-# no Pages-admin token — only permission to push a branch (contents: write).
+# Publishes docs/ via the official GitHub Pages Actions (artifact upload +
+# deploy-pages). REQUIRED ONE-TIME REPO SETTING: Settings -> Pages -> Build and
+# deployment -> Source = "GitHub Actions" (not "Deploy from a branch"). No
+# gh-pages branch is used or needed. Permissions are granted per-job below via
+# OIDC (id-token) — the repo's default workflow permissions do not matter here.
 
 on:
   push:
@@ -13,33 +15,37 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
+# Allow one concurrent deployment; let a running one finish rather than cancel.
 concurrency:
-  group: pages-deploy
-  cancel-in-progress: true
+  group: pages
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Publish docs/ to the gh-pages branch
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -eu
-          site="$(mktemp -d)"
-          cp -r docs/. "$site/"
-          touch "$site/.nojekyll"          # serve files as-is, no Jekyll
-          cd "$site"
-          git init -q -b gh-pages
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -q -m "Deploy ${GITHUB_SHA} from docs/"
-          git push -f \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            gh-pages
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload docs/ as the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
