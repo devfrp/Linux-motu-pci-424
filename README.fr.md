@@ -44,6 +44,7 @@ Détails et options dans [Installation](#installation-toute-distro).
 | `install.sh` | **Installeur multi-distro** (dépendances + DKMS + outils) |
 | `ARCHITECTURE.md` | Notes de conception : la séparation en 3 couches + la règle de confinement matériel |
 | `CLEANROOM.md` | Énoncé clean-room & provenance (base légale, méthode de RE) |
+| `docs/index.html` | Site du projet (page GitHub Pages) |
 | `dkms.conf` | Empaquetage DKMS pour la reconstruction automatique à chaque noyau |
 
 Objectif de conception : **toute l'incertitude est confinée à `motu424.h` +

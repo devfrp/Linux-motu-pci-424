@@ -71,6 +71,10 @@ module via **DKMS** (so it survives kernel upgrades) and installs the tools:
 ./install.sh -h           # all options
 ```
 
+Under `curl | sh`, the installer detects the absence of a terminal and
+automatically switches package installs to non-interactive mode; sudo still
+prompts for your password on the terminal as usual.
+
 ## Build (manual)
 
 Requires kernel headers for the running kernel (Arch: `linux-rt-headers` for an
