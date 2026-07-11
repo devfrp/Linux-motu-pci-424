@@ -29,3 +29,5 @@ vendor/*
 # Editor / misc
 *.swp
 *~
+CLAUDE.md
+.claude/
