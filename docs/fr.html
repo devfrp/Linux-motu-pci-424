@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="fr">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>motu-pci-424 — Linux ALSA driver for the MOTU PCI-324/424</title>
-<meta name="description" content="A from-scratch Linux ALSA driver, CueMix-style control app and clean-room reverse-engineering for the undocumented MOTU PCI-324 / PCI-424 AudioWire audio card.">
+<title>motu-pci-424 — pilote ALSA Linux pour la MOTU PCI-324/424</title>
+<meta name="description" content="Un pilote ALSA Linux écrit de zéro, une application de contrôle façon CueMix et une rétro-ingénierie clean-room pour la carte son AudioWire MOTU PCI-324 / PCI-424, non documentée.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='5' fill='%230d1013'/><path d='M3 16 h5 l2-7 3 14 3-11 3 8 2-4 h5' fill='none' stroke='%23f0a63a' stroke-width='2' stroke-linejoin='round' stroke-linecap='round'/></svg>">
 <style>
   :root{
@@ -182,151 +182,151 @@
   </a>
   <nav>
     <a class="opt" href="#modules">Modules</a>
-    <a class="opt" href="#re">Reverse&nbsp;eng.</a>
-    <a href="#install">Install</a>
-    <span class="langsel" role="group" aria-label="Language">
-      <a href="index.html" class="active" aria-current="page">EN</a>
-      <a href="fr.html">FR</a>
+    <a class="opt" href="#re">Rétro-ing.</a>
+    <a href="#install">Installer</a>
+    <span class="langsel" role="group" aria-label="Langue">
+      <a href="index.html">EN</a>
+      <a href="fr.html" class="active" aria-current="page">FR</a>
     </span>
     <a class="gh" href="https://github.com/devfrp/linux-motu-pci-424">GitHub&nbsp;↗</a>
-    <button id="themetog" title="Toggle theme" aria-label="Toggle light/dark theme">◐</button>
+    <button id="themetog" title="Changer de thème" aria-label="Basculer le thème clair/sombre">◐</button>
   </nav>
 </div></header>
 
 <main id="top">
 <section class="hero">
   <div class="wrap">
-    <span class="tag"><span class="led"></span><span class="lab">AudioWire host card · out-of-tree Linux driver</span></span>
-    <h1>MOTU <span class="u">PCI-324 / PCI-424</span>,<br>rebuilt for Linux.</h1>
-    <p class="sub">A from-scratch ALSA kernel driver, a CueMix-style control app (CLI&nbsp;+&nbsp;GTK), and a
-    clean-room reverse-engineering of a sound card the vendor never documented.</p>
+    <span class="tag"><span class="led"></span><span class="lab">Carte hôte AudioWire · pilote Linux hors-arbre</span></span>
+    <h1>MOTU <span class="u">PCI-324 / PCI-424</span>,<br>réinventée pour Linux.</h1>
+    <p class="sub">Un pilote noyau ALSA écrit de zéro, une application de contrôle façon CueMix (CLI&nbsp;+&nbsp;GTK) et une
+    rétro-ingénierie clean-room d'une carte son que le constructeur n'a jamais documentée.</p>
     <div class="cta">
-      <a class="btn p" href="#install">Install in one line</a>
-      <a class="btn" href="#re">Read the RE findings</a>
-      <a class="btn" href="https://github.com/devfrp/linux-motu-pci-424">Source</a>
+      <a class="btn p" href="#install">Installer en une ligne</a>
+      <a class="btn" href="#re">Lire les découvertes RE</a>
+      <a class="btn" href="https://github.com/devfrp/linux-motu-pci-424">Code source</a>
     </div>
     <div class="term">
       <span class="p">$</span>
       <code id="cmd">curl -fsSL https://raw.githubusercontent.com/devfrp/linux-motu-pci-424/main/get.sh | sh</code>
-      <button id="cpb" onclick="cp()">copy</button>
+      <button id="cpb" onclick="cp()">copier</button>
     </div>
   </div>
   <div class="scope" aria-hidden="true">
-    <span class="rd">CH1 · 24-bit / 3&nbsp;bytes · 1×/2×/4×</span>
+    <span class="rd">CH1 · 24 bits / 3&nbsp;octets · 1×/2×/4×</span>
     <canvas id="scope"></canvas>
   </div>
 </section>
 
 <section class="sec" id="about"><div class="wrap">
-  <div class="head"><span class="idx">00</span><h2>An undocumented card, brought up in the open</h2></div>
-  <p class="lede">The PCI-324/424 is a host card for MOTU AudioWire interfaces — the 2408, 24I/O,
-  828, HD192, 896HD and friends. There is no vendor documentation, so the register map and
-  transport are recovered from the Windows driver — the static reverse-engineering is complete,
-  and empirical validation on a real card is the remaining step. The PCI, DMA, IRQ and ALSA
-  plumbing is already in place; everything still uncertain is confined to two files, so
-  confirmed facts land in exactly one place.</p>
+  <div class="head"><span class="idx">00</span><h2>Une carte non documentée, mise en route au grand jour</h2></div>
+  <p class="lede">La PCI-324/424 est une carte hôte pour les interfaces MOTU AudioWire — les 2408, 24I/O,
+  828, HD192, 896HD et consorts. Il n'existe aucune documentation constructeur : la table des registres et
+  le transport sont donc reconstruits à partir du pilote Windows — la rétro-ingénierie statique est terminée,
+  et la validation empirique sur une vraie carte est l'étape restante. Le câblage PCI, DMA, IRQ et ALSA est
+  déjà en place ; tout ce qui reste incertain est confiné à deux fichiers, si bien que les faits confirmés
+  atterrissent à un seul endroit.</p>
 </div></section>
 
 <section class="sec" id="modules"><div class="wrap">
-  <div class="head"><span class="idx">01</span><h2>What ships</h2></div>
-  <p class="lede">A driver, two control apps, and an installer that works on any distribution.</p>
+  <div class="head"><span class="idx">01</span><h2>Ce qui est livré</h2></div>
+  <p class="lede">Un pilote, deux applications de contrôle et un installeur qui fonctionne sur n'importe quelle distribution.</p>
   <div class="mods">
-    <div class="mod"><div class="lab">Kernel</div><h3>ALSA module</h3>
-      <p>Clean three-layer split, fully devm/pcim-managed, DKMS-packaged so it rebuilds itself across kernel upgrades.</p></div>
-    <div class="mod"><div class="lab">Control · CLI</div><h3><code>motu424-ctl</code></h3>
-      <p>The Linux CueMix FX over alsa-lib: clock source, sample rate, per-input trim/pad/phase, and the input×bus monitor matrix.</p></div>
-    <div class="mod"><div class="lab">Control · GUI</div><h3><code>motu424-gui</code></h3>
-      <p>A GTK4 panel that renders every control as a switch, slider or dropdown — grouped the way CueMix lays them out.</p></div>
-    <div class="mod"><div class="lab">Install</div><h3>Any distro</h3>
-      <p>Detects pacman/apt/dnf/zypper/apk/xbps, pulls deps, installs via DKMS. Non-interactive under <code>curl | sh</code>.</p></div>
-    <div class="mod"><div class="lab">Toolkit</div><h3>Clean-room RE</h3>
-      <p>A capstone cross-referencer and a C++ vtable resolver; every recovered fact is written down with its evidence.</p></div>
-    <div class="mod"><div class="lab">License</div><h3>Facts-only, GPL</h3>
-      <p>Only offsets, formats and sequences enter the GPL-2.0 sources. Vendor binaries are never redistributed.</p></div>
+    <div class="mod"><div class="lab">Noyau</div><h3>Module ALSA</h3>
+      <p>Découpage propre en trois couches, entièrement géré par devm/pcim, packagé en DKMS pour se recompiler à chaque mise à jour du noyau.</p></div>
+    <div class="mod"><div class="lab">Contrôle · CLI</div><h3><code>motu424-ctl</code></h3>
+      <p>Le CueMix FX version Linux sur alsa-lib : source d'horloge, fréquence d'échantillonnage, trim/pad/phase par entrée et la matrice de monitoring entrées×bus.</p></div>
+    <div class="mod"><div class="lab">Contrôle · GUI</div><h3><code>motu424-gui</code></h3>
+      <p>Un panneau GTK4 qui rend chaque contrôle en interrupteur, curseur ou liste déroulante — regroupés comme CueMix les présente.</p></div>
+    <div class="mod"><div class="lab">Installation</div><h3>Toute distro</h3>
+      <p>Détecte pacman/apt/dnf/zypper/apk/xbps, installe les dépendances puis le module via DKMS. Non-interactif sous <code>curl | sh</code>.</p></div>
+    <div class="mod"><div class="lab">Outillage</div><h3>RE clean-room</h3>
+      <p>Un référenceur croisé capstone et un résolveur de vtables C++ ; chaque fait recouvré est consigné avec sa preuve.</p></div>
+    <div class="mod"><div class="lab">Licence</div><h3>Faits seuls, GPL</h3>
+      <p>Seuls les offsets, formats et séquences entrent dans les sources GPL-2.0. Les binaires du constructeur ne sont jamais redistribués.</p></div>
   </div>
 </div></section>
 
 <section class="sec" id="re"><div class="wrap">
-  <div class="head"><span class="idx">02</span><h2>What the reverse-engineering pinned</h2></div>
-  <p class="lede">Recovered statically from the vendor Windows driver — no card required — with
-  <code class="mono">objdump</code>, a capstone cross-referencer and the <code class="mono">rz-ghidra</code>
-  decompiler for the C++ object graph. Static RE is now complete.</p>
+  <div class="head"><span class="idx">02</span><h2>Ce que la rétro-ingénierie a établi</h2></div>
+  <p class="lede">Recouvré statiquement depuis le pilote Windows du constructeur — sans carte — avec
+  <code class="mono">objdump</code>, un référenceur croisé capstone et le décompileur <code class="mono">rz-ghidra</code>
+  pour le graphe d'objets C++. La RE statique est désormais terminée.</p>
   <div class="rdout"><table>
-    <thead><tr><th>Finding</th><th>Value</th><th>State</th></tr></thead>
+    <thead><tr><th>Découverte</th><th>Valeur</th><th>État</th></tr></thead>
     <tbody>
-      <tr><td><b>Windowed MMIO address space</b><br><span>routed by the 0x01800000 tag bit — 8&nbsp;MB window A / 4&nbsp;MB window B</span></td><td class="v">& 0xff800000</td><td class="s">CONFIRMED</td></tr>
-      <tr><td><b>Interrupt path</b><br><span>ISR is a C++ virtual slot; pending = port bit 1</span></td><td class="v">ack ← 0x10 @ +0x88</td><td class="s">CONFIRMED</td></tr>
-      <tr><td><b>Transport</b><br><span>PIO into a card aperture, hardware dmaPoint + software ring — not host bus-master DMA</span></td><td class="v">WRITE_REGISTER_BUFFER</td><td class="s">CONFIRMED</td></tr>
-      <tr><td><b>Audio bring-up handshake</b><br><span>the card <em>publishes</em> its runtime audio base after a port strobe, read back by polling</span></td><td class="v">strobe port+4 ← 2</td><td class="s">CONFIRMED</td></tr>
-      <tr><td><b>Breakout channel map</b><br><span>counts are a runtime descriptor blob from the attached interface — not a static table</span></td><td class="v">runtime descriptor</td><td class="s">CONFIRMED</td></tr>
-      <tr><td><b>Device object model</b><br><span>audio object is a global singleton; windowed-MMIO manager + DMA common-buffer sub-objects</span></td><td class="v">A @ 0x61f50</td><td class="s">CONFIRMED</td></tr>
-      <tr><td><b>FPGA firmware</b><br><span>classic card self-configures from onboard flash — no host upload</span></td><td class="v">no request_firmware</td><td class="s">CONFIRMED</td></tr>
-      <tr><td><b>CueMix mixer sink</b><br><span>coefficients flushed by dirty range to a card-reported base</span></td><td class="v">[dev + 0x9c]</td><td class="s">CONFIRMED</td></tr>
-      <tr><td><b>Rate parameter &amp; clock-source select</b><br><span>interface/card-bound — the last values need a card to observe</span></td><td class="v">base + 0x64</td><td class="s open">CARD</td></tr>
+      <tr><td><b>Espace d'adressage MMIO fenêtré</b><br><span>routé par le bit-tag 0x01800000 — fenêtre A de 8&nbsp;Mo / fenêtre B de 4&nbsp;Mo</span></td><td class="v">& 0xff800000</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Chemin d'interruption</b><br><span>l'ISR est une méthode virtuelle C++ ; en attente = bit 1 du port</span></td><td class="v">ack ← 0x10 @ +0x88</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Transport</b><br><span>PIO dans une ouverture de la carte, dmaPoint matériel + anneau logiciel — pas de DMA bus-master hôte</span></td><td class="v">WRITE_REGISTER_BUFFER</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Handshake de mise en route audio</b><br><span>la carte <em>publie</em> sa base audio d'exécution après un strobe port, relue par scrutation</span></td><td class="v">strobe port+4 ← 2</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Carte des canaux du boîtier</b><br><span>les comptes sont un descripteur d'exécution issu de l'interface connectée — pas une table statique</span></td><td class="v">descripteur runtime</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Modèle d'objets du périphérique</b><br><span>l'objet audio est un singleton global ; sous-objets gestionnaire MMIO fenêtré + tampon DMA commun</span></td><td class="v">A @ 0x61f50</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Firmware FPGA</b><br><span>la carte classique se configure depuis sa flash embarquée — aucun envoi hôte</span></td><td class="v">pas de request_firmware</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Puits du mixeur CueMix</b><br><span>coefficients écrits par plage modifiée vers une base rapportée par la carte</span></td><td class="v">[dev + 0x9c]</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Paramètre de débit &amp; sélection d'horloge</b><br><span>liés à l'interface/la carte — les dernières valeurs demandent une carte pour être observées</span></td><td class="v">base + 0x64</td><td class="s open">CARTE</td></tr>
     </tbody>
   </table></div>
 </div></section>
 
 <section class="sec" id="arch"><div class="wrap">
-  <div class="head"><span class="idx">03</span><h2>Signal path</h2></div>
-  <p class="lede">The PCI and PCM layers stay hardware-agnostic; every register offset and encoding
-  lives only in the bottom node.</p>
+  <div class="head"><span class="idx">03</span><h2>Chemin du signal</h2></div>
+  <p class="lede">Les couches PCI et PCM restent agnostiques au matériel ; chaque offset de registre et chaque
+  encodage vivent uniquement dans le nœud du bas.</p>
   <div class="flow">
-    <div class="node"><span class="n">motu424_main.c</span><span class="d">PCI attach · BAR map · IRQ vector · ALSA card create — the interrupt calls <code class="mono">motu424_hw_irq_ack()</code></span></div>
+    <div class="node"><span class="n">motu424_main.c</span><span class="d">attache PCI · mappe les BAR · vecteur IRQ · création de la carte ALSA — l'interruption appelle <code class="mono">motu424_hw_irq_ack()</code></span></div>
     <div class="arrow">↓</div>
-    <div class="node"><span class="n">motu424_pcm.c</span><span class="d">ALSA PCM ops — translates open/prepare/trigger/pointer into <code class="mono">motu424_hw_*</code> calls</span></div>
+    <div class="node"><span class="n">motu424_pcm.c</span><span class="d">opérations PCM d'ALSA — traduit open/prepare/trigger/pointer en appels <code class="mono">motu424_hw_*</code></span></div>
     <div class="arrow">↓</div>
-    <div class="node hw"><span class="n">motu424_hw.c</span><span class="d">registers · clock/rate · DMA ring · IRQ ack — <b>the hardware truth lives here</b></span></div>
+    <div class="node hw"><span class="n">motu424_hw.c</span><span class="d">registres · horloge/débit · anneau DMA · ack IRQ — <b>la vérité matérielle vit ici</b></span></div>
   </div>
 </div></section>
 
 <section class="sec" id="install"><div class="wrap">
-  <div class="head"><span class="idx">04</span><h2>Install</h2></div>
-  <p class="lede">The one-liner fetches the sources and runs the installer — dependencies, DKMS
-  module, tools. Add <span class="kbd">--gui</span> for the graphical panel.</p>
+  <div class="head"><span class="idx">04</span><h2>Installation</h2></div>
+  <p class="lede">La commande unique récupère les sources et lance l'installeur — dépendances, module DKMS,
+  outils. Ajoute <span class="kbd">--gui</span> pour le panneau graphique.</p>
   <div class="cols">
     <div>
-      <h3>One line</h3>
-      <pre class="blk"><span class="c"># deps + DKMS module + tools + load</span>
+      <h3>Une ligne</h3>
+      <pre class="blk"><span class="c"># dépendances + module DKMS + outils + chargement</span>
 curl -fsSL https://raw.githubusercontent.com/<span class="f">devfrp/linux-motu-pci-424</span>/main/get.sh | sh
 
-<span class="c"># with the GTK GUI</span>
+<span class="c"># avec l'interface GTK</span>
 curl -fsSL …/get.sh | sh -s -- <span class="f">--gui</span></pre>
     </div>
     <div>
-      <h3>Clone &amp; build</h3>
+      <h3>Cloner &amp; compiler</h3>
       <pre class="blk">git clone https://github.com/devfrp/linux-motu-pci-424
 cd motu-pci-424
-./install.sh            <span class="c"># or: make && make load</span>
+./install.sh            <span class="c"># ou : make && make load</span>
 
-motu424-ctl             <span class="c"># CueMix status (CLI)</span>
-motu424-gui             <span class="c"># graphical panel</span></pre>
+motu424-ctl             <span class="c"># état CueMix (CLI)</span>
+motu424-gui             <span class="c"># panneau graphique</span></pre>
     </div>
   </div>
 </div></section>
 
 <section class="sec" id="roadmap"><div class="wrap">
-  <div class="head"><span class="idx">05</span><h2>Where it stands</h2></div>
-  <p class="lede">Static reverse-engineering is complete — every code-only finding is recovered.
-  The rest is empirical and needs a real card on the bench.</p>
+  <div class="head"><span class="idx">05</span><h2>Où en est le projet</h2></div>
+  <p class="lede">La rétro-ingénierie statique est terminée — chaque découverte accessible sans matériel est recouvrée.
+  Le reste est empirique et demande une vraie carte sur l'établi.</p>
   <ul class="steps">
-    <li><span class="chip c-done">DONE</span><div><b>Framework &amp; tooling</b> · <span class="d">PCI/DMA/IRQ/ALSA scaffolding, cross-distro installer, CLI + GUI, RE toolchain.</span></div></li>
-    <li><span class="chip c-done">DONE</span><div><b>Register, IRQ &amp; transport model</b> · <span class="d">windowed MMIO, IRQ ack, PIO aperture ring, the full IOCTL interface, the firmware verdict.</span></div></li>
-    <li><span class="chip c-done">DONE</span><div><b>Device model &amp; bring-up path</b> · <span class="d">the whole device-extension struct, the audio object &amp; sub-objects, and the handshake that publishes the runtime audio base.</span></div></li>
-    <li><span class="chip c-part">PARTIAL</span><div><b>Clock &amp; rate encoding</b> · <span class="d">rate families, enable and increment recovered; clock-source select and the rate parameter are interface-bound — their values need a card.</span></div></li>
-    <li><span class="chip c-card">NEEDS CARD</span><div><b>Bring-up &amp; validation</b> · <span class="d">dump the runtime addresses, playback/capture at every rate, the CueMix mixer, soak tests — the last mile to sound.</span></div></li>
+    <li><span class="chip c-done">FAIT</span><div><b>Cadre &amp; outillage</b> · <span class="d">échafaudage PCI/DMA/IRQ/ALSA, installeur multi-distro, CLI + GUI, chaîne d'outils RE.</span></div></li>
+    <li><span class="chip c-done">FAIT</span><div><b>Modèle registres, IRQ &amp; transport</b> · <span class="d">MMIO fenêtré, ack IRQ, anneau PIO, l'interface IOCTL complète, le verdict firmware.</span></div></li>
+    <li><span class="chip c-done">FAIT</span><div><b>Modèle d'objets &amp; mise en route</b> · <span class="d">toute la structure d'extension du périphérique, l'objet audio &amp; ses sous-objets, et le handshake qui publie la base audio d'exécution.</span></div></li>
+    <li><span class="chip c-part">PARTIEL</span><div><b>Encodage horloge &amp; débit</b> · <span class="d">familles de débit, activation et incrément recouvrés ; la sélection d'horloge et le paramètre de débit sont liés à l'interface — leurs valeurs demandent une carte.</span></div></li>
+    <li><span class="chip c-card">CARTE REQUISE</span><div><b>Mise en route &amp; validation</b> · <span class="d">dumper les adresses d'exécution, lecture/capture à chaque débit, le mixeur CueMix, tests d'endurance — le dernier pas jusqu'au son.</span></div></li>
   </ul>
 </div></section>
 </main>
 
 <footer><div class="wrap">
   <div class="disc"><b class="mono">motu-pci-424</b> · GPL-2.0-or-later.<br>
-    Reverse engineering for interoperability with hardware we own; only facts enter the sources,
-    vendor binaries are never redistributed. Not affiliated with or endorsed by Mark of the Unicorn,&nbsp;Inc.</div>
+    Rétro-ingénierie pour l'interopérabilité avec du matériel que nous possédons ; seuls des faits entrent dans
+    les sources, les binaires du constructeur ne sont jamais redistribués. Ni affilié ni approuvé par Mark of the Unicorn,&nbsp;Inc.</div>
   <div class="links">
     <a href="https://github.com/devfrp/linux-motu-pci-424">GitHub</a><span>·</span>
-    <a href="https://github.com/devfrp/linux-motu-pci-424/blob/main/docs/REVERSE_ENGINEERING_PLAN.md">RE&nbsp;plan</a><span>·</span>
-    <a href="https://github.com/devfrp/linux-motu-pci-424/blob/main/README.fr.md">Français</a>
+    <a href="https://github.com/devfrp/linux-motu-pci-424/blob/main/docs/REVERSE_ENGINEERING_PLAN.md">Plan&nbsp;RE</a><span>·</span>
+    <a href="index.html">English</a>
   </div>
 </div></footer>
 
@@ -344,7 +344,7 @@ motu424-gui             <span class="c"># graphical panel</span></pre>
   // copy
   window.cp=function(){var b=document.getElementById('cpb');
     navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(function(){
-      b.textContent='copied ✓'; setTimeout(function(){b.textContent='copy';},1500);});};
+      b.textContent='copié ✓'; setTimeout(function(){b.textContent='copier';},1500);});};
 
   // oscilloscope
   var cv=document.getElementById('scope'), ctx=cv.getContext('2d'), t=0, raf=null;
