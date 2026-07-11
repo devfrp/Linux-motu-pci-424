@@ -212,9 +212,10 @@
   <div class="head"><span class="idx">00</span><h2>An undocumented card, brought up in the open</h2></div>
   <p class="lede">The PCI-324/424 is a host card for MOTU AudioWire interfaces — the 2408, 24I/O,
   828, HD192, 896HD and friends. There is no vendor documentation, so the register map and
-  transport are recovered from the Windows driver and validated against real hardware. The
-  PCI, DMA, IRQ and ALSA plumbing is already complete; everything still uncertain is confined
-  to two files, so confirmed facts land in exactly one place.</p>
+  transport are recovered from the Windows driver — the static reverse-engineering is complete,
+  and empirical validation on a real card is the remaining step. The PCI, DMA, IRQ and ALSA
+  plumbing is already in place; everything still uncertain is confined to two files, so
+  confirmed facts land in exactly one place.</p>
 </div></section>
 
 <section class="sec" id="modules"><div class="wrap">
@@ -239,17 +240,20 @@
 <section class="sec" id="re"><div class="wrap">
   <div class="head"><span class="idx">02</span><h2>What the reverse-engineering pinned</h2></div>
   <p class="lede">Recovered statically from the vendor Windows driver — no card required — with
-  <code class="mono">objdump</code>, a capstone cross-referencer and hand-resolved C++ vtables.</p>
+  <code class="mono">objdump</code>, a capstone cross-referencer and the <code class="mono">rz-ghidra</code>
+  decompiler for the C++ object graph. Static RE is now complete.</p>
   <div class="rdout"><table>
     <thead><tr><th>Finding</th><th>Value</th><th>State</th></tr></thead>
     <tbody>
       <tr><td><b>Windowed MMIO address space</b><br><span>routed by the 0x01800000 tag bit — 8&nbsp;MB window A / 4&nbsp;MB window B</span></td><td class="v">& 0xff800000</td><td class="s">CONFIRMED</td></tr>
       <tr><td><b>Interrupt path</b><br><span>ISR is a C++ virtual slot; pending = port bit 1</span></td><td class="v">ack ← 0x10 @ +0x88</td><td class="s">CONFIRMED</td></tr>
       <tr><td><b>Transport</b><br><span>PIO into a card aperture, hardware dmaPoint + software ring — not host bus-master DMA</span></td><td class="v">WRITE_REGISTER_BUFFER</td><td class="s">CONFIRMED</td></tr>
-      <tr><td><b>IOCTL interface</b><br><span>submit-buffer · start/stop · control · callback</span></td><td class="v">func 0x801–0x804</td><td class="s">CONFIRMED</td></tr>
+      <tr><td><b>Audio bring-up handshake</b><br><span>the card <em>publishes</em> its runtime audio base after a port strobe, read back by polling</span></td><td class="v">strobe port+4 ← 2</td><td class="s">CONFIRMED</td></tr>
+      <tr><td><b>Breakout channel map</b><br><span>counts are a runtime descriptor blob from the attached interface — not a static table</span></td><td class="v">runtime descriptor</td><td class="s">CONFIRMED</td></tr>
+      <tr><td><b>Device object model</b><br><span>audio object is a global singleton; windowed-MMIO manager + DMA common-buffer sub-objects</span></td><td class="v">A @ 0x61f50</td><td class="s">CONFIRMED</td></tr>
       <tr><td><b>FPGA firmware</b><br><span>classic card self-configures from onboard flash — no host upload</span></td><td class="v">no request_firmware</td><td class="s">CONFIRMED</td></tr>
       <tr><td><b>CueMix mixer sink</b><br><span>coefficients flushed by dirty range to a card-reported base</span></td><td class="v">[dev + 0x9c]</td><td class="s">CONFIRMED</td></tr>
-      <tr><td><b>Clock-source select &amp; rate parameter</b><br><span>needs C++ type recovery or hardware</span></td><td class="v">base + 0x64</td><td class="s open">OPEN</td></tr>
+      <tr><td><b>Rate parameter &amp; clock-source select</b><br><span>interface/card-bound — the last values need a card to observe</span></td><td class="v">base + 0x64</td><td class="s open">CARD</td></tr>
     </tbody>
   </table></div>
 </div></section>
@@ -294,12 +298,14 @@ motu424-gui             <span class="c"># graphical panel</span></pre>
 
 <section class="sec" id="roadmap"><div class="wrap">
   <div class="head"><span class="idx">05</span><h2>Where it stands</h2></div>
-  <p class="lede">Static reverse-engineering is largely done; the rest needs a real card on the bench.</p>
+  <p class="lede">Static reverse-engineering is complete — every code-only finding is recovered.
+  The rest is empirical and needs a real card on the bench.</p>
   <ul class="steps">
     <li><span class="chip c-done">DONE</span><div><b>Framework &amp; tooling</b> · <span class="d">PCI/DMA/IRQ/ALSA scaffolding, cross-distro installer, CLI + GUI, RE toolchain.</span></div></li>
     <li><span class="chip c-done">DONE</span><div><b>Register, IRQ &amp; transport model</b> · <span class="d">windowed MMIO, IRQ ack, PIO aperture ring, the full IOCTL interface, the firmware verdict.</span></div></li>
-    <li><span class="chip c-part">PARTIAL</span><div><b>Clock &amp; rate encoding</b> · <span class="d">rate families, enable and increment recovered; clock-source select and one parameter still need type recovery.</span></div></li>
-    <li><span class="chip c-card">NEEDS CARD</span><div><b>Bring-up &amp; validation</b> · <span class="d">confirm offsets, playback/capture at every rate, the CueMix mixer, soak tests.</span></div></li>
+    <li><span class="chip c-done">DONE</span><div><b>Device model &amp; bring-up path</b> · <span class="d">the whole device-extension struct, the audio object &amp; sub-objects, and the handshake that publishes the runtime audio base.</span></div></li>
+    <li><span class="chip c-part">PARTIAL</span><div><b>Clock &amp; rate encoding</b> · <span class="d">rate families, enable and increment recovered; clock-source select and the rate parameter are interface-bound — their values need a card.</span></div></li>
+    <li><span class="chip c-card">NEEDS CARD</span><div><b>Bring-up &amp; validation</b> · <span class="d">dump the runtime addresses, playback/capture at every rate, the CueMix mixer, soak tests — the last mile to sound.</span></div></li>
   </ul>
 </div></section>
 </main>
