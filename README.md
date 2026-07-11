@@ -202,10 +202,12 @@ Detailed, evidence-tagged write-ups live in `docs/`:
 [`cuemix-control-map.md`](docs/cuemix-control-map.md),
 [`vendor-driver-map.md`](docs/vendor-driver-map.md).
 
-Still open (need the card, Ghidra-grade type recovery, or deeper RE): the
-clock-source select register/bits and the `base+0x64` parameter encoding, the
-runtime numeric values of the audio base / ack addresses, and the FPGA upload
-handshake.
+Still open (need the card, or deeper `rz-ghidra` work on the two embedded
+sub-objects): the clock-source select register/bits and the `base+0x64`
+parameter encoding, the runtime numeric values of the audio base / ack
+addresses. The classic-card FPGA upload handshake is settled — the RE verdict
+([`docs/fpga-upload.md`](docs/fpga-upload.md)) is that it self-configures from
+onboard flash and needs no host upload.
 
 The full phased roadmap from here to a 100% working driver lives in
 [`docs/REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md).

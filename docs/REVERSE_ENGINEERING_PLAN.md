@@ -50,19 +50,23 @@ Everything below turns these shapes into exact, implementable semantics.
   recovery `xref.py` lacked and resolved the interface-object dispatch that
   closed Phase 3.5. Both tools are now in play — `xref.py` for fast callers/xref
   queries, `rz-ghidra` when a function's C++ object graph must be decompiled.
-- [~] **0.2 Symbol/type recovery.** **[PARTIAL, no card]** MOTUAW.sys is C++
-  with RTTI-ish strings and source names (`PCI424Driver.cpp`,
-  `PCI424NanoDriver.cpp`, `AW2408.cpp`). Every field offset pinned by a
-  concrete access site (across all RE sessions) is now consolidated into one
-  table in `docs/vendor-driver-map.md` ("Device-extension field map"):
+- [~] **0.2 Symbol/type recovery.** **[CLOSED for the top-level struct, no
+  card — commit `2bba5b4`]** MOTUAW.sys is C++ with RTTI-ish strings and source
+  names (`PCI424Driver.cpp`, `PCI424NanoDriver.cpp`, `AW2408.cpp`). Every field
+  offset pinned by a concrete access site (across all RE sessions, including the
+  `rz-ghidra` type-recovery pass) is now consolidated into one table in
+  `docs/vendor-driver-map.md` ("Device-extension field map"):
   `+0x28` DMA adapter, `+0x38` DPC, `+0x50` status, `+0x6c` interrupt object,
   `+0x70` audio sub-object, `+0x78/+0x7c` window bases, `+0x80` port base,
   `+0x88` ack, `+0x98` audio base, `+0x9c` mix base, `+0x110`/`+0x1c4`/`+0x1c8`
-  CueMix staging, `+0x260`/`+0x264` sample accounting. *Still open:* full
-  struct size/layout and whether one class or several share the vtable shape
-  — real type recovery (Ghidra) or a card is needed for that, objdump/xref.py
-  cannot resolve it further.
-- [ ] **0.3 Role of each binary.**
+  CueMix staging, `+0x260`/`+0x264` sample accounting. The `rz-ghidra` pass
+  additionally identified `+0x1dc..+0x1e8` lock-debounce counters, `+0x1f4`
+  routing staging buffer, `+0x258/+0x25c` mode-select word, `+0x270..+0x278`
+  VU peak-hold meters, `+0x290/+0x294` SRC moduli, `+0x2a0` calibration.
+  *Still open (low value, rz-ghidra-only):* the **internal** layout of the two
+  embedded sub-objects (`+0x74` vtable `0x30ca4`; `+0x298` ~0x2800 bytes) —
+  needs the Ghidra decompiler's type recovery over the sub-object vtables.
+- [x] **0.3 Role of each binary.**
   - `MotuBus.sys` — PCI bus/function enumeration & child device creation.
   - `MOTUAW.sys` — the audio function driver (register + DMA + FPGA logic).
   - `MAWWAVE.sys` — legacy WDM/kmixer wave shim (low RE priority).
@@ -71,7 +75,7 @@ Everything below turns these shapes into exact, implementable semantics.
 
 ## Phase 1 — Register & control-path semantics (no card)
 
-- [ ] **1.1 Enumerate every card-address constant.** Extend the scripted scan:
+- [x] **1.1 Enumerate every card-address constant.** Extend the scripted scan:
   grep the disasm for immediates feeding `WRITE/READ_REGISTER_ULONG`, resolve
   the window (A if `& 0xff800000 == 0x01800000`), and tabulate. Known so far:
   `0xC0024`, `0x100024` (bank stride `0x40000`), `0x18C0000`, `0xAC44`.
@@ -104,7 +108,7 @@ Everything below turns these shapes into exact, implementable semantics.
 
 The single biggest unknown that gates *any* audio.
 
-- [ ] **2.1 Locate the upload routine.** Find the code that references the
+- [~] **2.1 Locate the upload routine.** Find the code that references the
   `altera424b.rbf` string (file off `0x2e877`) and follow it to the byte-feeding
   loop. Determine transport: passive-serial via the I/O-port strobes, or a
   bulk `WRITE_REGISTER_BUFFER_ULONG` into a config window.
@@ -141,10 +145,14 @@ The single biggest unknown that gates *any* audio.
   **[PARTIAL]** `docs/transport.md`: PIO push confirmed (≤64 KB bursts, dword
   units, window-B aperture, 'MOTU'-tagged bounce buffer); ring is SW
   readHead/writeHead/len over the aperture, `len` power-of-two in dwords.
-- [ ] **3.2 `dmaPoint` register.** Find the read that yields the HW play/capture
+- [x] **3.2 `dmaPoint` register.** Find the read that yields the HW play/capture
   position (the ALSA `.pointer` source). *Exit:* its card address + units.
-  **[OPEN]** — `dmaPoint` is read by the caller and passed into the bounds guard
-  (`0x25500`); its concrete card address was not pinned. Units are dwords.
+  **[DONE — pinned to `audio_base + 0x2c` (reader `fn 0x2a5c0`, commit `c562c99`)].**
+  The reader loads `[devext+0x98]+0x2c` via `READ_REGISTER_ULONG`, subtracts the
+  cached playback aperture base `[devext+0x10]` (`= [A+0x18]`), and returns
+  `>> 2` (dword offset). Units are dwords. The sibling `audio_base + 0x34`
+  (reader `fn 0x2a610`) is a second counter whose direction/semantics remain
+  OPEN (card-gated).
 - [ ] **3.3 Clock & sample-rate encoding.** Decode the writes that select
   internal/word/ADAT/SPDIF clock and the 1x/2x/4x rate family, and how the
   fixed-frame channel count shrinks with rate. Correlate with the `0x*0024`
@@ -154,7 +162,7 @@ The single biggest unknown that gates *any* audio.
   `audiobase+0x60 = 0x10<<(2*family)` (method `0x295e0`) and `audiobase+0x64` (a
   param, `0x297f0`). Enable = `audiobase+0x54 <- 1` (`0x29660`). STILL OPEN: the
   clock-source select register/bits and the `+0x64` param encoding.
-- [ ] **3.4 IRQ path.** From the `IoConnectInterrupt` ISR/DPC, recover the IRQ
+- [x] **3.4 IRQ path.** From the `IoConnectInterrupt` ISR/DPC, recover the IRQ
   status register, the ack (w1c?) write, and which bit means "period elapsed".
   *Exit:* status/ack addresses + bit meanings. **[DONE — vtable resolved by
   hand]** ISR = vtable `0x30cc0` slot `0x28` = `0x2bae0`. **Pending = port BAR
@@ -247,21 +255,22 @@ wrong). Its decompiler (`pdg`) resolved the C++ virtual dispatch that
 enumeration = descriptor deserialization, not a static table — see above and
 `vendor-driver-map.md`). What remains open needs one of:
 
-- **Deeper decompiler work** — the full device-extension struct layout (0.2)
-  is now *tractable* with `rz-ghidra` (type recovery over the `devext` object)
-  but not yet done; a follow-up pass could lift it. Phase 2.2 (FPGA handshake
+- **Deeper decompiler work** — the **top-level** device-extension struct
+  layout (0.2) is now **DONE** (commit `2bba5b4`, `rz-ghidra` type recovery);
+  only the *internal* layout of the two embedded sub-objects (`+0x74`,
+  `+0x298`) remains — low value, `rz-ghidra`-only. Phase 2.2 (FPGA handshake
   bit/byte order) is **moot for the classic card**: the RE verdict is that the
   classic PCI-324/424 self-configures its Altera FPGA from onboard flash and
   the driver uploads nothing (`fpga-upload.md`); only the PCIe HD Express takes
   a host image, and that image is already dissected.
-- **A card** — blocks: Phase 1.3 (bridge chip identity via readback), 3.2
-  (`dmaPoint` concrete address), 3.5 empirical confirmation of the channel
-  counts, and all of Phases 5–6 (kcontrol registration, real playback/
-  capture, soak testing). The driver already refuses to stream until the
-  card-reported runtime addresses are supplied via module params
+- **A card** — blocks: Phase 1.3 (bridge chip identity via readback), 3.5
+  empirical confirmation of the channel counts, and all of Phases 5–6 (kcontrol
+  registration, real playback/capture, soak testing). Phase 3.2 (`dmaPoint`)
+  is now closed statically (`audio_base + 0x2c`, commit `c562c99`). The driver
+  already refuses to stream until the card-reported runtime addresses are
+  supplied via module params
   (`audio_base=`/`ack_addr=`/`mix_base=`/`play_aperture=`/`cap_aperture=`),
   obtainable from `tools/motu424-probe` once a card is attached.
 
-Remaining static work is a device-extension type-recovery pass with
-`rz-ghidra` (optional, low urgency); the project's critical path is now
-**Phase 6.1 empirical bring-up** on real hardware.
+The static surface is now essentially exhausted. The project's critical path
+is **Phase 6.1 empirical bring-up** on real hardware.
