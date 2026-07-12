@@ -50,6 +50,7 @@ already knows them and pretty-prints the ones it finds. `N` = input index,
 |---------------------------------|---------|-------|
 | `Clock Source`                  | ENUM    | Internal, Word Clock, ADAT, SPDIF, AES/EBU, … |
 | `Clock Rate`                    | INT, RO | locked rate in Hz (info/status) |
+| `Sample Rate`                   | ENUM    | requested rate (44100…192000); `Clock Rate` stays the RO locked readout |
 | `Meters`                        | BOOL    | enable level metering |
 | `Input NN Trim Volume`          | INT     | analog trim, dB (per-iface range) |
 | `Input NN Pad Switch`           | BOOL    | −20 dB pad |

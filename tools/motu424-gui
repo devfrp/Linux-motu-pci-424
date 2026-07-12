@@ -13,7 +13,10 @@ renders it like the real console:
     strip pinned on the right, outside the scroll area;
   * an "Inputs" tab - per-input analog conditioning (trim fader, pad, phase,
     stereo pair, mute);
-  * a "Clock & format" tab - clock source, locked rate, metering.
+  * a "Clock & format" tab - clock source, a sample-rate selector grouped by
+    1x/2x/4x clock family, locked rate, metering;
+  * a "Diagnostics" tab - PCI / kernel-module / ALSA / kernel-log health
+    checks that work even with no card and no driver loaded.
 
 Console behaviours beyond the basics:
 
@@ -30,6 +33,13 @@ Console behaviours beyond the basics:
     clear every solo at once;
   * pan is a real rotary pot: drag it vertically (hold Ctrl for fine moves),
     scroll over it, double-click to recentre;
+  * A/B scenes in the header (arm SET, then A or B stores; A/B alone recalls),
+    persisted across sessions;
+  * per-bus COPY (push this mix's sends to another mix) and RST (sends back to
+    unity, pans centred, mutes/solos off) on the master strip;
+  * gang groups: send strips with G engaged move together (keeping their
+    relative offsets), on top of stereo-pair linking;
+  * click any value readout to type an exact number (pan accepts L20 / C / R35);
   * mix snapshots: save/recall the whole console state as JSON from the menu;
   * channel names are editable in place and persist across sessions;
   * double-click a fader to reset it (sends/master to unity, pan to centre,
@@ -72,6 +82,7 @@ DEMO = "--demo" in sys.argv[1:]
 
 CONF_DIR = os.path.join(GLib.get_user_config_dir(), "motu424")
 NAMES_FILE = os.path.join(CONF_DIR, "channel-names.json")
+SCENES_FILE = os.path.join(CONF_DIR, "scenes.json")
 SNAP_DIR = os.path.join(CONF_DIR, "snapshots")
 
 POLL_SECONDS = 2          # background hardware re-poll
@@ -105,6 +116,12 @@ scale.fader mark indicator { background:#4a5560; min-height:1px; min-width:6px; 
 .tbtn.s:checked { background:#f0a63a; color:#0d1013; }
 .tbtn.p:checked { background:#5a8bd6; color:#0d1013; }
 .tbtn.link:checked { background:#5a8bd6; color:#0d1013; }
+.tbtn.g:checked { background:#8a6fd1; color:#0d1013; }
+.scene { font-family:monospace; font-size:10px; padding:2px 7px; }
+.scene.set:checked { background:#f0a63a; color:#0d1013; }
+.strip editablelabel.db, .strip editablelabel.db text {
+  font-size:11px; color:#d7dee4; }
+.diagview, .diagview text { background:#11151a; color:#c3ccd4; }
 .soloind { font-family:monospace; font-size:10px; font-weight:bold;
            padding:2px 8px; color:#57606a; background:#171b20;
            border:1px solid #262c33; border-radius:4px; }
@@ -229,6 +246,9 @@ def demo_controls(n_in=8, n_bus=3):
     out = [
         {"name": "Clock Source", "type": "enum", "value": "Internal",
          "items": ["Internal", "Word Clock", "ADAT", "SPDIF", "AES/EBU"],
+         "min": None, "max": None},
+        {"name": "Sample Rate", "type": "enum", "value": "48000",
+         "items": ["44100", "48000", "88200", "96000", "176400", "192000"],
          "min": None, "max": None},
         {"name": "Clock Rate", "type": "int", "value": "48000",
          "min": 44100, "max": 192000},
@@ -493,11 +513,14 @@ class Panel(Gtk.ApplicationWindow):
         self._send_scales = {}              # (bus, input) -> Gtk.Scale
         self._solo_btns = []
         self._pair_of = {}                  # input -> stereo partner input
+        self._gang = set()                  # (bus, input) strips ganged together
+        self._last_val = {}                 # (bus, input) -> last send value
         self._syncing = False               # widget updates coming from us
-        self._linking = False               # stereo-link fan-out in progress
+        self._fanning = False               # stereo-link / gang fan-out in progress
         self._poll_busy = False
         self.demo = demo_controls() if DEMO else None
         self.names = _load_json(NAMES_FILE, {})
+        self.scenes = _load_json(SCENES_FILE, {})
         self.writer = CtlWriter(self._on_write_error)
 
         header = Gtk.HeaderBar()
@@ -535,6 +558,20 @@ class Panel(Gtk.ApplicationWindow):
         self.clock_lbl.add_css_class("clock")
         header.pack_end(self.clock_lbl)
 
+        sc_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        self.scene_set = Gtk.ToggleButton(label="SET")
+        self.scene_set.add_css_class("scene")
+        self.scene_set.add_css_class("set")
+        self.scene_set.set_tooltip_text("Arm, then press A or B to store the current mix")
+        sc_box.append(self.scene_set)
+        for slot in ("A", "B"):
+            b = Gtk.Button(label=slot)
+            b.add_css_class("scene")
+            b.set_tooltip_text(f"Recall scene {slot} (SET then {slot} stores it)")
+            b.connect("clicked", self._on_scene, slot)
+            sc_box.append(b)
+        header.pack_end(sc_box)
+
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         outer.add_css_class("console")
         self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, vexpand=True)
@@ -560,55 +597,62 @@ class Panel(Gtk.ApplicationWindow):
         self._send_scales = {}
         self._solo_btns = []
         self._pair_of = {}
+        self._gang = set()
+        self._last_val = {}
         child = self.body.get_first_child()
         while child:
             self.body.remove(child)
             child = self.body.get_first_child()
 
+        err_page = None
         if DEMO:
             controls = self.demo
         else:
             rc, out, err = run_ctl(["list"], self.current_dev())
             if rc != 0:
-                self.body.append(self._notice(
+                controls = []
+                err_page = self._notice(
                     err.strip() or "No MOTU card found.",
-                    "Pick a card above, load the module, or run with --demo."))
-                return
-            controls = parse_list(out)
+                    "Pick a card above, load the module, or run with --demo.")
+            else:
+                controls = parse_list(out)
 
         self._byname = {c["name"]: c for c in controls}
         model = build_model(controls)
         self._update_clock_label()
-        if not model["buses"] and not model["inputs"] and not model["other"]:
-            self.body.append(self._notice(
-                "This card exposes no adjustable controls yet.",
-                "The CueMix mixer is driver Phase 5 (needs kcontrols on real "
-                "hardware). Try  motu424-gui --demo  to preview the console."))
-            return
-        if not model["buses"] and not model["inputs"]:
-            # generic ALSA card: fall back to a plain control list
-            self.body.append(self._generic(model["other"]))
-            return
-
-        # stereo pairs: Input NN Stereo Switch pairs NN (even) with NN+1
-        for nn, inp in model["inputs"].items():
-            st = inp.get("stereo")
-            if (st and st["value"].split(",")[0].strip() == "on"
-                    and nn % 2 == 0 and nn + 1 in model["inputs"]):
-                self._pair_of[nn] = nn + 1
-                self._pair_of[nn + 1] = nn
 
         nb = Gtk.Notebook(scrollable=True)
         nb.set_vexpand(True)
-        for kk in sorted(model["buses"]):
-            nb.append_page(self._bus_page(kk, model),
-                           Gtk.Label(label=f"Mix {kk:02d}"))
-        if model["inputs"]:
-            nb.append_page(self._inputs_page(model["inputs"]),
-                           Gtk.Label(label="Inputs"))
-        if model["globals"] or model["other"]:
-            nb.append_page(self._clock_page(model["globals"] + model["other"]),
-                           Gtk.Label(label="Clock & format"))
+        if err_page is not None:
+            nb.append_page(err_page, Gtk.Label(label="Console"))
+        elif not model["buses"] and not model["inputs"] and not model["other"]:
+            nb.append_page(self._notice(
+                "This card exposes no adjustable controls yet.",
+                "The CueMix mixer is driver Phase 5 (needs kcontrols on real "
+                "hardware). Try  motu424-gui --demo  to preview the console."),
+                Gtk.Label(label="Console"))
+        elif not model["buses"] and not model["inputs"]:
+            # generic ALSA card: fall back to a plain control list
+            nb.append_page(self._generic(model["other"]),
+                           Gtk.Label(label="Controls"))
+        else:
+            # stereo pairs: Input NN Stereo Switch pairs NN (even) with NN+1
+            for nn, inp in model["inputs"].items():
+                st = inp.get("stereo")
+                if (st and st["value"].split(",")[0].strip() == "on"
+                        and nn % 2 == 0 and nn + 1 in model["inputs"]):
+                    self._pair_of[nn] = nn + 1
+                    self._pair_of[nn + 1] = nn
+            for kk in sorted(model["buses"]):
+                nb.append_page(self._bus_page(kk, model),
+                               Gtk.Label(label=f"Mix {kk:02d}"))
+            if model["inputs"]:
+                nb.append_page(self._inputs_page(model["inputs"]),
+                               Gtk.Label(label="Inputs"))
+            if model["globals"] or model["other"]:
+                nb.append_page(self._clock_page(model["globals"] + model["other"]),
+                               Gtk.Label(label="Clock & format"))
+        nb.append_page(self._diag_page(), Gtk.Label(label="Diagnostics"))
         self.body.append(nb)
         self._update_solo_ind()
 
@@ -620,7 +664,9 @@ class Panel(Gtk.ApplicationWindow):
             bits.append(src["value"].strip().upper())
         if rate:
             try:
-                bits.append(f"{int(rate['value'].split(',')[0])} Hz")
+                hz = int(rate["value"].split(",")[0])
+                fam = "1x" if hz <= 48000 else ("2x" if hz <= 96000 else "4x")
+                bits.append(f"{hz} Hz · {fam}")
             except ValueError:
                 pass
         self.clock_lbl.set_text(" · ".join(bits))
@@ -638,7 +684,8 @@ class Panel(Gtk.ApplicationWindow):
         sc.set_child(row)
         page.append(sc)
         page.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
-        master = self._master_strip(kk, model["buses"][kk])
+        master = self._master_strip(kk, model["buses"][kk],
+                                    sorted(model["buses"]))
         master.set_margin_top(8)
         master.set_margin_bottom(8)
         master.set_margin_end(8)
@@ -660,19 +707,80 @@ class Panel(Gtk.ApplicationWindow):
         grid = Gtk.Grid(row_spacing=8, column_spacing=14, margin_top=16,
                         margin_bottom=16, margin_start=16, margin_end=16)
         for r, c in enumerate(ctrls):
-            lbl = Gtk.Label(label=c["name"], xalign=0, hexpand=True)
+            lbl = Gtk.Label(label=c["name"], xalign=0, hexpand=True,
+                            valign=Gtk.Align.START)
             lbl.add_css_class("dim-label")
             grid.attach(lbl, 0, r, 1, 1)
-            grid.attach(self._inline_widget(c), 1, r, 1, 1)
+            if c["name"] == "Sample Rate" and c["type"] == "enum":
+                grid.attach(self._rate_selector(c), 1, r, 1, 1)
+            else:
+                grid.attach(self._inline_widget(c), 1, r, 1, 1)
         sc.set_child(grid)
         return sc
+
+    def _rate_selector(self, c):
+        """Sample-rate picker with the rates grouped by 1x/2x/4x clock family."""
+        def fam_of(hz):
+            return "1x" if hz <= 48000 else ("2x" if hz <= 96000 else "4x")
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        btns, groups, first = {}, {}, None
+        for it in (c["items"] or []):
+            try:
+                hz = int(it)
+            except ValueError:
+                continue
+            fam = fam_of(hz)
+            if fam not in groups:
+                cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+                linked = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+                linked.add_css_class("linked")
+                fl = Gtk.Label(label=fam)
+                fl.add_css_class("sub")
+                cell.append(linked)
+                cell.append(fl)
+                row.append(cell)
+                groups[fam] = linked
+            b = Gtk.ToggleButton(label=f"{hz / 1000:g}k")
+            b.add_css_class("tbtn")
+            if first is None:
+                first = b
+            else:
+                b.set_group(first)              # radio behaviour
+            groups[fam].append(b)
+            btns[it] = b
+        self._syncing = True                    # initial selection is not a write
+        try:
+            if c["value"].strip() in btns:
+                btns[c["value"].strip()].set_active(True)
+        finally:
+            self._syncing = False
+        for it, b in btns.items():
+            b.connect("toggled", self._on_rate, c["name"], it)
+        self._register(c["name"],
+                       lambda v, bt=btns:
+                       bt[v.strip()].set_active(True) if v.strip() in bt else None)
+        warn = Gtk.Label(label="Channel counts per interface shrink in the "
+                               "2x/4x families (AudioWire bandwidth).",
+                         xalign=0, wrap=True)
+        warn.add_css_class("sub")
+        outer.append(row)
+        outer.append(warn)
+        return outer
+
+    def _on_rate(self, btn, name, item):
+        if self._syncing or not btn.get_active():
+            return
+        self._touch(name)
+        self._apply(name, item)
 
     # -- strips -------------------------------------------------------------
     def _send_strip(self, kk, nn, send):
         box = self._strip_box(f"IN {nn:02d}", master=False)
         vol = send.get("vol")
         row = self._fader_row(vol, default=self._unity(vol),
-                              on_change=lambda v, kk=kk, nn=nn: self._link_send(kk, nn, v))
+                              on_change=lambda v, user, kk=kk, nn=nn:
+                              self._fan_send(kk, nn, v, user))
         box.append(row)
         pan = send.get("pan")
         if pan:
@@ -684,11 +792,18 @@ class Panel(Gtk.ApplicationWindow):
         if send.get("solo"):
             btn = self._toggle(send["solo"], "S", "s", solo=True)
             btns.append(btn)
+        g = Gtk.ToggleButton(label="G")
+        g.add_css_class("tbtn")
+        g.add_css_class("g")
+        g.set_tooltip_text("Gang — ganged strips in this mix move together, "
+                           "keeping their relative offsets")
+        g.connect("toggled", self._on_gang, kk, nn)
+        btns.append(g)
         box.append(btns)
         box.append(self._name_label(nn))
         return box
 
-    def _master_strip(self, kk, bus):
+    def _master_strip(self, kk, bus, all_buses):
         box = self._strip_box(f"MIX {kk:02d}", master=True)
         mv = bus.get("master")
         box.append(self._fader_row(mv, default=self._unity(mv)))
@@ -696,6 +811,29 @@ class Panel(Gtk.ApplicationWindow):
             btn = self._toggle(bus["mute"], "MUTE", "m")
             btn.set_halign(Gtk.Align.CENTER)
             box.append(btn)
+        ops = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3,
+                      halign=Gtk.Align.CENTER)
+        others = [t for t in all_buses if t != kk]
+        if others:
+            mb = Gtk.MenuButton(label="CPY")
+            mb.add_css_class("tbtn")
+            mb.set_tooltip_text("Copy this mix's sends to another mix")
+            pop = Gtk.Popover()
+            pb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            for t in others:
+                b = Gtk.Button(label=f"→ Mix {t:02d}")
+                b.connect("clicked", self._on_copy_mix, kk, t, pop)
+                pb.append(b)
+            pop.set_child(pb)
+            mb.set_popover(pop)
+            ops.append(mb)
+        rst = Gtk.Button(label="RST")
+        rst.add_css_class("tbtn")
+        rst.set_tooltip_text("Reset this mix: sends to unity, pans centred, "
+                             "mutes and solos off")
+        rst.connect("clicked", lambda *_, kk=kk: self._reset_mix(kk))
+        ops.append(rst)
+        box.append(ops)
         sub = Gtk.Label(label="MASTER")
         sub.add_css_class("sub")
         box.append(sub)
@@ -773,8 +911,9 @@ class Panel(Gtk.ApplicationWindow):
         f.set_size_request(-1, 168)
         if default is not None and lo < default < hi:
             f.add_mark(default, Gtk.PositionType.LEFT, None)
-        val = Gtk.Label()
+        val = Gtk.EditableLabel()
         val.add_css_class("db")
+        val.set_halign(Gtk.Align.CENTER)
         try:
             f.set_value(int(c["value"].split(",")[0]) if c else lo)
         except (ValueError, AttributeError):
@@ -782,7 +921,9 @@ class Panel(Gtk.ApplicationWindow):
         val.set_text(fmt(int(f.get_value())))
         if c:
             f.set_tooltip_text(c["name"])
+            val.set_tooltip_text("Click to type an exact value")
             f.connect("value-changed", self._on_fader, c["name"], val, fmt, on_change)
+            val.connect("notify::editing", self._on_val_edit, f, fmt)
             if default is not None:
                 dbl = Gtk.GestureClick()
                 dbl.connect("pressed",
@@ -793,7 +934,9 @@ class Panel(Gtk.ApplicationWindow):
                            lambda v, s=f: s.set_value(self._as_int(v, lo)))
             m = _SND.match(c["name"])
             if m and m.group(3) == "Volume":
-                self._send_scales[(int(m.group(1)), int(m.group(2)))] = f
+                key = (int(m.group(1)), int(m.group(2)))
+                self._send_scales[key] = f
+                self._last_val[key] = int(f.get_value())
         wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3,
                        halign=Gtk.Align.CENTER)
         row.append(f)
@@ -809,8 +952,10 @@ class Panel(Gtk.ApplicationWindow):
         hi = c["max"] if c["max"] is not None else 100
         centre = (lo + hi) // 2
         val = self._as_int(c["value"], centre)
-        lbl = Gtk.Label()
+        lbl = Gtk.EditableLabel()
         lbl.add_css_class("sub")
+        lbl.set_halign(Gtk.Align.CENTER)
+        lbl.set_tooltip_text("Click to type: L20, C, R35 or a raw value")
         def show(v):
             lbl.set_text("C" if v == centre
                          else (f"L{centre - v}" if v < centre else f"R{v - centre}"))
@@ -823,6 +968,25 @@ class Panel(Gtk.ApplicationWindow):
         knob.set_tooltip_text(f"{name} — drag up/down (Ctrl: fine), "
                               "scroll, double-click: centre")
         show(val)
+        def typed(_l, _p):
+            if lbl.get_editing():
+                return
+            t = lbl.get_text().strip().upper()
+            v = None
+            if t in ("C", ""):
+                v = centre
+            else:
+                m = re.match(r"^([LR])\s*(\d+)$", t)
+                if m:
+                    off = int(m.group(2))
+                    v = centre - off if m.group(1) == "L" else centre + off
+                elif re.match(r"^-?\d+$", t):
+                    v = int(t)
+            if v is not None and v != knob.value:
+                knob._set(max(lo, min(hi, v)))  # user path: applies + re-shows
+            else:
+                show(knob.value)
+        lbl.connect("notify::editing", typed)
         self._register(name,
                        lambda v, k=knob:
                        (k.set_value_silent(self._as_int(v, centre)), show(k.value)))
@@ -968,16 +1132,38 @@ class Panel(Gtk.ApplicationWindow):
                 b.set_active(False)             # handler pushes the write
         self._show_status("all solos cleared")
 
-    def _link_send(self, kk, nn, value):
+    def _on_gang(self, btn, kk, nn):
+        if btn.get_active():
+            self._gang.add((kk, nn))
+        else:
+            self._gang.discard((kk, nn))
+
+    def _fan_send(self, kk, nn, v, user):
+        """Fan a send-fader move out to its stereo partner (absolute) and to
+        ganged strips in the same mix (relative, keeping offsets)."""
+        prev = self._last_val.get((kk, nn), v)
+        self._last_val[(kk, nn)] = v
+        if not user or self._fanning:
+            return
+        targets = {}
         partner = self._pair_of.get(nn)
-        if partner is None or self._linking:
+        if partner is not None:
+            targets[partner] = "abs"
+        if (kk, nn) in self._gang:
+            for (k, m) in self._gang:
+                if k == kk and m != nn:
+                    targets.setdefault(m, "rel")
+        if not targets:
             return
-        scale = self._send_scales.get((kk, partner))
-        if not scale:
-            return
-        self._linking = True
-        scale.set_value(value)                  # partner handler writes it out
-        self._linking = False
+        delta = v - prev
+        self._fanning = True
+        try:
+            for m, mode in targets.items():
+                s = self._send_scales.get((kk, m))
+                if s:                           # each handler writes it out
+                    s.set_value(v if mode == "abs" else s.get_value() + delta)
+        finally:
+            self._fanning = False
 
     # -- snapshots --------------------------------------------------------------
     def _snapshot(self):
@@ -1023,19 +1209,181 @@ class Panel(Gtk.ApplicationWindow):
         if not isinstance(data, dict) or "controls" not in data:
             self._show_status("not a motu424 mix snapshot", err=True)
             return
+        n = self._apply_snapshot(data["controls"])
+        self._show_status(f"snapshot applied ({n} controls)")
+
+    def _apply_snapshot(self, controls):
+        """Set widgets silently and push every value to the card."""
         applied = 0
         self._syncing = True
         try:
-            for name, value in data["controls"].items():
+            for name, value in controls.items():
                 if name not in self._sync:
                     continue
-                self._sync[name](value)         # update the widget silently
-                self._apply(name, value)        # and push it to the card
+                self._sync[name](value)
+                self._apply(name, value)
                 applied += 1
         finally:
             self._syncing = False
         self._update_solo_ind()
-        self._show_status(f"snapshot applied ({applied} controls)")
+        return applied
+
+    # -- scenes / mix operations ---------------------------------------------
+    def _on_scene(self, _btn, slot):
+        if self.scene_set.get_active():
+            self.scene_set.set_active(False)
+            if not self._byname:
+                self._show_status("nothing to store", err=True)
+                return
+            self.scenes[slot] = self._snapshot()
+            try:
+                _save_json(SCENES_FILE, self.scenes)
+            except OSError as e:
+                self._show_status(f"cannot save scenes: {e}", err=True)
+                return
+            self._show_status(
+                f"scene {slot} stored ({len(self.scenes[slot])} controls)")
+            return
+        snap = self.scenes.get(slot)
+        if not snap:
+            self._show_status(
+                f"scene {slot} is empty — press SET then {slot} to store it",
+                err=True)
+            return
+        n = self._apply_snapshot(snap)
+        self._show_status(f"scene {slot} recalled ({n} controls)")
+
+    def _on_copy_mix(self, _btn, src, dst, pop):
+        pop.popdown()
+        payload = {}
+        for name, c in self._byname.items():
+            m = _SND.match(name)
+            if not m or int(m.group(1)) != src:
+                continue
+            payload[f"Mix {dst:02d} Input {m.group(2)} {m.group(3)}"] = c["value"]
+        n = self._apply_snapshot(payload)
+        self._show_status(f"Mix {src:02d} sends copied to Mix {dst:02d} "
+                          f"({n} controls)")
+
+    def _reset_mix(self, kk):
+        payload = {}
+        for name, c in self._byname.items():
+            m = _SND.match(name)
+            if not m or int(m.group(1)) != kk:
+                continue
+            field = m.group(3)
+            if field == "Volume":
+                payload[name] = str(self._unity(c))
+            elif field == "Pan":
+                lo = c["min"] if c["min"] is not None else -100
+                hi = c["max"] if c["max"] is not None else 100
+                payload[name] = str((lo + hi) // 2)
+            else:
+                payload[name] = "off"
+        n = self._apply_snapshot(payload)
+        self._show_status(f"Mix {kk:02d} reset ({n} controls)")
+
+    # -- diagnostics -----------------------------------------------------------
+    def _diag_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6,
+                      margin_top=6, margin_bottom=6, margin_start=8, margin_end=8)
+        btn = Gtk.Button(label="Refresh diagnostics")
+        btn.connect("clicked", lambda *_: self._diag_refresh())
+        bar.append(btn)
+        self.diag_spin = Gtk.Spinner()
+        bar.append(self.diag_spin)
+        box.append(bar)
+        sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        self.diag_view = Gtk.TextView(editable=False, monospace=True,
+                                      cursor_visible=False,
+                                      left_margin=10, right_margin=10,
+                                      top_margin=6, bottom_margin=6)
+        self.diag_view.add_css_class("diagview")
+        sc.set_child(self.diag_view)
+        box.append(sc)
+        self._diag_refresh()
+        return box
+
+    def _diag_refresh(self):
+        self.diag_spin.start()
+        dev = self.current_dev()
+        threading.Thread(target=self._diag_collect, args=(dev,),
+                         daemon=True).start()
+
+    def _diag_collect(self, dev):
+        lines = []
+        add = lines.append
+        add("== MOTU PCI card (vendor 0x137a) ==")
+        models = {"0x0003": "PCI-324", "0x0004": "PCI-424",
+                  "0x0005": "PCIe-424 (HD Express)"}
+        found = False
+        base = "/sys/bus/pci/devices"
+        try:
+            for d in sorted(os.listdir(base)):
+                p = os.path.join(base, d)
+                def rd(attr, p=p):
+                    try:
+                        with open(os.path.join(p, attr)) as f:
+                            return f.read().strip()
+                    except OSError:
+                        return "?"
+                if rd("vendor").lower() != "0x137a":
+                    continue
+                found = True
+                did = rd("device").lower()
+                drv = os.path.join(p, "driver")
+                bound = (os.path.basename(os.path.realpath(drv))
+                         if os.path.exists(drv) else "(unbound)")
+                add(f"  {d}  device {did} ({models.get(did, 'unknown model')})"
+                    f"  rev {rd('revision')}  irq {rd('irq')}  driver {bound}")
+        except OSError as e:
+            add(f"  scan failed: {e}")
+        if not found:
+            add("  none found")
+        add("")
+        add("== motu424 kernel module ==")
+        if os.path.isdir("/sys/module/motu424"):
+            add("  loaded: yes")
+            pdir = "/sys/module/motu424/parameters"
+            if os.path.isdir(pdir):
+                for prm in sorted(os.listdir(pdir)):
+                    try:
+                        with open(os.path.join(pdir, prm)) as f:
+                            add(f"  param {prm} = {f.read().strip()}")
+                    except OSError:
+                        pass
+        else:
+            add("  loaded: no   (make load)")
+        add("")
+        add("== ALSA cards ==")
+        try:
+            with open("/proc/asound/cards") as f:
+                txt = f.read().rstrip()
+            add("  " + "\n  ".join(txt.splitlines()) if txt else "  (none)")
+        except OSError as e:
+            add(f"  {e}")
+        add("")
+        add(f"== motu424-ctl status ({dev or 'auto'}) ==")
+        rc, out, err = run_ctl(["status"], dev)
+        txt = (out or err or f"exit {rc}").strip()
+        add("  " + "\n  ".join(txt.splitlines()) if txt else "  (empty)")
+        add("")
+        add("== kernel log (motu424) ==")
+        try:
+            p = subprocess.run(["journalctl", "-k", "--no-pager", "-n", "10",
+                                "-g", "motu424"],
+                               capture_output=True, text=True, timeout=5)
+            txt = (p.stdout or p.stderr).strip()
+            add("  " + "\n  ".join(txt.splitlines()) if txt else "  (nothing)")
+        except (OSError, subprocess.TimeoutExpired) as e:
+            add(f"  journalctl unavailable: {e}")
+        GLib.idle_add(self._diag_done, "\n".join(lines))
+
+    def _diag_done(self, text):
+        self.diag_spin.stop()
+        self.diag_view.get_buffer().set_text(text)
+        return False
 
     # -- meter animation (demo only; no per-channel level kcontrol exists) ---
     def _tick_meters(self):
@@ -1058,6 +1406,12 @@ class Panel(Gtk.ApplicationWindow):
         if name in self._byname:
             self._byname[name]["value"] = value
         if DEMO:
+            # the demo card locks instantly onto the requested rate
+            if name == "Sample Rate" and "Clock Rate" in self._byname:
+                self._byname["Clock Rate"]["value"] = value
+                if "Clock Rate" in self._sync:
+                    self._sync["Clock Rate"](value)
+                self._update_clock_label()
             return
         self.writer.push(name, value, self.current_dev())
 
@@ -1083,12 +1437,20 @@ class Panel(Gtk.ApplicationWindow):
     def _on_fader(self, scale, name, val_label, fmt, on_change):
         v = int(scale.get_value())
         val_label.set_text(fmt(v))
+        if on_change:
+            on_change(v, not self._syncing)     # fan-out tracks values either way
         if self._syncing:
             return
         self._touch(name)
         self._apply(name, str(v))
-        if on_change:
-            on_change(v)
+
+    def _on_val_edit(self, lbl, _pspec, scale, fmt):
+        if lbl.get_editing():
+            return
+        m = re.search(r"-?\d+", lbl.get_text())
+        if m:
+            scale.set_value(int(m.group()))     # user path: handler applies
+        lbl.set_text(fmt(int(scale.get_value())))
 
     def _on_scale(self, scale, name):
         if self._syncing:
