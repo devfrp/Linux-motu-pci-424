@@ -9,8 +9,8 @@ the CueMix model from the kcontrol names (see docs/cuemix-control-map.md), and
 renders it like the real console:
 
   * one tab per mix bus - a scrollable row of channel strips (send fader +
-    drawn peak-hold meter + pan + mute/solo) with the bus MASTER strip pinned
-    on the right, outside the scroll area;
+    drawn peak-hold meter + rotary pan pot + mute/solo) with the bus MASTER
+    strip pinned on the right, outside the scroll area;
   * an "Inputs" tab - per-input analog conditioning (trim fader, pad, phase,
     stereo pair, mute);
   * a "Clock & format" tab - clock source, locked rate, metering.
@@ -28,6 +28,8 @@ Console behaviours beyond the basics:
     moves its partner);
   * a global SOLO indicator lights whenever any solo is engaged - click it to
     clear every solo at once;
+  * pan is a real rotary pot: drag it vertically (hold Ctrl for fine moves),
+    scroll over it, double-click to recentre;
   * mix snapshots: save/recall the whole console state as JSON from the menu;
   * channel names are editable in place and persist across sessions;
   * double-click a fader to reset it (sends/master to unity, pan to centre,
@@ -98,9 +100,6 @@ scale.fader slider { min-width:22px; min-height:20px; margin:0; background:#c9d2
                      border:1px solid #7c8791; border-radius:3px; }
 scale.fader mark indicator { background:#4a5560; min-height:1px; min-width:6px; }
 .strip.master scale.fader slider { background:#57c96a; border-color:#3a8f49; }
-scale.pan trough { min-height:5px; background:#0d1013; }
-scale.pan slider { min-width:16px; min-height:16px; margin:0; background:#9aa6b1;
-                   border-radius:50%; }
 .tbtn { font-family:monospace; font-size:10px; padding:2px 0; min-width:22px; }
 .tbtn.m:checked { background:#e5534b; color:#0d1013; }
 .tbtn.s:checked { background:#f0a63a; color:#0d1013; }
@@ -394,6 +393,92 @@ class Meter(Gtk.DrawingArea):
             cr.set_source_rgb(0.85, 0.88, 0.9)
             cr.rectangle(0, top + bar_h * (1.0 - self.peak) - 1, w, 2)
             cr.fill()
+
+
+class Knob(Gtk.DrawingArea):
+    """Rotary pot (270° sweep): drag vertically to turn (Ctrl = fine), scroll
+    over it, double-click to recentre. `on_change` fires on user moves only;
+    `set_value_silent` is the polling/snapshot path."""
+
+    SWEEP = math.radians(135)          # each side of 12 o'clock
+
+    def __init__(self, lo, hi, value, on_change):
+        super().__init__()
+        self.lo, self.hi = lo, hi
+        self.value = max(lo, min(hi, value))
+        self.on_change = on_change
+        self._v0 = self.value
+        self.set_content_width(36)
+        self.set_content_height(36)
+        self.set_draw_func(self._draw)
+        drag = Gtk.GestureDrag()
+        drag.connect("drag-begin", lambda *_: setattr(self, "_v0", self.value))
+        drag.connect("drag-update", self._drag)
+        self.add_controller(drag)
+        scroll = Gtk.EventControllerScroll.new(
+            Gtk.EventControllerScrollFlags.VERTICAL)
+        scroll.connect("scroll", self._scroll)
+        self.add_controller(scroll)
+        dbl = Gtk.GestureClick()
+        dbl.connect("pressed",
+                    lambda _g, n, _x, _y:
+                    self._set((self.lo + self.hi) // 2) if n == 2 else None)
+        self.add_controller(dbl)
+
+    def set_value_silent(self, v):
+        self.value = max(self.lo, min(self.hi, v))
+        self.queue_draw()
+
+    def _set(self, v):
+        v = max(self.lo, min(self.hi, int(round(v))))
+        if v != self.value:
+            self.value = v
+            self.queue_draw()
+            self.on_change(v)
+
+    def _drag(self, gesture, _dx, dy):
+        fine = False
+        try:
+            fine = bool(gesture.get_current_event_state()
+                        & Gdk.ModifierType.CONTROL_MASK)
+        except Exception:  # noqa: BLE001
+            pass
+        span = self.hi - self.lo
+        self._set(self._v0 - dy * span / (600.0 if fine else 150.0))
+
+    def _scroll(self, _ctl, _dx, dy):
+        step = max(1, (self.hi - self.lo) // 40)
+        self._set(self.value - dy * step)
+        return True
+
+    def _draw(self, _area, cr, w, h):
+        cx, cy, r = w / 2.0, h / 2.0, min(w, h) / 2.0 - 2
+        span = (self.hi - self.lo) or 1
+        frac = (self.value - self.lo) / span
+        up = -math.pi / 2
+        a = up + (frac * 2 - 1) * self.SWEEP
+        cr.set_line_width(3)
+        cr.set_source_rgb(0.05, 0.06, 0.075)          # track ring
+        cr.arc(cx, cy, r, up - self.SWEEP, up + self.SWEEP)
+        cr.stroke()
+        cr.set_source_rgb(0.35, 0.55, 0.84)           # deviation arc from centre
+        if a >= up:
+            cr.arc(cx, cy, r, up, a)
+        else:
+            cr.arc(cx, cy, r, a, up)
+        cr.stroke()
+        cr.set_source_rgb(0.15, 0.18, 0.22)           # body
+        cr.arc(cx, cy, r - 4.5, 0, 2 * math.pi)
+        cr.fill()
+        cr.set_line_width(1)
+        cr.set_source_rgb(0.29, 0.34, 0.39)
+        cr.arc(cx, cy, r - 4.5, 0, 2 * math.pi)
+        cr.stroke()
+        cr.set_line_width(2)                          # pointer
+        cr.set_source_rgb(0.79, 0.82, 0.86)
+        cr.move_to(cx + (r - 10) * math.cos(a), cy + (r - 10) * math.sin(a))
+        cr.line_to(cx + (r - 4.5) * math.cos(a), cy + (r - 4.5) * math.sin(a))
+        cr.stroke()
 
 
 class Panel(Gtk.ApplicationWindow):
@@ -719,29 +804,30 @@ class Panel(Gtk.ApplicationWindow):
     def _pan(self, c):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1,
                       halign=Gtk.Align.CENTER)
+        name = c["name"]
         lo = c["min"] if c["min"] is not None else -100
         hi = c["max"] if c["max"] is not None else 100
-        centre = (lo + hi) / 2
-        s = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, lo, hi, 1)
-        s.add_css_class("pan")
-        s.set_draw_value(False)
-        s.set_size_request(54, -1)
-        s.add_mark(centre, Gtk.PositionType.BOTTOM, None)
-        try:
-            s.set_value(int(c["value"].split(",")[0]))
-        except (ValueError, AttributeError):
-            s.set_value(centre)
-        s.set_tooltip_text(c["name"])
-        s.connect("value-changed", self._on_scale, c["name"])
-        dbl = Gtk.GestureClick()
-        dbl.connect("pressed",
-                    lambda _g, n, _x, _y: s.set_value(centre) if n == 2 else None)
-        s.add_controller(dbl)
-        self._register(c["name"], lambda v, s=s: s.set_value(self._as_int(v, centre)))
-        cap = Gtk.Label(label="PAN")
-        cap.add_css_class("sub")
-        box.append(s)
-        box.append(cap)
+        centre = (lo + hi) // 2
+        val = self._as_int(c["value"], centre)
+        lbl = Gtk.Label()
+        lbl.add_css_class("sub")
+        def show(v):
+            lbl.set_text("C" if v == centre
+                         else (f"L{centre - v}" if v < centre else f"R{v - centre}"))
+        def changed(v):
+            show(v)
+            self._touch(name)
+            self._apply(name, str(v))
+        knob = Knob(lo, hi, val, changed)
+        knob.set_halign(Gtk.Align.CENTER)
+        knob.set_tooltip_text(f"{name} — drag up/down (Ctrl: fine), "
+                              "scroll, double-click: centre")
+        show(val)
+        self._register(name,
+                       lambda v, k=knob:
+                       (k.set_value_silent(self._as_int(v, centre)), show(k.value)))
+        box.append(knob)
+        box.append(lbl)
         return box
 
     def _toggle(self, c, cap, cls, solo=False):
