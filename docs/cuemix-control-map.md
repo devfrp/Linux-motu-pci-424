@@ -63,6 +63,9 @@ already knows them and pretty-prints the ones it finds. `N` = input index,
 | `Mix KK Input NN Pan`           | INT     | send pan, −100..+100 |
 | `Mix KK Input NN Mute Switch`   | BOOL    | send mute |
 | `Mix KK Input NN Solo Switch`   | BOOL    | send solo (PFL) |
+| `Talkback Switch`               | BOOL    | talkback into the mixes (`TALK` label in the layout) |
+| `Listenback Switch`             | BOOL    | listenback into the mixes (`LISTEN`) |
+| `Talkback Atten Volume`         | INT     | dB the mixes duck while talk/listen is engaged (`ATTEN`) |
 | `Output NN Volume`              | INT     | output-pair monitor level |
 | `Output NN Mute Switch`         | BOOL    | output-pair mute |
 | `Output NN Source`              | ENUM    | patchbay: `Direct` or the mix bus feeding pair NN |
@@ -77,6 +80,10 @@ Linux-side convenience: a *virtual patchbay* that can also feed a pair its
 direct PCM channels, with `Patchbay Switch` as a global bypass (off = identity
 routing, the safe default). They land in the same card-reported coefficient
 block as the matrix sends (below).
+
+The talkback rows map the layout's `ATTEN`/`TALK`/`LISTEN` labels; which input
+feeds the talkback circuit (a CueMix FX settings dialog on Windows/macOS) is
+still an open question.
 
 These names are the contract between the kernel driver and `motu424-ctl`; keep
 them in sync with `tools/motu424-ctl.c` (`KNOWN_*` tables) if either changes.

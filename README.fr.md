@@ -125,8 +125,9 @@ qui route chaque paire de sorties vers un bus de mix ou son flux PCM direct,
 avec un interrupteur de contournement global), un onglet Horloge & format, et
 un onglet Diagnostics qui fonctionne même sans carte ni pilote chargé.
 
-Au-delà des bases : liaison paires stéréo et gangs, scènes A/B, copie/reset de
-mix par bus, snapshots de mix en JSON (Ctrl+S / Ctrl+O), annulation Ctrl+Z des
+Au-delà des bases : liaison paires stéréo et gangs, scènes A/B, boutons
+TALK / LISTEN (talkback) dans l'en-tête, copie/reset de mix par bus, snapshots
+de mix en JSON (Ctrl+S / Ctrl+O), annulation Ctrl+Z des
 opérations globales, noms de canaux éditables, et un dialogue « Shortcuts &
 tips » sur F1. Les écritures de contrôles sont regroupées dans un thread de
 travail et le matériel est re-sondé en arrière-plan : la console suit les
