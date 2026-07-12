@@ -303,7 +303,7 @@ static int cmd_status(snd_hctl_t *hctl, const char *ctlname)
 {
 	snd_hctl_elem_t *elem;
 	snd_ctl_elem_info_t *info;
-	int inputs = 0, mixes = 0, sends = 0, total = 0;
+	int inputs = 0, mixes = 0, sends = 0, outputs = 0, total = 0;
 
 	printf("MOTU card on %s\n", ctlname);
 
@@ -336,9 +336,22 @@ static int cmd_status(snd_hctl_t *hctl, const char *ctlname)
 			mixes++;
 		else if (strncmp(nm, "Mix ", 4) == 0 && strstr(nm, "Volume"))
 			sends++;
+		else if (strncmp(nm, "Output ", 7) == 0 && strstr(nm, "Volume"))
+			outputs++;
 	}
 	printf("  Mixer        : %d input(s), %d mix bus(es), %d matrix send(s)\n",
 	       inputs, mixes, sends);
+	if (outputs) {
+		printf("  Outputs      : %d pair(s)", outputs);
+		if ((elem = find_by_name(hctl, "Patchbay Switch"))) {
+			snd_ctl_elem_info_alloca(&info);
+			if (snd_hctl_elem_info(elem, info) == 0) {
+				printf(", patchbay ");
+				print_value(elem, info);
+			}
+		}
+		putchar('\n');
+	}
 	printf("  Controls     : %d total   (use 'list' to see them all)\n",
 	       total);
 	if (!total)

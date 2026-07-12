@@ -13,6 +13,11 @@ renders it like the real console:
     strip pinned on the right, outside the scroll area;
   * an "Inputs" tab - per-input analog conditioning (trim fader, pad, phase,
     stereo pair, mute);
+  * an "Outputs" tab - one monitor strip per output pair (volume fader, meter,
+    mute) with the pair's routed source shown under the strip;
+  * a "Patchbay" tab - a virtual patchbay assigning each output pair its
+    source (a mix bus or the pair's direct PCM feed). One switch disables the
+    whole patchbay: off = direct routing, and the matrix greys out;
   * a "Clock & format" tab - clock source, a sample-rate selector grouped by
     1x/2x/4x clock family, locked rate, metering;
   * a "Diagnostics" tab - PCI / kernel-module / ALSA / kernel-log health
@@ -140,6 +145,10 @@ scale.fader mark indicator { background:#4a5560; min-height:1px; min-width:6px; 
 .help { background:#15181c; }
 .help .db { font-family:monospace; font-size:11px; color:#d7dee4; }
 .help .dim-label { color:#8b97a1; }
+.patch .cap { font-family:monospace; font-size:10px; letter-spacing:.06em;
+              color:#8b97a1; }
+.patch .sub { font-family:monospace; font-size:9px; color:#6f7b85;
+              letter-spacing:.08em; }
 """
 
 
@@ -212,20 +221,30 @@ _IN = re.compile(r"^Input (\d+) (Trim Volume|Pad Switch|Phase Switch|"
 _MAS = re.compile(r"^Mix (\d+) Master Volume$")
 _MMU = re.compile(r"^Mix (\d+) Mute Switch$")
 _SND = re.compile(r"^Mix (\d+) Input (\d+) (Volume|Pan|Mute Switch|Solo Switch)$")
+_OUT = re.compile(r"^Output (\d+) (Volume|Mute Switch|Source)$")
 _INKEY = {"Trim Volume": "trim", "Pad Switch": "pad", "Phase Switch": "phase",
           "Stereo Switch": "stereo", "Mute Switch": "mute"}
 _SNDKEY = {"Volume": "vol", "Pan": "pan", "Mute Switch": "mute",
            "Solo Switch": "solo"}
+_OUTKEY = {"Volume": "vol", "Mute Switch": "mute", "Source": "src"}
 
 
 def build_model(controls):
     """Group flat controls into the CueMix matrix model."""
-    inputs, buses, glob, other = {}, {}, [], []
+    inputs, buses, outputs, glob, other = {}, {}, {}, [], []
+    patchbay = None
     for c in controls:
         n = c["name"]
         m = _IN.match(n)
         if m:
             inputs.setdefault(int(m.group(1)), {})[_INKEY[m.group(2)]] = c
+            continue
+        m = _OUT.match(n)
+        if m:
+            outputs.setdefault(int(m.group(1)), {})[_OUTKEY[m.group(2)]] = c
+            continue
+        if n == "Patchbay Switch":
+            patchbay = c
             continue
         m = _MAS.match(n)
         if m:
@@ -247,10 +266,11 @@ def build_model(controls):
             glob.append(c)
         else:
             other.append(c)
-    return {"inputs": inputs, "buses": buses, "globals": glob, "other": other}
+    return {"inputs": inputs, "buses": buses, "outputs": outputs,
+            "patchbay": patchbay, "globals": glob, "other": other}
 
 
-def demo_controls(n_in=8, n_bus=3):
+def demo_controls(n_in=8, n_bus=3, n_out=4):
     """Synthetic CueMix kcontrol set so the console can be previewed without a card."""
     import random
     out = [
@@ -285,6 +305,14 @@ def demo_controls(n_in=8, n_bus=3):
             out += [i(sp + "Volume", random.randint(40, 110), 0, 127),
                     i(sp + "Pan", random.randint(-60, 60), -100, 100),
                     b(sp + "Mute Switch", "off"), b(sp + "Solo Switch", "off")]
+    out.append(b("Patchbay Switch", "on"))
+    sources = ["Direct"] + [f"Mix {kk:02d}" for kk in range(n_bus)]
+    for nn in range(n_out):
+        op = f"Output {nn:02d} "
+        out += [i(op + "Volume", 100, 0, 127), b(op + "Mute Switch", "off"),
+                {"name": op + "Source", "type": "enum",
+                 "value": f"Mix {nn:02d}" if nn < n_bus else "Direct",
+                 "items": sources, "min": None, "max": None}]
     return out
 
 
@@ -523,6 +551,7 @@ class Panel(Gtk.ApplicationWindow):
 
         self.meters = []                    # [Meter, phase] for demo animation
         self._sync = {}                     # kcontrol name -> setter(value_str)
+        self._obs = {}                      # kcontrol name -> passive callbacks
         self._byname = {}                   # kcontrol name -> control dict
         self._touched = {}                  # name -> monotonic time of last user edit
         self._send_scales = {}              # (bus, input) -> Gtk.Scale
@@ -620,6 +649,7 @@ class Panel(Gtk.ApplicationWindow):
     def reload(self):
         self.meters = []
         self._sync = {}
+        self._obs = {}
         self._byname = {}
         self._send_scales = {}
         self._solo_btns = []
@@ -654,13 +684,14 @@ class Panel(Gtk.ApplicationWindow):
         nb.set_vexpand(True)
         if err_page is not None:
             nb.append_page(err_page, Gtk.Label(label="Console"))
-        elif not model["buses"] and not model["inputs"] and not model["other"]:
+        elif (not model["buses"] and not model["inputs"]
+              and not model["outputs"] and not model["other"]):
             nb.append_page(self._notice(
                 "This card exposes no adjustable controls yet.",
                 "The CueMix mixer is driver Phase 5 (needs kcontrols on real "
                 "hardware). Try  motu424-gui --demo  to preview the console."),
                 Gtk.Label(label="Console"))
-        elif not model["buses"] and not model["inputs"]:
+        elif not model["buses"] and not model["inputs"] and not model["outputs"]:
             # generic ALSA card: fall back to a plain control list
             nb.append_page(self._generic(model["other"]),
                            Gtk.Label(label="Controls"))
@@ -678,6 +709,13 @@ class Panel(Gtk.ApplicationWindow):
             if model["inputs"]:
                 nb.append_page(self._inputs_page(model["inputs"]),
                                Gtk.Label(label="Inputs"))
+            if model["outputs"]:
+                nb.append_page(self._outputs_page(model["outputs"]),
+                               Gtk.Label(label="Outputs"))
+            if model["patchbay"] or any(
+                    "src" in o for o in model["outputs"].values()):
+                nb.append_page(self._patchbay_page(model),
+                               Gtk.Label(label="Patchbay"))
             if model["globals"] or model["other"]:
                 nb.append_page(self._clock_page(model["globals"] + model["other"]),
                                Gtk.Label(label="Clock & format"))
@@ -897,10 +935,104 @@ class Panel(Gtk.ApplicationWindow):
         box.append(self._name_label(nn))
         return box
 
-    def _name_label(self, nn):
+    @staticmethod
+    def _out_caption(nn):
+        """Output pair nn covers physical channels 2nn+1 / 2nn+2."""
+        return f"{2 * nn + 1}-{2 * nn + 2}"
+
+    def _output_strip(self, nn, out):
+        """Monitor strip for one output pair: volume, mute, routed source."""
+        pair = self._out_caption(nn)
+        box = self._strip_box(f"OUT {pair}", master=False)
+        vol = out.get("vol")
+        box.append(self._fader_row(vol, default=self._unity(vol)))
+        if out.get("mute"):
+            btn = self._toggle(out["mute"], "MUTE", "m")
+            btn.set_halign(Gtk.Align.CENTER)
+            box.append(btn)
+        src = out.get("src")
+        if src:
+            lbl = Gtk.Label(label="")
+            lbl.add_css_class("sub")
+            def show(_v=None, l=lbl, name=src["name"]):
+                pb = self._byname.get("Patchbay Switch")
+                if pb and pb["value"].split(",")[0].strip() != "on":
+                    l.set_text("← direct (patchbay off)")
+                    return
+                v = self._byname[name]["value"].strip()
+                l.set_text("← direct" if v == "Direct" else f"← {v}")
+            show()
+            self._observe(src["name"], show)
+            self._observe("Patchbay Switch", show)
+            box.append(lbl)
+        box.append(self._name_label(nn, kind="out", default=f"out {pair}"))
+        return box
+
+    def _outputs_page(self, outputs):
+        sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        sc.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
+                      margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
+        for nn in sorted(outputs):
+            row.append(self._output_strip(nn, outputs[nn]))
+        sc.set_child(row)
+        return sc
+
+    def _patchbay_page(self, model):
+        """Virtual patchbay: each output pair picks its source. The Patchbay
+        switch bypasses the whole thing (direct routing) and greys the grid."""
+        outputs, pb = model["outputs"], model["patchbay"]
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                        margin_top=16, margin_bottom=16, margin_start=16,
+                        margin_end=16)
+        outer.add_css_class("patch")
+        grid = Gtk.Grid(row_spacing=8, column_spacing=12)
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        head.append(Gtk.Label(label="Virtual patchbay", xalign=0, hexpand=True))
+        if pb:
+            def on(v):
+                return v.split(",")[0].strip() == "on"
+            sw = self._inline_widget(pb)
+            sw.set_tooltip_text("Enable the patchbay — off bypasses it: every "
+                                "output pair carries its own PCM channels")
+            head.append(sw)
+            grid.set_sensitive(on(pb["value"]))
+            self._observe(pb["name"], lambda v, g=grid: g.set_sensitive(on(v)))
+        outer.append(head)
+        note = Gtk.Label(label="Routes each output pair to a mix bus or to its "
+                               "direct PCM feed. Switched off, the patchbay is "
+                               "bypassed: every pair carries its own PCM "
+                               "channels.", xalign=0, wrap=True)
+        note.add_css_class("sub")
+        outer.append(note)
+        r = 0
+        for nn in sorted(outputs):
+            src = outputs[nn].get("src")
+            if not src:
+                continue
+            cap = Gtk.Label(label=f"OUT {self._out_caption(nn)}", xalign=0)
+            cap.add_css_class("cap")
+            arrow = Gtk.Label(label="←")
+            arrow.add_css_class("dim-label")
+            dd = self._inline_widget(src)
+            dd.set_halign(Gtk.Align.START)
+            name = Gtk.Label(label=self.names.get(f"out:{nn:02d}", ""),
+                             xalign=0)
+            name.add_css_class("sub")
+            grid.attach(cap, 0, r, 1, 1)
+            grid.attach(arrow, 1, r, 1, 1)
+            grid.attach(dd, 2, r, 1, 1)
+            grid.attach(name, 3, r, 1, 1)
+            r += 1
+        outer.append(grid)
+        sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        sc.set_child(outer)
+        return sc
+
+    def _name_label(self, nn, kind="in", default=None):
         """Editable, persisted channel name (kept in sync across tabs)."""
-        key = f"in:{nn:02d}"
-        default = f"ch {nn + 1}"
+        key = f"{kind}:{nn:02d}"
+        default = default or f"ch {nn + 1}"
         lbl = Gtk.EditableLabel(text=self.names.get(key, default))
         lbl.set_halign(Gtk.Align.CENTER)
         lbl.set_max_width_chars(7)
@@ -1111,6 +1243,16 @@ class Panel(Gtk.ApplicationWindow):
     def _register(self, name, setter):
         self._sync[name] = setter
 
+    def _observe(self, name, cb):
+        """Passive follower of a control's value (labels, sensitivity, …) —
+        called on local writes and external changes alike, unlike _register
+        which owns the control's primary widget."""
+        self._obs.setdefault(name, []).append(cb)
+
+    def _notify(self, name, value):
+        for cb in self._obs.get(name, ()):
+            cb(value)
+
     @staticmethod
     def _as_int(v, fallback):
         try:
@@ -1149,6 +1291,7 @@ class Panel(Gtk.ApplicationWindow):
                     continue
                 self._byname.setdefault(name, c)["value"] = c["value"]
                 self._sync[name](c["value"])
+                self._notify(name, c["value"])
         finally:
             self._syncing = False
         self._update_clock_label()
@@ -1463,6 +1606,8 @@ class Panel(Gtk.ApplicationWindow):
         ("SOLO (header)", "lit while any solo is on; click clears them all"),
         ("SET then A or B", "store a scene; A / B alone recalls it"),
         ("CPY / RST (master strip)", "copy sends to another mix / reset the mix"),
+        ("Patchbay tab", "route each output pair to a mix or its direct PCM "
+                         "feed; the switch bypasses the whole patchbay"),
         ("Ctrl+Z", "undo the last mix-wide change"),
         ("Ctrl+S / Ctrl+O", "save / load a mix snapshot"),
         ("Ctrl+R", "reload controls"),
@@ -1523,6 +1668,7 @@ class Panel(Gtk.ApplicationWindow):
     def _apply(self, name, value):
         if name in self._byname:
             self._byname[name]["value"] = value
+        self._notify(name, value)
         if DEMO:
             # the demo card locks instantly onto the requested rate
             if name == "Sample Rate" and "Clock Rate" in self._byname:
