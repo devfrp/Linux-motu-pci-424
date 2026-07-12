@@ -8,25 +8,49 @@ for talking to the driver's ALSA kcontrols). It reads `motu424-ctl list`, rebuil
 the CueMix model from the kcontrol names (see docs/cuemix-control-map.md), and
 renders it like the real console:
 
-  * one tab per mix bus - a row of vertical channel strips (send fader + meter +
-    pan + mute/solo), plus a MASTER strip for the bus;
+  * one tab per mix bus - a scrollable row of channel strips (send fader +
+    drawn peak-hold meter + pan + mute/solo) with the bus MASTER strip pinned
+    on the right, outside the scroll area;
   * an "Inputs" tab - per-input analog conditioning (trim fader, pad, phase,
     stereo pair, mute);
   * a "Clock & format" tab - clock source, locked rate, metering.
 
+Console behaviours beyond the basics:
+
+  * meters are custom-drawn LED ladders with peak-hold and a latching clip
+    lamp (click a meter to clear its clip);
+  * control writes are coalesced and flushed from a worker thread, so fader
+    drags never block on `motu424-ctl` round-trips;
+  * the hardware is re-polled in the background and the console follows
+    changes made elsewhere (alsamixer, a second instance) without fighting
+    the control you are currently touching;
+  * inputs flagged as a stereo pair get their send faders linked (moving one
+    moves its partner);
+  * a global SOLO indicator lights whenever any solo is engaged - click it to
+    clear every solo at once;
+  * mix snapshots: save/recall the whole console state as JSON from the menu;
+  * channel names are editable in place and persist across sessions;
+  * double-click a fader to reset it (sends/master to unity, pan to centre,
+    trim to 0), Ctrl+R reloads.
+
 The mixer is card-gated (driver Phase 5), so with no MOTU card the kcontrols do
 not exist yet and the console has nothing to populate. Run with `--demo` to see
-the full console against a synthetic 8-input / 3-bus card. On real hardware it
-fills in automatically once the driver registers its CueMix kcontrols.
+the full console against a synthetic 8-input / 3-bus card (the demo card keeps
+state, so snapshots and linking can be exercised). On real hardware it fills in
+automatically once the driver registers its CueMix kcontrols.
 
 Run:  motu424-gui            (needs python-gobject + gtk4; deps: ./install.sh --gui)
       motu424-gui --demo     (synthetic card, to preview the console)
 """
+import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 
 try:
     import gi
@@ -44,6 +68,16 @@ except Exception as e:  # noqa: BLE001
 APP_ID = "org.motu.motu424ctl"
 DEMO = "--demo" in sys.argv[1:]
 
+CONF_DIR = os.path.join(GLib.get_user_config_dir(), "motu424")
+NAMES_FILE = os.path.join(CONF_DIR, "channel-names.json")
+SNAP_DIR = os.path.join(CONF_DIR, "snapshots")
+
+POLL_SECONDS = 2          # background hardware re-poll
+TOUCH_GRACE = 3.0         # ignore polled values for controls touched this recently
+METER_TICK_MS = 50
+PEAK_DECAY = 0.35         # peak-hold fall, fraction of full scale per second
+CLIP_AT = 0.98
+
 # CueMix-ish dark console theme, scoped to our widgets.
 CSS = b"""
 .console { background:#15181c; }
@@ -56,23 +90,30 @@ CSS = b"""
 .strip .db { font-family:monospace; font-size:11px; color:#d7dee4; }
 .strip .sub { font-family:monospace; font-size:9px; color:#6f7b85;
               letter-spacing:.08em; }
+.strip editablelabel, .strip editablelabel text {
+  font-family:monospace; font-size:10px; color:#c3ccd4; }
 scale.fader trough { min-width:7px; background:#0d1013; border-radius:4px; }
 scale.fader highlight { background:#3a4653; border-radius:4px; }
 scale.fader slider { min-width:22px; min-height:20px; margin:0; background:#c9d2da;
                      border:1px solid #7c8791; border-radius:3px; }
+scale.fader mark indicator { background:#4a5560; min-height:1px; min-width:6px; }
 .strip.master scale.fader slider { background:#57c96a; border-color:#3a8f49; }
 scale.pan trough { min-height:5px; background:#0d1013; }
 scale.pan slider { min-width:16px; min-height:16px; margin:0; background:#9aa6b1;
                    border-radius:50%; }
-levelbar.meter block { min-width:7px; border-radius:1px; }
-levelbar.meter block.filled { background:#57c96a; }
-levelbar.meter block.high   { background:#f0a63a; }
-levelbar.meter block.full   { background:#e5534b; }
-levelbar.meter block.empty  { background:#11151a; }
 .tbtn { font-family:monospace; font-size:10px; padding:2px 0; min-width:22px; }
 .tbtn.m:checked { background:#e5534b; color:#0d1013; }
 .tbtn.s:checked { background:#f0a63a; color:#0d1013; }
 .tbtn.p:checked { background:#5a8bd6; color:#0d1013; }
+.tbtn.link:checked { background:#5a8bd6; color:#0d1013; }
+.soloind { font-family:monospace; font-size:10px; font-weight:bold;
+           padding:2px 8px; color:#57606a; background:#171b20;
+           border:1px solid #262c33; border-radius:4px; }
+.soloind.on { background:#f0a63a; color:#0d1013; border-color:#f0a63a; }
+.clock { font-family:monospace; font-size:10px; color:#8b97a1; }
+.statusbar { font-family:monospace; font-size:10px; color:#8b97a1;
+             padding:3px 10px; background:#11151a; border-top:1px solid #262c33; }
+.statusbar.err { color:#e5534b; }
 """
 
 
@@ -218,6 +259,57 @@ def demo_controls(n_in=8, n_bus=3):
     return out
 
 
+class CtlWriter:
+    """Coalescing async writer: keeps only the latest value per control and
+    flushes them from a worker thread, so a fader drag costs at most one
+    in-flight `motu424-ctl set` at a time instead of one per motion event."""
+
+    def __init__(self, on_error):
+        self._cond = threading.Condition()
+        self._pending = {}                 # name -> (dev, value)
+        self._on_error = on_error          # called on the GTK thread
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def push(self, name, value, dev):
+        with self._cond:
+            self._pending[name] = (dev, value)
+            self._cond.notify()
+
+    def pending(self, name):
+        with self._cond:
+            return name in self._pending
+
+    def _loop(self):
+        while True:
+            with self._cond:
+                while not self._pending:
+                    self._cond.wait()
+            time.sleep(0.04)               # let a drag coalesce
+            with self._cond:
+                batch, self._pending = self._pending, {}
+            for name, (dev, value) in batch.items():
+                rc, _o, err = run_ctl(["set", name, value], dev)
+                if rc != 0:
+                    msg = err.strip() or f"set '{name}' failed"
+                    GLib.idle_add(self._on_error, f"{name}: {msg}")
+
+
+def _load_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def _save_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1, sort_keys=True)
+    os.replace(tmp, path)
+
+
 # ------------------------------------------------------------------------- gui
 
 def _install_css():
@@ -228,11 +320,100 @@ def _install_css():
         Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
 
+class Meter(Gtk.DrawingArea):
+    """LED-ladder level meter with peak-hold and a latching clip lamp."""
+
+    LAMP = 7      # px reserved at the top for the clip lamp
+    ZONES = ((0.00, 0.72, (0.34, 0.79, 0.42)),
+             (0.72, 0.92, (0.94, 0.65, 0.23)),
+             (0.92, 1.00, (0.90, 0.33, 0.29)))
+
+    def __init__(self):
+        super().__init__()
+        self.level, self.peak, self.clip = 0.0, 0.0, False
+        self.set_content_width(11)
+        self.set_content_height(168)
+        self.set_draw_func(self._draw)
+        click = Gtk.GestureClick()
+        click.connect("pressed", self._clear_clip)
+        self.add_controller(click)
+        self.set_tooltip_text("Click to clear clip")
+
+    def set_level(self, v):
+        v = max(0.0, min(1.0, v))
+        self.level = v
+        if v > self.peak:
+            self.peak = v
+        if v >= CLIP_AT:
+            self.clip = True
+        self.queue_draw()
+
+    def decay(self, dt):
+        if self.peak > 0.0:
+            self.peak = max(self.level, self.peak - PEAK_DECAY * dt)
+            self.queue_draw()
+
+    def _clear_clip(self, *_a):
+        self.clip = False
+        self.queue_draw()
+
+    def _draw(self, _area, cr, w, h):
+        bar_h = h - self.LAMP - 2
+        cr.set_source_rgb(0.05, 0.06, 0.075)
+        cr.rectangle(0, 0, w, h)
+        cr.fill()
+        # clip lamp
+        cr.set_source_rgb(*((0.90, 0.33, 0.29) if self.clip else (0.13, 0.09, 0.09)))
+        cr.rectangle(0, 0, w, self.LAMP)
+        cr.fill()
+        # zone fills, clipped by the current level (bottom-up)
+        top = self.LAMP + 2
+        lvl_y = top + bar_h * (1.0 - self.level)
+        for z0, z1, rgb in self.ZONES:
+            y1 = top + bar_h * (1.0 - z0)   # zone bottom
+            y0 = top + bar_h * (1.0 - z1)   # zone top
+            lit_y0 = max(y0, lvl_y)
+            if lit_y0 < y1:
+                cr.set_source_rgb(*rgb)
+                cr.rectangle(0, lit_y0, w, y1 - lit_y0)
+                cr.fill()
+            dim = tuple(c * 0.16 for c in rgb)
+            if y0 < lit_y0:
+                cr.set_source_rgb(*dim)
+                cr.rectangle(0, y0, w, min(lit_y0, y1) - y0)
+                cr.fill()
+        # LED segmentation
+        cr.set_source_rgb(0.082, 0.094, 0.11)
+        y = top
+        while y < top + bar_h:
+            cr.rectangle(0, y, w, 1)
+            y += 4
+        cr.fill()
+        # peak-hold line
+        if self.peak > 0.0:
+            cr.set_source_rgb(0.85, 0.88, 0.9)
+            cr.rectangle(0, top + bar_h * (1.0 - self.peak) - 1, w, 2)
+            cr.fill()
+
+
 class Panel(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="motu424 — CueMix")
-        self.set_default_size(900, 620)
-        self.meters = []          # (levelbar, phase) for the demo animation
+        self.set_default_size(980, 660)
+
+        self.meters = []                    # [Meter, phase] for demo animation
+        self._sync = {}                     # kcontrol name -> setter(value_str)
+        self._byname = {}                   # kcontrol name -> control dict
+        self._touched = {}                  # name -> monotonic time of last user edit
+        self._send_scales = {}              # (bus, input) -> Gtk.Scale
+        self._solo_btns = []
+        self._pair_of = {}                  # input -> stereo partner input
+        self._syncing = False               # widget updates coming from us
+        self._linking = False               # stereo-link fan-out in progress
+        self._poll_busy = False
+        self.demo = demo_controls() if DEMO else None
+        self.names = _load_json(NAMES_FILE, {})
+        self.writer = CtlWriter(self._on_write_error)
 
         header = Gtk.HeaderBar()
         self.set_titlebar(header)
@@ -246,16 +427,42 @@ class Panel(Gtk.ApplicationWindow):
             tag.add_css_class("dim-label")
             header.pack_start(tag)
 
-        refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
-        refresh.set_tooltip_text("Reload controls")
-        refresh.connect("clicked", lambda *_: self.reload())
-        header.pack_end(refresh)
+        menu = Gio.Menu()
+        menu.append("Save mix snapshot…", "win.snap-save")
+        menu.append("Load mix snapshot…", "win.snap-load")
+        menu.append("Reload controls", "win.refresh")
+        mbtn = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
+        header.pack_end(mbtn)
+        for name, cb in (("snap-save", self._snap_save),
+                         ("snap-load", self._snap_load),
+                         ("refresh", lambda *_: self.reload())):
+            act = Gio.SimpleAction.new(name, None)
+            act.connect("activate", cb)
+            self.add_action(act)
 
-        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.body.add_css_class("console")
-        self.set_child(self.body)
+        self.solo_ind = Gtk.Button(label="SOLO")
+        self.solo_ind.add_css_class("soloind")
+        self.solo_ind.set_tooltip_text("Lit while any solo is engaged — click to clear all solos")
+        self.solo_ind.connect("clicked", self._clear_solos)
+        header.pack_end(self.solo_ind)
+
+        self.clock_lbl = Gtk.Label(label="")
+        self.clock_lbl.add_css_class("clock")
+        header.pack_end(self.clock_lbl)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        outer.add_css_class("console")
+        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, vexpand=True)
+        self.status = Gtk.Label(label="", xalign=0)
+        self.status.add_css_class("statusbar")
+        self._status_seq = 0
+        outer.append(self.body)
+        outer.append(self.status)
+        self.set_child(outer)
+
         self.reload()
-        GLib.timeout_add(80, self._tick_meters)
+        GLib.timeout_add(METER_TICK_MS, self._tick_meters)
+        GLib.timeout_add_seconds(POLL_SECONDS, self._poll)
 
     # -- data ---------------------------------------------------------------
     def current_dev(self):
@@ -263,13 +470,18 @@ class Panel(Gtk.ApplicationWindow):
 
     def reload(self):
         self.meters = []
+        self._sync = {}
+        self._byname = {}
+        self._send_scales = {}
+        self._solo_btns = []
+        self._pair_of = {}
         child = self.body.get_first_child()
         while child:
             self.body.remove(child)
             child = self.body.get_first_child()
 
         if DEMO:
-            controls = parse_list_or(demo_controls())
+            controls = self.demo
         else:
             rc, out, err = run_ctl(["list"], self.current_dev())
             if rc != 0:
@@ -279,7 +491,9 @@ class Panel(Gtk.ApplicationWindow):
                 return
             controls = parse_list(out)
 
+        self._byname = {c["name"]: c for c in controls}
         model = build_model(controls)
+        self._update_clock_label()
         if not model["buses"] and not model["inputs"] and not model["other"]:
             self.body.append(self._notice(
                 "This card exposes no adjustable controls yet.",
@@ -290,6 +504,14 @@ class Panel(Gtk.ApplicationWindow):
             # generic ALSA card: fall back to a plain control list
             self.body.append(self._generic(model["other"]))
             return
+
+        # stereo pairs: Input NN Stereo Switch pairs NN (even) with NN+1
+        for nn, inp in model["inputs"].items():
+            st = inp.get("stereo")
+            if (st and st["value"].split(",")[0].strip() == "on"
+                    and nn % 2 == 0 and nn + 1 in model["inputs"]):
+                self._pair_of[nn] = nn + 1
+                self._pair_of[nn + 1] = nn
 
         nb = Gtk.Notebook(scrollable=True)
         nb.set_vexpand(True)
@@ -303,20 +525,40 @@ class Panel(Gtk.ApplicationWindow):
             nb.append_page(self._clock_page(model["globals"] + model["other"]),
                            Gtk.Label(label="Clock & format"))
         self.body.append(nb)
+        self._update_solo_ind()
+
+    def _update_clock_label(self):
+        src = self._byname.get("Clock Source")
+        rate = self._byname.get("Clock Rate")
+        bits = []
+        if src:
+            bits.append(src["value"].strip().upper())
+        if rate:
+            try:
+                bits.append(f"{int(rate['value'].split(',')[0])} Hz")
+            except ValueError:
+                pass
+        self.clock_lbl.set_text(" · ".join(bits))
 
     # -- pages --------------------------------------------------------------
     def _bus_page(self, kk, model):
+        page = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         sc.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
                       margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
         sends = model["buses"][kk].get("sends", {})
         for nn in sorted(sends):
-            row.append(self._send_strip(kk, nn, sends[nn], model["inputs"].get(nn)))
-        row.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
-        row.append(self._master_strip(kk, model["buses"][kk]))
+            row.append(self._send_strip(kk, nn, sends[nn]))
         sc.set_child(row)
-        return sc
+        page.append(sc)
+        page.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        master = self._master_strip(kk, model["buses"][kk])
+        master.set_margin_top(8)
+        master.set_margin_bottom(8)
+        master.set_margin_end(8)
+        page.append(master)
+        return page
 
     def _inputs_page(self, inputs):
         sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
@@ -341,48 +583,71 @@ class Panel(Gtk.ApplicationWindow):
         return sc
 
     # -- strips -------------------------------------------------------------
-    def _send_strip(self, kk, nn, send, inp):
+    def _send_strip(self, kk, nn, send):
         box = self._strip_box(f"IN {nn:02d}", master=False)
-        # meter + fader
         vol = send.get("vol")
-        box.append(self._fader_row(vol))
-        # pan
+        row = self._fader_row(vol, default=self._unity(vol),
+                              on_change=lambda v, kk=kk, nn=nn: self._link_send(kk, nn, v))
+        box.append(row)
         pan = send.get("pan")
         if pan:
             box.append(self._pan(pan))
-        # mute / solo
         btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4,
                        halign=Gtk.Align.CENTER)
         if send.get("mute"):
             btns.append(self._toggle(send["mute"], "M", "m"))
         if send.get("solo"):
-            btns.append(self._toggle(send["solo"], "S", "s"))
+            btn = self._toggle(send["solo"], "S", "s", solo=True)
+            btns.append(btn)
         box.append(btns)
+        box.append(self._name_label(nn))
         return box
 
     def _master_strip(self, kk, bus):
         box = self._strip_box(f"MIX {kk:02d}", master=True)
-        box.append(self._fader_row(bus.get("master")))
+        mv = bus.get("master")
+        box.append(self._fader_row(mv, default=self._unity(mv)))
         if bus.get("mute"):
             btn = self._toggle(bus["mute"], "MUTE", "m")
             btn.set_halign(Gtk.Align.CENTER)
             box.append(btn)
+        sub = Gtk.Label(label="MASTER")
+        sub.add_css_class("sub")
+        box.append(sub)
         return box
 
     def _input_strip(self, nn, inp):
         box = self._strip_box(f"IN {nn:02d}", master=False)
-        box.append(self._fader_row(inp.get("trim"), meter=False))
+        trim = inp.get("trim")
+        box.append(self._fader_row(trim, meter=False, default=trim["min"] if trim else 0,
+                                   fmt=lambda v: f"+{v} dB" if v > 0 else f"{v} dB"))
         sub = Gtk.Label(label="TRIM", xalign=0.5)
         sub.add_css_class("sub")
         box.append(sub)
         btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3,
                        halign=Gtk.Align.CENTER)
         for key, cap, cls in (("pad", "PAD", "p"), ("phase", "Ø", "p"),
-                              ("stereo", "ST", "p"), ("mute", "M", "m")):
+                              ("stereo", "ST", "link"), ("mute", "M", "m")):
             if inp.get(key):
-                btns.append(self._toggle(inp[key], cap, cls))
+                b = self._toggle(inp[key], cap, cls)
+                if key == "stereo":
+                    b.set_tooltip_text("Stereo pair — links this input's send "
+                                       "faders with its partner")
+                    b.connect("toggled", lambda *_: GLib.idle_add(self.reload)
+                              if not self._syncing else None)
+                btns.append(b)
         box.append(btns)
+        box.append(self._name_label(nn))
         return box
+
+    def _name_label(self, nn):
+        """Editable, persisted channel name."""
+        key = f"in:{nn:02d}"
+        lbl = Gtk.EditableLabel(text=self.names.get(key, f"ch {nn + 1}"))
+        lbl.set_halign(Gtk.Align.CENTER)
+        lbl.set_max_width_chars(7)
+        lbl.connect("notify::editing", self._on_name_edit, key)
+        return lbl
 
     def _strip_box(self, caption, master):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
@@ -395,19 +660,23 @@ class Panel(Gtk.ApplicationWindow):
         box.append(cap)
         return box
 
-    def _fader_row(self, c, meter=True):
+    @staticmethod
+    def _unity(c):
+        """Double-click reset target for a level fader (vendor default = 100/127)."""
+        if not c:
+            return 0
+        lo = c["min"] if c["min"] is not None else 0
+        hi = c["max"] if c["max"] is not None else 127
+        return 100 if (lo, hi) == (0, 127) else hi
+
+    def _fader_row(self, c, meter=True, fmt=None, default=None, on_change=None):
+        fmt = fmt or str
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5,
                       halign=Gtk.Align.CENTER)
         if meter:
-            lb = Gtk.LevelBar.new_for_interval(0, 1)
-            lb.set_orientation(Gtk.Orientation.VERTICAL)
-            lb.set_inverted(True)
-            lb.set_mode(Gtk.LevelBarMode.CONTINUOUS)
-            lb.add_css_class("meter")
-            lb.set_size_request(9, 168)
-            lb.set_value(0.0)
-            self.meters.append([lb, len(self.meters) * 0.7])
-            row.append(lb)
+            m = Meter()
+            self.meters.append([m, len(self.meters) * 0.7])
+            row.append(m)
         lo = c["min"] if c and c["min"] is not None else 0
         hi = c["max"] if c and c["max"] is not None else 127
         if hi <= lo:
@@ -417,49 +686,76 @@ class Panel(Gtk.ApplicationWindow):
         f.set_inverted(True)
         f.set_draw_value(False)
         f.set_size_request(-1, 168)
+        if default is not None and lo < default < hi:
+            f.add_mark(default, Gtk.PositionType.LEFT, None)
         val = Gtk.Label()
         val.add_css_class("db")
         try:
             f.set_value(int(c["value"].split(",")[0]) if c else lo)
         except (ValueError, AttributeError):
             f.set_value(lo)
-        val.set_text(str(int(f.get_value())))
+        val.set_text(fmt(int(f.get_value())))
         if c:
-            f.connect("value-changed", self._on_fader, c["name"], val)
-        row_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3,
-                           halign=Gtk.Align.CENTER)
+            f.set_tooltip_text(c["name"])
+            f.connect("value-changed", self._on_fader, c["name"], val, fmt, on_change)
+            if default is not None:
+                dbl = Gtk.GestureClick()
+                dbl.connect("pressed",
+                            lambda _g, n, _x, _y, s=f, d=default:
+                            s.set_value(d) if n == 2 else None)
+                f.add_controller(dbl)
+            self._register(c["name"],
+                           lambda v, s=f: s.set_value(self._as_int(v, lo)))
+            m = _SND.match(c["name"])
+            if m and m.group(3) == "Volume":
+                self._send_scales[(int(m.group(1)), int(m.group(2)))] = f
+        wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3,
+                       halign=Gtk.Align.CENTER)
         row.append(f)
-        row_wrap.append(row)
-        row_wrap.append(val)
-        return row_wrap
+        wrap.append(row)
+        wrap.append(val)
+        return wrap
 
     def _pan(self, c):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1,
                       halign=Gtk.Align.CENTER)
         lo = c["min"] if c["min"] is not None else -100
         hi = c["max"] if c["max"] is not None else 100
+        centre = (lo + hi) / 2
         s = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, lo, hi, 1)
         s.add_css_class("pan")
         s.set_draw_value(False)
         s.set_size_request(54, -1)
-        s.add_mark((lo + hi) / 2, Gtk.PositionType.BOTTOM, None)
+        s.add_mark(centre, Gtk.PositionType.BOTTOM, None)
         try:
             s.set_value(int(c["value"].split(",")[0]))
         except (ValueError, AttributeError):
-            s.set_value((lo + hi) / 2)
+            s.set_value(centre)
+        s.set_tooltip_text(c["name"])
         s.connect("value-changed", self._on_scale, c["name"])
+        dbl = Gtk.GestureClick()
+        dbl.connect("pressed",
+                    lambda _g, n, _x, _y: s.set_value(centre) if n == 2 else None)
+        s.add_controller(dbl)
+        self._register(c["name"], lambda v, s=s: s.set_value(self._as_int(v, centre)))
         cap = Gtk.Label(label="PAN")
         cap.add_css_class("sub")
         box.append(s)
         box.append(cap)
         return box
 
-    def _toggle(self, c, cap, cls):
+    def _toggle(self, c, cap, cls, solo=False):
         b = Gtk.ToggleButton(label=cap)
         b.add_css_class("tbtn")
         b.add_css_class(cls)
         b.set_active(c["value"].split(",")[0].strip() == "on")
+        b.set_tooltip_text(c["name"])
         b.connect("toggled", self._on_toggle, c["name"])
+        self._register(c["name"],
+                       lambda v, b=b: b.set_active(v.split(",")[0].strip() == "on"))
+        if solo:
+            self._solo_btns.append(b)
+            b.connect("toggled", lambda *_: self._update_solo_ind())
         return b
 
     def _inline_widget(self, c):
@@ -467,6 +763,8 @@ class Panel(Gtk.ApplicationWindow):
             sw = Gtk.Switch(halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
             sw.set_active(c["value"].split(",")[0].strip() == "on")
             sw.connect("state-set", self._on_switch, c["name"])
+            self._register(c["name"],
+                           lambda v, sw=sw: sw.set_active(v.split(",")[0].strip() == "on"))
             return sw
         if c["type"] == "enum":
             items = c["items"] or []
@@ -474,11 +772,13 @@ class Panel(Gtk.ApplicationWindow):
             if c["value"].strip() in items:
                 dd.set_selected(items.index(c["value"].strip()))
             dd.connect("notify::selected", self._on_enum, c["name"], items)
+            self._register(c["name"],
+                           lambda v, dd=dd, it=items:
+                           dd.set_selected(it.index(v.strip())) if v.strip() in it else None)
             return dd
-        lo = c["min"] if c["min"] is not None else 0
-        hi = c["max"] if c["max"] is not None else 100
         lbl = Gtk.Label(label=c["value"], xalign=0)
         lbl.add_css_class("db")
+        self._register(c["name"], lambda v, l=lbl: l.set_text(v))
         return lbl  # RO-ish (e.g. Clock Rate); editable ints live in strips
 
     def _generic(self, ctrls):
@@ -490,11 +790,9 @@ class Panel(Gtk.ApplicationWindow):
             lbl.add_css_class("dim-label")
             grid.attach(lbl, 0, r, 1, 1)
             if c["type"] == "int":
-                w = Gtk.Scale.new_with_range(
-                    Gtk.Orientation.HORIZONTAL,
-                    c["min"] if c["min"] is not None else 0,
-                    max((c["max"] if c["max"] is not None else 100),
-                        (c["min"] or 0) + 1), 1)
+                lo = c["min"] if c["min"] is not None else 0
+                hi = max((c["max"] if c["max"] is not None else 100), lo + 1)
+                w = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, lo, hi, 1)
                 w.set_hexpand(True)
                 w.set_size_request(220, -1)
                 w.set_draw_value(True)
@@ -503,6 +801,8 @@ class Panel(Gtk.ApplicationWindow):
                 except ValueError:
                     pass
                 w.connect("value-changed", self._on_scale, c["name"])
+                self._register(c["name"],
+                               lambda v, s=w, lo=lo: s.set_value(self._as_int(v, lo)))
             else:
                 w = self._inline_widget(c)
             grid.attach(w, 1, r, 1, 1)
@@ -521,52 +821,229 @@ class Panel(Gtk.ApplicationWindow):
         b.append(s)
         return b
 
+    # -- sync / polling -------------------------------------------------------
+    def _register(self, name, setter):
+        self._sync[name] = setter
+
+    @staticmethod
+    def _as_int(v, fallback):
+        try:
+            return int(str(v).split(",")[0])
+        except ValueError:
+            return fallback
+
+    def _poll(self):
+        """Follow changes made outside the GUI (alsamixer, another instance)."""
+        if DEMO or self._poll_busy or not self._sync:
+            return True
+        self._poll_busy = True
+        dev = self.current_dev()
+        def worker():
+            rc, out, _err = run_ctl(["list"], dev)
+            GLib.idle_add(self._poll_done, rc, out)
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def _poll_done(self, rc, out):
+        self._poll_busy = False
+        if rc != 0:
+            return False
+        now = time.monotonic()
+        self._syncing = True
+        try:
+            for c in parse_list(out):
+                name = c["name"]
+                if name not in self._sync:
+                    continue
+                if now - self._touched.get(name, 0) < TOUCH_GRACE:
+                    continue                    # user is on this control
+                if self.writer.pending(name):
+                    continue                    # our own write is in flight
+                if name in self._byname and self._byname[name]["value"] == c["value"]:
+                    continue
+                self._byname.setdefault(name, c)["value"] = c["value"]
+                self._sync[name](c["value"])
+        finally:
+            self._syncing = False
+        self._update_clock_label()
+        self._update_solo_ind()
+        return False
+
+    # -- solo / stereo link ----------------------------------------------------
+    def _update_solo_ind(self):
+        if any(b.get_active() for b in self._solo_btns):
+            self.solo_ind.add_css_class("on")
+        else:
+            self.solo_ind.remove_css_class("on")
+
+    def _clear_solos(self, *_):
+        for b in self._solo_btns:
+            if b.get_active():
+                b.set_active(False)             # handler pushes the write
+        self._show_status("all solos cleared")
+
+    def _link_send(self, kk, nn, value):
+        partner = self._pair_of.get(nn)
+        if partner is None or self._linking:
+            return
+        scale = self._send_scales.get((kk, partner))
+        if not scale:
+            return
+        self._linking = True
+        scale.set_value(value)                  # partner handler writes it out
+        self._linking = False
+
+    # -- snapshots --------------------------------------------------------------
+    def _snapshot(self):
+        return {c["name"]: c["value"]
+                for c in self._byname.values()
+                if c["name"] in self._sync and c["name"] != "Clock Rate"}
+
+    def _snap_save(self, *_):
+        if not self._byname:
+            self._show_status("nothing to save", err=True)
+            return
+        os.makedirs(SNAP_DIR, exist_ok=True)
+        dlg = Gtk.FileDialog()
+        dlg.set_initial_folder(Gio.File.new_for_path(SNAP_DIR))
+        dlg.set_initial_name(time.strftime("mix-%Y%m%d-%H%M%S.json"))
+        dlg.save(self, None, self._snap_save_done)
+
+    def _snap_save_done(self, dlg, res):
+        try:
+            gfile = dlg.save_finish(res)
+        except GLib.Error:
+            return
+        path = gfile.get_path()
+        try:
+            _save_json(path, {"motu424-mix": 1, "controls": self._snapshot()})
+        except OSError as e:
+            self._show_status(f"snapshot save failed: {e}", err=True)
+            return
+        self._show_status(f"snapshot saved: {os.path.basename(path)}")
+
+    def _snap_load(self, *_):
+        os.makedirs(SNAP_DIR, exist_ok=True)
+        dlg = Gtk.FileDialog()
+        dlg.set_initial_folder(Gio.File.new_for_path(SNAP_DIR))
+        dlg.open(self, None, self._snap_load_done)
+
+    def _snap_load_done(self, dlg, res):
+        try:
+            gfile = dlg.open_finish(res)
+        except GLib.Error:
+            return
+        data = _load_json(gfile.get_path(), None)
+        if not isinstance(data, dict) or "controls" not in data:
+            self._show_status("not a motu424 mix snapshot", err=True)
+            return
+        applied = 0
+        self._syncing = True
+        try:
+            for name, value in data["controls"].items():
+                if name not in self._sync:
+                    continue
+                self._sync[name](value)         # update the widget silently
+                self._apply(name, value)        # and push it to the card
+                applied += 1
+        finally:
+            self._syncing = False
+        self._update_solo_ind()
+        self._show_status(f"snapshot applied ({applied} controls)")
+
     # -- meter animation (demo only; no per-channel level kcontrol exists) ---
     def _tick_meters(self):
-        if not DEMO or not self.meters:
+        if not self.meters:
             return True
-        import math
-        import time
-        t = time.monotonic()
-        for m in self.meters:
-            lb, ph = m
-            v = 0.5 + 0.5 * math.sin(t * 3 + ph)
-            v *= 0.35 + 0.6 * (0.5 + 0.5 * math.sin(t * 0.7 + ph * 2))
-            lb.set_value(max(0.0, min(1.0, v)))
+        dt = METER_TICK_MS / 1000.0
+        if DEMO:
+            t = time.monotonic()
+            for m in self.meters:
+                meter, ph = m
+                v = 0.5 + 0.5 * math.sin(t * 3 + ph)
+                v *= 0.35 + 0.65 * (0.5 + 0.5 * math.sin(t * 0.7 + ph * 2))
+                meter.set_level(v)
+        for meter, _ph in self.meters:
+            meter.decay(dt)
         return True
 
     # -- handlers -----------------------------------------------------------
     def _apply(self, name, value):
+        if name in self._byname:
+            self._byname[name]["value"] = value
         if DEMO:
             return
-        rc, _o, err = run_ctl(["set", name, value], self.current_dev())
-        if rc != 0:
-            sys.stderr.write(f"set '{name}' failed: {err.strip()}\n")
+        self.writer.push(name, value, self.current_dev())
 
-    def _on_fader(self, scale, name, val_label):
+    def _on_write_error(self, msg):
+        self._show_status(msg, err=True)
+        return False
+
+    def _show_status(self, msg, err=False):
+        self.status.set_text(msg)
+        if err:
+            self.status.add_css_class("err")
+        else:
+            self.status.remove_css_class("err")
+        self._status_seq += 1
+        seq = self._status_seq
+        GLib.timeout_add_seconds(
+            5, lambda: (self.status.set_text("")
+                        if self._status_seq == seq else None) and False)
+
+    def _touch(self, name):
+        self._touched[name] = time.monotonic()
+
+    def _on_fader(self, scale, name, val_label, fmt, on_change):
         v = int(scale.get_value())
-        val_label.set_text(str(v))
+        val_label.set_text(fmt(v))
+        if self._syncing:
+            return
+        self._touch(name)
         self._apply(name, str(v))
+        if on_change:
+            on_change(v)
 
     def _on_scale(self, scale, name):
+        if self._syncing:
+            return
+        self._touch(name)
         self._apply(name, str(int(scale.get_value())))
 
     def _on_toggle(self, btn, name):
+        if self._syncing:
+            return
+        self._touch(name)
         self._apply(name, "on" if btn.get_active() else "off")
 
     def _on_switch(self, _sw, state, name):
-        self._apply(name, "on" if state else "off")
+        if not self._syncing:
+            self._touch(name)
+            self._apply(name, "on" if state else "off")
         return False
 
     def _on_enum(self, dd, _pspec, name, items):
+        if self._syncing:
+            return
         i = dd.get_selected()
         if 0 <= i < len(items):
+            self._touch(name)
             self._apply(name, items[i])
+            if name == "Clock Source":
+                self._update_clock_label()
 
-
-def parse_list_or(controls):
-    """Demo path: controls are already dicts; pass through."""
-    return controls
+    def _on_name_edit(self, lbl, _pspec, key):
+        if lbl.get_editing():
+            return
+        text = lbl.get_text().strip()
+        if text:
+            self.names[key] = text
+        else:
+            self.names.pop(key, None)
+        try:
+            _save_json(NAMES_FILE, self.names)
+        except OSError as e:
+            self._show_status(f"cannot save channel names: {e}", err=True)
 
 
 class App(Gtk.Application):
@@ -576,6 +1053,7 @@ class App(Gtk.Application):
 
     def do_activate(self):
         _install_css()
+        self.set_accels_for_action("win.refresh", ["<Control>r"])
         win = self.props.active_window or Panel(self)
         win.present()
 
