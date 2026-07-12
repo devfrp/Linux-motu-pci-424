@@ -113,8 +113,10 @@ over `motu424-ctl`, so the tested CLI stays the single source of truth. It
 rebuilds the CueMix model from the kcontrol names and renders it like the real
 console: one tab per mix bus (channel strips with send fader, peak-hold meter,
 rotary pan pot, mute/solo/gang, the bus master pinned on the right), an Inputs
-tab (trim, pad, phase, stereo pairs), a Clock & format tab, and a Diagnostics
-tab that works even with no card and no driver loaded.
+tab (trim, pad, phase, stereo pairs), an Outputs tab (per-output-pair monitor
+strips), a Patchbay tab (a virtual patchbay routing each output pair to a mix
+bus or its direct PCM feed, with a global bypass switch), a Clock & format tab,
+and a Diagnostics tab that works even with no card and no driver loaded.
 
 On top of the basics: stereo-pair and gang linking, A/B scenes, per-bus mix
 copy/reset, JSON mix snapshots (Ctrl+S / Ctrl+O), Ctrl+Z undo of mix-wide

@@ -63,6 +63,20 @@ already knows them and pretty-prints the ones it finds. `N` = input index,
 | `Mix KK Input NN Pan`           | INT     | send pan, −100..+100 |
 | `Mix KK Input NN Mute Switch`   | BOOL    | send mute |
 | `Mix KK Input NN Solo Switch`   | BOOL    | send solo (PFL) |
+| `Output NN Volume`              | INT     | output-pair monitor level |
+| `Output NN Mute Switch`         | BOOL    | output-pair mute |
+| `Output NN Source`              | ENUM    | patchbay: `Direct` or the mix bus feeding pair NN |
+| `Patchbay Switch`               | BOOL    | patchbay bypass: off = every pair carries its direct PCM feed |
+
+`Output NN` addresses **output pairs** (pair NN = physical channels 2NN+1 /
+2NN+2 — AudioWire outputs are stereo pairs, and each mix bus is stereo).
+
+The output/patchbay rows are **not** in the TouchOSC dump; they model what the
+vendor CueMix console does when it assigns a mix bus to an output pair, plus a
+Linux-side convenience: a *virtual patchbay* that can also feed a pair its
+direct PCM channels, with `Patchbay Switch` as a global bypass (off = identity
+routing, the safe default). They land in the same card-reported coefficient
+block as the matrix sends (below).
 
 These names are the contract between the kernel driver and `motu424-ctl`; keep
 them in sync with `tools/motu424-ctl.c` (`KNOWN_*` tables) if either changes.
