@@ -40,10 +40,16 @@ Console behaviours beyond the basics:
   * gang groups: send strips with G engaged move together (keeping their
     relative offsets), on top of stereo-pair linking;
   * click any value readout to type an exact number (pan accepts L20 / C / R35);
-  * mix snapshots: save/recall the whole console state as JSON from the menu;
-  * channel names are editable in place and persist across sessions;
+  * mix snapshots: save/recall the whole console state as JSON from the menu
+    (Ctrl+S / Ctrl+O);
+  * Ctrl+Z undoes mix-wide operations (copy, reset, scene recall, snapshot
+    load), walking back through the last twenty;
+  * channel names are editable in place, persist across sessions and stay in
+    sync between the mix tabs and the Inputs tab;
+  * window size and the active tab are remembered across sessions;
+    Alt+1..9 switches tabs, Ctrl+R reloads;
   * double-click a fader to reset it (sends/master to unity, pan to centre,
-    trim to 0), Ctrl+R reloads.
+    trim to 0); "Shortcuts & tips" in the menu (or F1) lists every gesture.
 
 The mixer is card-gated (driver Phase 5), so with no MOTU card the kcontrols do
 not exist yet and the console has nothing to populate. Run with `--demo` to see
@@ -83,6 +89,7 @@ DEMO = "--demo" in sys.argv[1:]
 CONF_DIR = os.path.join(GLib.get_user_config_dir(), "motu424")
 NAMES_FILE = os.path.join(CONF_DIR, "channel-names.json")
 SCENES_FILE = os.path.join(CONF_DIR, "scenes.json")
+UI_FILE = os.path.join(CONF_DIR, "ui-state.json")
 SNAP_DIR = os.path.join(CONF_DIR, "snapshots")
 
 POLL_SECONDS = 2          # background hardware re-poll
@@ -130,6 +137,9 @@ scale.fader mark indicator { background:#4a5560; min-height:1px; min-width:6px; 
 .statusbar { font-family:monospace; font-size:10px; color:#8b97a1;
              padding:3px 10px; background:#11151a; border-top:1px solid #262c33; }
 .statusbar.err { color:#e5534b; }
+.help { background:#15181c; }
+.help .db { font-family:monospace; font-size:11px; color:#d7dee4; }
+.help .dim-label { color:#8b97a1; }
 """
 
 
@@ -504,7 +514,12 @@ class Knob(Gtk.DrawingArea):
 class Panel(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="motu424 — CueMix")
-        self.set_default_size(980, 660)
+        ui = _load_json(UI_FILE, {})
+        self.set_default_size(ui.get("w", 980), ui.get("h", 660))
+        if ui.get("max"):
+            self.maximize()
+        self._restore_page = ui.get("page")
+        self.connect("close-request", self._on_close)
 
         self.meters = []                    # [Meter, phase] for demo animation
         self._sync = {}                     # kcontrol name -> setter(value_str)
@@ -518,6 +533,10 @@ class Panel(Gtk.ApplicationWindow):
         self._syncing = False               # widget updates coming from us
         self._fanning = False               # stereo-link / gang fan-out in progress
         self._poll_busy = False
+        self._undo_stack = []               # previous values of mix-wide ops
+        self._name_labels = {}              # "in:NN" -> [EditableLabel, ...]
+        self._nb = None
+        self._help_win = None
         self.demo = demo_controls() if DEMO else None
         self.names = _load_json(NAMES_FILE, {})
         self.scenes = _load_json(SCENES_FILE, {})
@@ -536,16 +555,24 @@ class Panel(Gtk.ApplicationWindow):
             header.pack_start(tag)
 
         menu = Gio.Menu()
+        menu.append("Undo mix change", "win.undo")
         menu.append("Save mix snapshot…", "win.snap-save")
         menu.append("Load mix snapshot…", "win.snap-load")
         menu.append("Reload controls", "win.refresh")
+        menu.append("Shortcuts & tips", "win.help")
         mbtn = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
         header.pack_end(mbtn)
-        for name, cb in (("snap-save", self._snap_save),
+        for name, cb in (("undo", self._on_undo),
+                         ("snap-save", self._snap_save),
                          ("snap-load", self._snap_load),
-                         ("refresh", lambda *_: self.reload())):
+                         ("refresh", lambda *_: self.reload()),
+                         ("help", self._show_help)):
             act = Gio.SimpleAction.new(name, None)
             act.connect("activate", cb)
+            self.add_action(act)
+        for i in range(9):
+            act = Gio.SimpleAction.new(f"tab{i}", None)
+            act.connect("activate", self._on_tab, i)
             self.add_action(act)
 
         self.solo_ind = Gtk.Button(label="SOLO")
@@ -599,6 +626,8 @@ class Panel(Gtk.ApplicationWindow):
         self._pair_of = {}
         self._gang = set()
         self._last_val = {}
+        self._name_labels = {}
+        self._nb = None
         child = self.body.get_first_child()
         while child:
             self.body.remove(child)
@@ -654,6 +683,11 @@ class Panel(Gtk.ApplicationWindow):
                                Gtk.Label(label="Clock & format"))
         nb.append_page(self._diag_page(), Gtk.Label(label="Diagnostics"))
         self.body.append(nb)
+        self._nb = nb
+        if self._restore_page is not None:
+            if 0 <= self._restore_page < nb.get_n_pages():
+                nb.set_current_page(self._restore_page)
+            self._restore_page = None
         self._update_solo_ind()
 
     def _update_clock_label(self):
@@ -864,12 +898,14 @@ class Panel(Gtk.ApplicationWindow):
         return box
 
     def _name_label(self, nn):
-        """Editable, persisted channel name."""
+        """Editable, persisted channel name (kept in sync across tabs)."""
         key = f"in:{nn:02d}"
-        lbl = Gtk.EditableLabel(text=self.names.get(key, f"ch {nn + 1}"))
+        default = f"ch {nn + 1}"
+        lbl = Gtk.EditableLabel(text=self.names.get(key, default))
         lbl.set_halign(Gtk.Align.CENTER)
         lbl.set_max_width_chars(7)
-        lbl.connect("notify::editing", self._on_name_edit, key)
+        lbl.connect("notify::editing", self._on_name_edit, key, default)
+        self._name_labels.setdefault(key, []).append(lbl)
         return lbl
 
     def _strip_box(self, caption, master):
@@ -1212,8 +1248,11 @@ class Panel(Gtk.ApplicationWindow):
         n = self._apply_snapshot(data["controls"])
         self._show_status(f"snapshot applied ({n} controls)")
 
-    def _apply_snapshot(self, controls):
-        """Set widgets silently and push every value to the card."""
+    def _apply_snapshot(self, controls, undoable=True):
+        """Set widgets silently and push every value to the card. Unless
+        `undoable` is off, the previous values go onto the undo stack."""
+        prev = {n: self._byname[n]["value"] for n in controls
+                if n in self._byname and n in self._sync}
         applied = 0
         self._syncing = True
         try:
@@ -1225,8 +1264,19 @@ class Panel(Gtk.ApplicationWindow):
                 applied += 1
         finally:
             self._syncing = False
+        if undoable and applied and prev:
+            self._undo_stack.append(prev)
+            del self._undo_stack[:-20]
         self._update_solo_ind()
         return applied
+
+    def _on_undo(self, *_):
+        if not self._undo_stack:
+            self._show_status("nothing to undo", err=True)
+            return
+        n = self._apply_snapshot(self._undo_stack.pop(), undoable=False)
+        self._show_status(f"undid last mix change ({n} controls, "
+                          f"{len(self._undo_stack)} more)")
 
     # -- scenes / mix operations ---------------------------------------------
     def _on_scene(self, _btn, slot):
@@ -1385,6 +1435,74 @@ class Panel(Gtk.ApplicationWindow):
         self.diag_view.get_buffer().set_text(text)
         return False
 
+    # -- window niceties -------------------------------------------------------
+    def _on_tab(self, _act, _param, i):
+        if self._nb and i < self._nb.get_n_pages():
+            self._nb.set_current_page(i)
+
+    def _on_close(self, *_):
+        state = {"w": self.get_width(), "h": self.get_height(),
+                 "max": self.is_maximized(),
+                 "page": self._nb.get_current_page() if self._nb else 0}
+        try:
+            _save_json(UI_FILE, state)
+        except OSError:
+            pass
+        return False
+
+    HELP_ROWS = (
+        ("drag a fader", "set a send / master / trim level"),
+        ("drag the pan pot vertically", "pan (hold Ctrl for fine moves)"),
+        ("scroll on a fader or pot", "step the value"),
+        ("double-click a fader / pot", "reset to unity / centre / 0"),
+        ("click a value readout", "type an exact number (pan: L20, C, R35)"),
+        ("click a meter", "clear its clip lamp"),
+        ("click a channel name", "rename it (saved, shared across tabs)"),
+        ("M / S / G buttons", "mute, solo, gang (ganged strips move together)"),
+        ("ST on an input", "stereo pair — links the pair's send faders"),
+        ("SOLO (header)", "lit while any solo is on; click clears them all"),
+        ("SET then A or B", "store a scene; A / B alone recalls it"),
+        ("CPY / RST (master strip)", "copy sends to another mix / reset the mix"),
+        ("Ctrl+Z", "undo the last mix-wide change"),
+        ("Ctrl+S / Ctrl+O", "save / load a mix snapshot"),
+        ("Ctrl+R", "reload controls"),
+        ("Alt+1 … Alt+9", "switch tab"),
+        ("F1", "this help (Esc closes it)"),
+    )
+
+    def _show_help(self, *_):
+        if self._help_win:
+            self._help_win.present()
+            return
+        win = Gtk.Window(transient_for=self, title="Shortcuts & tips",
+                         default_width=520)
+        win.add_css_class("help")
+        grid = Gtk.Grid(row_spacing=6, column_spacing=18, margin_top=14,
+                        margin_bottom=14, margin_start=16, margin_end=16)
+        for r, (what, does) in enumerate(self.HELP_ROWS):
+            k = Gtk.Label(label=what, xalign=0)
+            k.add_css_class("db")
+            d = Gtk.Label(label=does, xalign=0, wrap=True, hexpand=True)
+            d.add_css_class("dim-label")
+            grid.attach(k, 0, r, 1, 1)
+            grid.attach(d, 1, r, 1, 1)
+        sc = Gtk.ScrolledWindow(propagate_natural_height=True,
+                                max_content_height=560)
+        sc.set_child(grid)
+        win.set_child(sc)
+        esc = Gtk.EventControllerKey()
+        esc.connect("key-pressed",
+                    lambda _c, kv, *_a: (win.close(), True)[1]
+                    if kv == Gdk.KEY_Escape else False)
+        win.add_controller(esc)
+        win.connect("close-request", self._on_help_close)
+        self._help_win = win
+        win.present()
+
+    def _on_help_close(self, *_):
+        self._help_win = None
+        return False
+
     # -- meter animation (demo only; no per-channel level kcontrol exists) ---
     def _tick_meters(self):
         if not self.meters:
@@ -1480,7 +1598,7 @@ class Panel(Gtk.ApplicationWindow):
             if name == "Clock Source":
                 self._update_clock_label()
 
-    def _on_name_edit(self, lbl, _pspec, key):
+    def _on_name_edit(self, lbl, _pspec, key, default):
         if lbl.get_editing():
             return
         text = lbl.get_text().strip()
@@ -1488,6 +1606,10 @@ class Panel(Gtk.ApplicationWindow):
             self.names[key] = text
         else:
             self.names.pop(key, None)
+            lbl.set_text(default)
+        for other in self._name_labels.get(key, []):
+            if other is not lbl:
+                other.set_text(text or default)
         try:
             _save_json(NAMES_FILE, self.names)
         except OSError as e:
@@ -1502,6 +1624,12 @@ class App(Gtk.Application):
     def do_activate(self):
         _install_css()
         self.set_accels_for_action("win.refresh", ["<Control>r"])
+        self.set_accels_for_action("win.undo", ["<Control>z"])
+        self.set_accels_for_action("win.snap-save", ["<Control>s"])
+        self.set_accels_for_action("win.snap-load", ["<Control>o"])
+        self.set_accels_for_action("win.help", ["F1"])
+        for i in range(9):
+            self.set_accels_for_action(f"win.tab{i}", [f"<Alt>{i + 1}"])
         win = self.props.active_window or Panel(self)
         win.present()
 
