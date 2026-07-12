@@ -118,8 +118,9 @@ strips), a Patchbay tab (a virtual patchbay routing each output pair to a mix
 bus or its direct PCM feed, with a global bypass switch), a Clock & format tab,
 and a Diagnostics tab that works even with no card and no driver loaded.
 
-On top of the basics: stereo-pair and gang linking, A/B scenes, per-bus mix
-copy/reset, JSON mix snapshots (Ctrl+S / Ctrl+O), Ctrl+Z undo of mix-wide
+On top of the basics: stereo-pair and gang linking, A/B scenes, header
+TALK / LISTEN talkback buttons, per-bus mix copy/reset, JSON mix snapshots
+(Ctrl+S / Ctrl+O), Ctrl+Z undo of mix-wide
 operations, editable channel names, and a "Shortcuts & tips" dialog on F1.
 Control writes are coalesced through a worker thread and the hardware is
 re-polled in the background, so the console follows changes made elsewhere

@@ -40,6 +40,8 @@ Console behaviours beyond the basics:
     scroll over it, double-click to recentre;
   * A/B scenes in the header (arm SET, then A or B stores; A/B alone recalls),
     persisted across sessions;
+  * TALK / LISTEN latching talkback buttons in the header (shown when the card
+    exposes them; the atten level lives in Clock & format);
   * per-bus COPY (push this mix's sends to another mix) and RST (sends back to
     unity, pans centred, mutes/solos off) on the master strip;
   * gang groups: send strips with G engaged move together (keeping their
@@ -131,6 +133,8 @@ scale.fader mark indicator { background:#4a5560; min-height:1px; min-width:6px; 
 .tbtn.g:checked { background:#8a6fd1; color:#0d1013; }
 .scene { font-family:monospace; font-size:10px; padding:2px 7px; }
 .scene.set:checked { background:#f0a63a; color:#0d1013; }
+.scene.talk:checked { background:#e5534b; color:#0d1013; }
+.scene.listen:checked { background:#5a8bd6; color:#0d1013; }
 .strip editablelabel.db, .strip editablelabel.db text {
   font-size:11px; color:#d7dee4; }
 .diagview, .diagview text { background:#11151a; color:#c3ccd4; }
@@ -231,7 +235,7 @@ _OUTKEY = {"Volume": "vol", "Mute Switch": "mute", "Source": "src"}
 
 def build_model(controls):
     """Group flat controls into the CueMix matrix model."""
-    inputs, buses, outputs, glob, other = {}, {}, {}, [], []
+    inputs, buses, outputs, talkback, glob, other = {}, {}, {}, {}, [], []
     patchbay = None
     for c in controls:
         n = c["name"]
@@ -245,6 +249,9 @@ def build_model(controls):
             continue
         if n == "Patchbay Switch":
             patchbay = c
+            continue
+        if n in ("Talkback Switch", "Listenback Switch"):
+            talkback[n] = c
             continue
         m = _MAS.match(n)
         if m:
@@ -267,7 +274,8 @@ def build_model(controls):
         else:
             other.append(c)
     return {"inputs": inputs, "buses": buses, "outputs": outputs,
-            "patchbay": patchbay, "globals": glob, "other": other}
+            "patchbay": patchbay, "talkback": talkback,
+            "globals": glob, "other": other}
 
 
 def demo_controls(n_in=8, n_bus=3, n_out=4):
@@ -305,6 +313,8 @@ def demo_controls(n_in=8, n_bus=3, n_out=4):
             out += [i(sp + "Volume", random.randint(40, 110), 0, 127),
                     i(sp + "Pan", random.randint(-60, 60), -100, 100),
                     b(sp + "Mute Switch", "off"), b(sp + "Solo Switch", "off")]
+    out += [b("Talkback Switch", "off"), b("Listenback Switch", "off"),
+            i("Talkback Atten Volume", 20, 0, 40)]
     out.append(b("Patchbay Switch", "on"))
     sources = ["Direct"] + [f"Mix {kk:02d}" for kk in range(n_bus)]
     for nn in range(n_out):
@@ -628,6 +638,25 @@ class Panel(Gtk.ApplicationWindow):
             sc_box.append(b)
         header.pack_end(sc_box)
 
+        # talkback / listenback — shown only when the card exposes them
+        self.tb_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        self.tb_btns = {}
+        for cap, cls, key, tip in (
+                ("TALK", "talk", "Talkback Switch",
+                 "Talkback — route the talkback input into the mixes "
+                 "(atten level lives in Clock & format)"),
+                ("LISTEN", "listen", "Listenback Switch",
+                 "Listenback — route the listenback input into the mixes")):
+            b = Gtk.ToggleButton(label=cap)
+            b.add_css_class("scene")
+            b.add_css_class(cls)
+            b.set_tooltip_text(tip)
+            b.connect("toggled", self._on_toggle, key)
+            self.tb_btns[key] = b
+            self.tb_box.append(b)
+        self.tb_box.set_visible(False)
+        header.pack_end(self.tb_box)
+
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         outer.add_css_class("console")
         self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, vexpand=True)
@@ -678,6 +707,18 @@ class Panel(Gtk.ApplicationWindow):
 
         self._byname = {c["name"]: c for c in controls}
         model = build_model(controls)
+        for key, btn in self.tb_btns.items():
+            c = self._byname.get(key)
+            if not c:
+                continue
+            self._syncing = True
+            try:
+                btn.set_active(c["value"].split(",")[0].strip() == "on")
+            finally:
+                self._syncing = False
+            self._register(key, lambda v, b=btn:
+                           b.set_active(v.split(",")[0].strip() == "on"))
+        self.tb_box.set_visible(any(k in self._byname for k in self.tb_btns))
         self._update_clock_label()
 
         nb = Gtk.Notebook(scrollable=True)
@@ -1605,6 +1646,7 @@ class Panel(Gtk.ApplicationWindow):
         ("ST on an input", "stereo pair — links the pair's send faders"),
         ("SOLO (header)", "lit while any solo is on; click clears them all"),
         ("SET then A or B", "store a scene; A / B alone recalls it"),
+        ("TALK / LISTEN (header)", "latch talkback / listenback into the mixes"),
         ("CPY / RST (master strip)", "copy sends to another mix / reset the mix"),
         ("Patchbay tab", "route each output pair to a mix or its direct PCM "
                          "feed; the switch bypasses the whole patchbay"),
