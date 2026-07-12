@@ -37,7 +37,7 @@ Installs on any distro (deps + DKMS module + tools). Details and options under
 | `kernel/motu424_pcm.c` | ALSA PCM callbacks (playback + capture) |
 | `tools/motu424-probe.c` | Userspace BAR enumerator/dumper (windowed model) for reverse engineering |
 | `tools/motu424-ctl.c` | **CueMix-style management CLI** (clock/format + monitor mixer) over alsa-lib |
-| `tools/motu424-gui` | **GTK4 GUI** control panel (a front-end over `motu424-ctl`) |
+| `tools/motu424-gui` | **GTK4 mixing console** in the CueMix FX style (a front-end over `motu424-ctl`) |
 | `tools/re/` | Static-RE helpers (`vtable-scan.py`, capstone `xref.py`) |
 | `get.sh` | **`curl \| sh` bootstrap** — fetch sources + run the installer |
 | `install.sh` | **Cross-distro installer** (deps + DKMS + tools) |
@@ -106,21 +106,33 @@ make tools                              # builds motu424-ctl if alsa-lib is pres
 The mixer controls are Phase 5 (card-gated); the app is written to light up
 automatically as the driver registers them, and degrades cleanly when absent.
 
-#### Graphical panel
+#### Graphical console
 
-`tools/motu424-gui` is a GTK4 control panel — a thin front-end over
-`motu424-ctl`, so the CLI stays the single source of truth. It picks the card,
-then renders each control by type (switch / slider / dropdown), grouped the
-CueMix way (clock & format, inputs, per-bus mix matrix).
+`tools/motu424-gui` is a GTK4 **CueMix FX-style mixing console** — a front-end
+over `motu424-ctl`, so the tested CLI stays the single source of truth. It
+rebuilds the CueMix model from the kcontrol names and renders it like the real
+console: one tab per mix bus (channel strips with send fader, peak-hold meter,
+rotary pan pot, mute/solo/gang, the bus master pinned on the right), an Inputs
+tab (trim, pad, phase, stereo pairs), a Clock & format tab, and a Diagnostics
+tab that works even with no card and no driver loaded.
+
+On top of the basics: stereo-pair and gang linking, A/B scenes, per-bus mix
+copy/reset, JSON mix snapshots (Ctrl+S / Ctrl+O), Ctrl+Z undo of mix-wide
+operations, editable channel names, and a "Shortcuts & tips" dialog on F1.
+Control writes are coalesced through a worker thread and the hardware is
+re-polled in the background, so the console follows changes made elsewhere
+(alsamixer, a second instance) without fighting the control you are touching.
 
 ```sh
 ./install.sh --gui        # installs the launcher + its runtime deps
 motu424-gui               # or launch from your app menu ("MOTU CueMix")
+motu424-gui --demo        # full console against a synthetic card, no hardware
 ```
 
-Needs `python-gobject` + `gtk4` (added automatically by `--gui`). Like the CLI,
-it opens against any ALSA card and fills in the full CueMix layout once the
-driver exposes its kcontrols.
+Needs `python-gobject` + `gtk4` (added automatically by `--gui`). The mixer
+kcontrols are Phase 5 (card-gated): with no MOTU card the console has nothing
+to populate — preview it with `--demo`; on real hardware it fills in
+automatically once the driver registers its controls.
 
 ## Reverse engineering
 
