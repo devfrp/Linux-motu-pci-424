@@ -16,6 +16,10 @@ renders it like the real console:
   * an "Outputs" tab - one mono monitor strip per output (volume fader, meter,
     mute, ST stereo link) with the routed source shown under the strip;
     ST-linked pairs move their volume faders together;
+  * channel counts and layout adapt to the attached AudioWire interfaces: the
+    driver names channels per slot and bank ("Input B AES 01 ...", see
+    docs/cuemix-control-map.md) and the strips regroup under "slot - model -
+    bank" headers (analog / ADAT / AES-EBU / main out / phones);
   * a "Patchbay" tab - drawn like a real bay: source jacks (PCM feeds, mix
     bus L/R) wired to output jacks by virtual cables you drag between them;
     double-click an output jack returns it to its direct feed, ST-linked
@@ -63,9 +67,11 @@ Console behaviours beyond the basics:
 
 The mixer is card-gated (driver Phase 5), so with no MOTU card the kcontrols do
 not exist yet and the console has nothing to populate. Run with `--demo` to see
-the full console against a synthetic 8-input / 3-bus card (the demo card keeps
-state, so snapshots and linking can be exercised). On real hardware it fills in
-automatically once the driver registers its CueMix kcontrols.
+the full console against a synthetic PCI-424 rig - a 24I/O in slot A plus a
+1224 in slot B (8 analog I/O, an AES/EBU pair, main outs), 3 mix buses; the
+demo card keeps state, so snapshots and linking can be exercised. On real
+hardware it fills in automatically once the driver registers its CueMix
+kcontrols.
 
 Run:  motu424-gui            (needs python-gobject + gtk4; deps: ./install.sh --gui)
       motu424-gui --demo     (synthetic card, to preview the console)
@@ -156,6 +162,8 @@ scale.fader mark indicator { background:#4a5560; min-height:1px; min-width:6px; 
               color:#8b97a1; }
 .patch .sub { font-family:monospace; font-size:9px; color:#6f7b85;
               letter-spacing:.08em; }
+.bankhdr { font-family:monospace; font-size:9px; letter-spacing:.1em;
+           color:#6f7b85; }
 """
 
 
@@ -222,13 +230,23 @@ def parse_list(text):
     return out
 
 
-# CueMix kcontrol-name grammar (docs/cuemix-control-map.md)
-_IN = re.compile(r"^Input (\d+) (Trim Volume|Pad Switch|Phase Switch|"
-                 r"Stereo Switch|Mute Switch)$")
+# CueMix kcontrol-name grammar (docs/cuemix-control-map.md).
+# A channel is addressed by a TOKEN: either a bare index ("03", the legacy
+# single-bank form) or "<slot> <bank> <index>" ("B Main 00") once the driver
+# has enumerated the AudioWire interfaces attached to each slot (Phase 3.5).
+# Tokens are opaque dict keys everywhere in this file; only the helpers below
+# look inside them.
+_BANKS = ("Analog", "ADAT", "TDIF", "AES", "SPDIF", "Main", "Phones")
+_CHAN = r"((?:[A-D] )?(?:(?:%s) )?\d+)" % "|".join(_BANKS)
+_IN = re.compile(r"^Input %s (Trim Volume|Pad Switch|Phase Switch|"
+                 r"Stereo Switch|Mute Switch)$" % _CHAN)
 _MAS = re.compile(r"^Mix (\d+) Master Volume$")
 _MMU = re.compile(r"^Mix (\d+) Mute Switch$")
-_SND = re.compile(r"^Mix (\d+) Input (\d+) (Volume|Pan|Mute Switch|Solo Switch)$")
-_OUT = re.compile(r"^Output (\d+) (Volume|Mute Switch|Stereo Switch|Source)$")
+_SND = re.compile(r"^Mix (\d+) Input %s (Volume|Pan|Mute Switch|Solo Switch)$"
+                  % _CHAN)
+_OUT = re.compile(r"^Output %s (Volume|Mute Switch|Stereo Switch|Source)$"
+                  % _CHAN)
+_SLOT = re.compile(r"^Slot ([A-D]) Interface$")
 _INKEY = {"Trim Volume": "trim", "Pad Switch": "pad", "Phase Switch": "phase",
           "Stereo Switch": "stereo", "Mute Switch": "mute"}
 _SNDKEY = {"Volume": "vol", "Pan": "pan", "Mute Switch": "mute",
@@ -236,26 +254,79 @@ _SNDKEY = {"Volume": "vol", "Pan": "pan", "Mute Switch": "mute",
 _OUTKEY = {"Volume": "vol", "Mute Switch": "mute", "Stereo Switch": "stereo",
            "Source": "src"}
 
+_TOKP = re.compile(r"^(?:([A-D]) )?(?:(%s) )?(\d+)$" % "|".join(_BANKS))
+_BANK_RANK = {b: i for i, b in enumerate(("",) + _BANKS)}
+_BANK_ABBR = {"Analog": "AN", "ADAT": "AD", "TDIF": "TD", "AES": "AES",
+              "SPDIF": "SP", "Main": "MAIN", "Phones": "PH"}
+_BANK_DISP = {"Analog": "ANALOG", "ADAT": "ADAT", "TDIF": "TDIF",
+              "AES": "AES/EBU", "SPDIF": "S/PDIF", "Main": "MAIN OUT",
+              "Phones": "PHONES"}
+
+
+def tok_parts(tok):
+    """Channel token -> (slot, bank, index); slot/bank are "" on legacy
+    bare-index tokens."""
+    m = _TOKP.match(tok)
+    if not m:
+        return ("", "", 0)
+    return (m.group(1) or "", m.group(2) or "", int(m.group(3)))
+
+
+def tok_sort(tok):
+    slot, bank, idx = tok_parts(tok)
+    return (slot, _BANK_RANK.get(bank, len(_BANK_RANK)), idx)
+
+
+def tok_partner(tok):
+    """The other half of tok's even/odd stereo pair (same slot/bank/padding)."""
+    m = _TOKP.match(tok)
+    if not m:
+        return None
+    idx = int(m.group(3))
+    other = idx + 1 if idx % 2 == 0 else idx - 1
+    return tok[:m.start(3)] + f"{other:0{len(m.group(3))}d}"
+
+
+def tok_cap(tok, out=False):
+    """Short strip caption — bank-local, the bank header carries the rest."""
+    _slot, bank, idx = tok_parts(tok)
+    if bank:
+        return f"{_BANK_ABBR[bank]} {idx + 1}"
+    return f"OUT {idx + 1}" if out else f"IN {idx:02d}"
+
+
+def tok_label(tok, out=False):
+    """Longer label (patchbay jacks, default names) — carries the slot too,
+    since two interfaces can both have an "AN 1"."""
+    slot, _bank, _idx = tok_parts(tok)
+    cap = tok_cap(tok, out)
+    return f"{slot}·{cap}" if slot else cap
+
 
 def build_model(controls):
     """Group flat controls into the CueMix matrix model."""
-    inputs, buses, outputs, talkback, glob, other = {}, {}, {}, {}, [], []
+    inputs, buses, outputs, talkback, slots = {}, {}, {}, {}, {}
+    glob, other = [], []
     patchbay = None
     for c in controls:
         n = c["name"]
         m = _IN.match(n)
         if m:
-            inputs.setdefault(int(m.group(1)), {})[_INKEY[m.group(2)]] = c
+            inputs.setdefault(m.group(1), {})[_INKEY[m.group(2)]] = c
             continue
         m = _OUT.match(n)
         if m:
-            outputs.setdefault(int(m.group(1)), {})[_OUTKEY[m.group(2)]] = c
+            outputs.setdefault(m.group(1), {})[_OUTKEY[m.group(2)]] = c
             continue
         if n == "Patchbay Switch":
             patchbay = c
             continue
         if n in ("Talkback Switch", "Listenback Switch"):
             talkback[n] = c
+            continue
+        m = _SLOT.match(n)
+        if m:
+            slots[m.group(1)] = c["value"].split(",")[0].strip()
             continue
         m = _MAS.match(n)
         if m:
@@ -269,21 +340,32 @@ def build_model(controls):
             continue
         m = _SND.match(n)
         if m:
-            k, nn, field = int(m.group(1)), int(m.group(2)), _SNDKEY[m.group(3)]
+            k, tok, field = int(m.group(1)), m.group(2), _SNDKEY[m.group(3)]
             b = buses.setdefault(k, {})
-            b.setdefault("sends", {}).setdefault(nn, {})[field] = c
+            b.setdefault("sends", {}).setdefault(tok, {})[field] = c
             continue
         if n.startswith(("Clock", "Sample", "Meters")):
             glob.append(c)
         else:
             other.append(c)
     return {"inputs": inputs, "buses": buses, "outputs": outputs,
-            "patchbay": patchbay, "talkback": talkback,
+            "patchbay": patchbay, "talkback": talkback, "slots": slots,
             "globals": glob, "other": other}
 
 
-def demo_controls(n_in=8, n_bus=3, n_out=8):
-    """Synthetic CueMix kcontrol set so the console can be previewed without a card."""
+# slot -> interface model -> banks (bank, inputs, outputs). The default demo
+# rig is a 24I/O in slot A plus a 1224 in slot B (8 analog I/O, an AES/EBU
+# pair, main outs) — everything the console shows flows from this table.
+DEMO_RIG = (
+    ("A", "24I/O", (("Analog", 24, 24),)),
+    ("B", "1224", (("Analog", 8, 8), ("AES", 2, 2), ("Main", 0, 2))),
+)
+
+
+def demo_controls(rig=DEMO_RIG, n_bus=3):
+    """Synthetic CueMix kcontrol set so the console can be previewed without a
+    card. Channel counts, banks and slots all flow from `rig`; the GUI adapts
+    to whatever is listed, exactly as it will to the driver's enumeration."""
     import random
     out = [
         {"name": "Clock Source", "type": "enum", "value": "Internal",
@@ -303,34 +385,50 @@ def demo_controls(n_in=8, n_bus=3, n_out=8):
     def b(name, v):
         return {"name": name, "type": "bool", "value": v,
                 "min": None, "max": None, "items": None}
-    for nn in range(n_in):
-        p = f"Input {nn:02d} "
+    ins, outs_ = [], []
+    for slot, iface, banks in rig:
+        out.append({"name": f"Slot {slot} Interface", "type": "enum",
+                    "value": iface, "items": [iface], "min": None, "max": None})
+        for bank, n_in, n_out in banks:
+            ins += [f"{slot} {bank} {nn:02d}" for nn in range(n_in)]
+            outs_ += [f"{slot} {bank} {nn:02d}" for nn in range(n_out)]
+    for tok in ins:
+        _slot, bank, idx = tok_parts(tok)
+        p = f"Input {tok} "
+        st = bank == "AES" or (tok.startswith("A Analog") and idx < 2)
         out += [i(p + "Trim Volume", random.randint(0, 60), 0, 60),
                 b(p + "Pad Switch", "off"), b(p + "Phase Switch", "off"),
-                b(p + "Stereo Switch", "on" if nn % 2 == 0 else "off"),
+                b(p + "Stereo Switch", "on" if st and idx % 2 == 0 else "off"),
                 b(p + "Mute Switch", "off")]
     for kk in range(n_bus):
         mp = f"Mix {kk:02d} "
         out += [i(mp + "Master Volume", 100, 0, 127), b(mp + "Mute Switch", "off")]
-        for nn in range(n_in):
-            sp = f"Mix {kk:02d} Input {nn:02d} "
+        for tok in ins:
+            sp = f"Mix {kk:02d} Input {tok} "
             out += [i(sp + "Volume", random.randint(40, 110), 0, 127),
                     i(sp + "Pan", random.randint(-60, 60), -100, 100),
                     b(sp + "Mute Switch", "off"), b(sp + "Solo Switch", "off")]
     out += [b("Talkback Switch", "off"), b("Listenback Switch", "off"),
             i("Talkback Atten Volume", 20, 0, 40)]
     out.append(b("Patchbay Switch", "on"))
-    # outputs are mono channels; even channels can stereo-pair with the next
-    sources = (["Direct"] + [f"PCM {mm:02d}" for mm in range(n_out)]
+    # outputs are mono channels; an even channel can stereo-pair with the next
+    # one in its bank. PCM MM = the feed output #MM (enumeration order) carries
+    # when Direct.
+    sources = (["Direct"] + [f"PCM {mm:02d}" for mm in range(len(outs_))]
                + [f"Mix {kk:02d} {s}" for kk in range(n_bus)
                   for s in ("L", "R")])
-    for nn in range(n_out):
-        op = f"Output {nn:02d} "
-        kk = nn // 2
-        src = (f"Mix {kk:02d} {'L' if nn % 2 == 0 else 'R'}"
-               if kk < n_bus and nn < 4 else "Direct")
+    for mm, tok in enumerate(outs_):
+        _slot, bank, idx = tok_parts(tok)
+        op = f"Output {tok} "
+        st = bank in ("AES", "Main") or (tok.startswith("A Analog") and idx < 2)
+        if bank == "Main":
+            src = f"Mix 00 {'L' if idx % 2 == 0 else 'R'}"     # mains monitor mix 0
+        elif bank == "AES" and n_bus > 1:
+            src = f"Mix 01 {'L' if idx % 2 == 0 else 'R'}"
+        else:
+            src = "Direct"
         out += [i(op + "Volume", 100, 0, 127), b(op + "Mute Switch", "off"),
-                b(op + "Stereo Switch", "on" if nn in (0, 2) else "off"),
+                b(op + "Stereo Switch", "on" if st and idx % 2 == 0 else "off"),
                 {"name": op + "Source", "type": "enum", "value": src,
                  "items": sources, "min": None, "max": None}]
     return out
@@ -575,15 +673,17 @@ class PatchBay(Gtk.DrawingArea):
             (0.34, 0.79, 0.42), (0.90, 0.33, 0.29), (0.36, 0.76, 0.78))
     PCM_RGB = (0.47, 0.52, 0.57)
 
-    def __init__(self, sources, outs, pair_of, get_conn, set_conn, out_label):
-        # sources: ordered [(sid, label)]; sid = ("pcm", nn) | ("mix", kk, "L"/"R")
+    def __init__(self, sources, outs, pair_of, get_conn, set_conn, out_label,
+                 direct_of):
+        # sources: ordered [(sid, label)]; sid = ("pcm", mm) | ("mix", kk, "L"/"R")
         super().__init__()
         self.sources = sources
-        self.outs = outs               # ordered output channel indexes
-        self.pair_of = pair_of        # nn -> ST partner (for the bracket)
-        self.get_conn = get_conn       # nn -> sid | None
-        self.set_conn = set_conn       # (nn, sid) — the panel writes controls
-        self.out_label = out_label     # nn -> persisted display name
+        self.outs = outs               # ordered output channel tokens
+        self.pair_of = pair_of         # token -> ST partner (for the bracket)
+        self.get_conn = get_conn       # token -> sid | None
+        self.set_conn = set_conn       # (token, sid) — the panel writes controls
+        self.out_label = out_label     # token -> persisted display name
+        self.direct_of = direct_of     # token -> its own direct-feed sid
         self._drag_from = None         # ("src", sid) | ("out", nn)
         self._drag_a = None            # drag start point
         self._drag_xy = None           # current pointer
@@ -657,7 +757,7 @@ class PatchBay(Gtk.DrawingArea):
         if n == 2 and self.is_sensitive():
             hit = self._jack_at(x, y)
             if hit and hit[0] == "out":
-                self.set_conn(hit[1], ("pcm", hit[1]))
+                self.set_conn(hit[1], self.direct_of(hit[1]))
 
     # drawing ----------------------------------------------------------------
     def _cable(self, cr, x1, y1, x2, y2, rgb, alpha, width, dashed=False):
@@ -707,9 +807,10 @@ class PatchBay(Gtk.DrawingArea):
         cr.fill()
         self._text(cr, self.GUTTER - 8, 16, "SOURCES", dim, align_right=True)
         self._text(cr, w - self.GUTTER + 8, 16, "OUTPUTS", dim)
-        # ST brackets between linked output jacks
+        # ST brackets between linked output jacks (partner sits just below)
         for j, nn in enumerate(self.outs):
-            if self.pair_of.get(nn) == nn + 1:
+            if (j + 1 < len(self.outs)
+                    and self.pair_of.get(nn) == self.outs[j + 1]):
                 x, y1 = self._out_xy(j)
                 _x, y2 = self._out_xy(j + 1)
                 cr.set_line_width(1.5)
@@ -786,7 +887,8 @@ class Panel(Gtk.ApplicationWindow):
         self._fanning = False               # stereo-link / gang fan-out in progress
         self._poll_busy = False
         self._undo_stack = []               # previous values of mix-wide ops
-        self._name_labels = {}              # "in:NN" -> [EditableLabel, ...]
+        self._name_labels = {}              # "in:<token>" -> [EditableLabel, ...]
+        self._slots = {}                    # AudioWire slot -> interface model
         self._nb = None
         self._help_win = None
         self.demo = demo_controls() if DEMO else None
@@ -922,6 +1024,7 @@ class Panel(Gtk.ApplicationWindow):
 
         self._byname = {c["name"]: c for c in controls}
         model = build_model(controls)
+        self._slots = model["slots"]
         for key, btn in self.tb_btns.items():
             c = self._byname.get(key)
             if not c:
@@ -952,20 +1055,18 @@ class Panel(Gtk.ApplicationWindow):
             nb.append_page(self._generic(model["other"]),
                            Gtk.Label(label="Controls"))
         else:
-            # stereo pairs: Input NN Stereo Switch pairs NN (even) with NN+1
-            for nn, inp in model["inputs"].items():
-                st = inp.get("stereo")
-                if (st and st["value"].split(",")[0].strip() == "on"
-                        and nn % 2 == 0 and nn + 1 in model["inputs"]):
-                    self._pair_of[nn] = nn + 1
-                    self._pair_of[nn + 1] = nn
-            # output stereo pairs follow the same even/odd convention
-            for nn, o in model["outputs"].items():
-                st = o.get("stereo")
-                if (st and st["value"].split(",")[0].strip() == "on"
-                        and nn % 2 == 0 and nn + 1 in model["outputs"]):
-                    self._out_pair_of[nn] = nn + 1
-                    self._out_pair_of[nn + 1] = nn
+            # stereo pairs: an even channel's Stereo Switch pairs it with the
+            # next one in its bank (inputs and outputs alike)
+            for d, pairs in ((model["inputs"], self._pair_of),
+                             (model["outputs"], self._out_pair_of)):
+                for tok, chan in d.items():
+                    st = chan.get("stereo")
+                    if not (st and st["value"].split(",")[0].strip() == "on"):
+                        continue
+                    p = tok_partner(tok)
+                    if tok_parts(tok)[2] % 2 == 0 and p in d:
+                        pairs[tok] = p
+                        pairs[p] = tok
             for kk in sorted(model["buses"]):
                 nb.append_page(self._bus_page(kk, model),
                                Gtk.Label(label=f"Mix {kk:02d}"))
@@ -979,8 +1080,9 @@ class Panel(Gtk.ApplicationWindow):
                     "src" in o for o in model["outputs"].values()):
                 nb.append_page(self._patchbay_page(model),
                                Gtk.Label(label="Patchbay"))
-            if model["globals"] or model["other"]:
-                nb.append_page(self._clock_page(model["globals"] + model["other"]),
+            if model["globals"] or model["other"] or model["slots"]:
+                nb.append_page(self._clock_page(model["globals"] + model["other"],
+                                                model["slots"]),
                                Gtk.Label(label="Clock & format"))
         nb.append_page(self._diag_page(), Gtk.Label(label="Diagnostics"))
         self.body.append(nb)
@@ -1007,16 +1109,43 @@ class Panel(Gtk.ApplicationWindow):
         self.clock_lbl.set_text(" · ".join(bits))
 
     # -- pages --------------------------------------------------------------
+    def _grouped_row(self, chans, strip_fn):
+        """A horizontal run of channel strips, split per (slot, bank) with a
+        header naming the attached interface when the card exposes banks."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
+                      margin_top=8, margin_bottom=8, margin_start=8,
+                      margin_end=8)
+        cur, grp_row = None, None
+        for tok in sorted(chans, key=tok_sort):
+            g = tok_parts(tok)[:2]
+            if grp_row is None or g != cur:
+                if grp_row is not None:
+                    row.append(Gtk.Separator(
+                        orientation=Gtk.Orientation.VERTICAL))
+                cur = g
+                grp = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                slot, bank = g
+                if slot or bank:
+                    bits = [x for x in (slot, self._slots.get(slot),
+                                        _BANK_DISP.get(bank, bank)) if x]
+                    hdr = Gtk.Label(label=" · ".join(bits), xalign=0,
+                                    margin_start=6)
+                    hdr.add_css_class("bankhdr")
+                    grp.append(hdr)
+                grp_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                                  spacing=2)
+                grp.append(grp_row)
+                row.append(grp)
+            grp_row.append(strip_fn(tok))
+        return row
+
     def _bus_page(self, kk, model):
         page = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         sc.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
-                      margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
         sends = model["buses"][kk].get("sends", {})
-        for nn in sorted(sends):
-            row.append(self._send_strip(kk, nn, sends[nn]))
-        sc.set_child(row)
+        sc.set_child(self._grouped_row(
+            sends, lambda tok: self._send_strip(kk, tok, sends[tok])))
         page.append(sc)
         page.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
         master = self._master_strip(kk, model["buses"][kk],
@@ -1030,17 +1159,23 @@ class Panel(Gtk.ApplicationWindow):
     def _inputs_page(self, inputs):
         sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         sc.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
-                      margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
-        for nn in sorted(inputs):
-            row.append(self._input_strip(nn, inputs[nn]))
-        sc.set_child(row)
+        sc.set_child(self._grouped_row(
+            inputs, lambda tok: self._input_strip(tok, inputs[tok])))
         return sc
 
-    def _clock_page(self, ctrls):
+    def _clock_page(self, ctrls, slots=None):
         sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         grid = Gtk.Grid(row_spacing=8, column_spacing=14, margin_top=16,
                         margin_bottom=16, margin_start=16, margin_end=16)
+        if slots:
+            lbl = Gtk.Label(label="Interfaces", xalign=0, hexpand=True,
+                            valign=Gtk.Align.START)
+            lbl.add_css_class("dim-label")
+            grid.attach(lbl, 0, -1, 1, 1)
+            val = Gtk.Label(label="   ".join(
+                f"{s} · {m}" for s, m in sorted(slots.items())), xalign=0)
+            val.add_css_class("db")
+            grid.attach(val, 1, -1, 1, 1)
         for r, c in enumerate(ctrls):
             lbl = Gtk.Label(label=c["name"], xalign=0, hexpand=True,
                             valign=Gtk.Align.START)
@@ -1111,7 +1246,7 @@ class Panel(Gtk.ApplicationWindow):
 
     # -- strips -------------------------------------------------------------
     def _send_strip(self, kk, nn, send):
-        box = self._strip_box(f"IN {nn:02d}", master=False)
+        box = self._strip_box(tok_cap(nn), master=False)
         vol = send.get("vol")
         row = self._fader_row(vol, default=self._unity(vol),
                               on_change=lambda v, user, kk=kk, nn=nn:
@@ -1175,7 +1310,7 @@ class Panel(Gtk.ApplicationWindow):
         return box
 
     def _input_strip(self, nn, inp):
-        box = self._strip_box(f"IN {nn:02d}", master=False)
+        box = self._strip_box(tok_cap(nn), master=False)
         trim = inp.get("trim")
         box.append(self._fader_row(trim, meter=False, default=trim["min"] if trim else 0,
                                    fmt=lambda v: f"+{v} dB" if v > 0 else f"{v} dB"))
@@ -1215,7 +1350,7 @@ class Panel(Gtk.ApplicationWindow):
     def _output_strip(self, nn, out):
         """Mono monitor strip for one output: volume, mute, stereo link,
         routed source. ST-linked pairs move their volume faders together."""
-        box = self._strip_box(f"OUT {nn + 1}", master=False)
+        box = self._strip_box(tok_cap(nn, out=True), master=False)
         vol = out.get("vol")
         box.append(self._fader_row(vol, default=self._unity(vol),
                                    on_change=lambda v, user, nn=nn:
@@ -1247,17 +1382,15 @@ class Panel(Gtk.ApplicationWindow):
             self._observe(src["name"], show)
             self._observe("Patchbay Switch", show)
             box.append(lbl)
-        box.append(self._name_label(nn, kind="out", default=f"out {nn + 1}"))
+        box.append(self._name_label(nn, kind="out",
+                                    default=tok_label(nn, out=True).lower()))
         return box
 
     def _outputs_page(self, outputs):
         sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         sc.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
-                      margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
-        for nn in sorted(outputs):
-            row.append(self._output_strip(nn, outputs[nn]))
-        sc.set_child(row)
+        sc.set_child(self._grouped_row(
+            outputs, lambda tok: self._output_strip(tok, outputs[tok])))
         return sc
 
     def _patchbay_page(self, model):
@@ -1270,19 +1403,22 @@ class Panel(Gtk.ApplicationWindow):
                         margin_end=16)
         outer.add_css_class("patch")
 
-        outs = [nn for nn in sorted(outputs) if outputs[nn].get("src")]
+        outs = [t for t in sorted(outputs, key=tok_sort)
+                if outputs[t].get("src")]
+        # PCM channel MM = the direct feed of output #MM in enumeration order
+        pcm_of = {t: j for j, t in enumerate(outs)}
         items = (outputs[outs[0]]["src"]["items"] or []) if outs else []
-        sources = [(("pcm", nn), f"PCM {nn + 1}") for nn in outs]
+        sources = [(("pcm", j), f"PCM {j + 1}") for j in range(len(outs))]
         for it in items:
             m = re.match(r"^Mix (\d+) ([LR])$", it)
             if m:
                 sources.append(((("mix", int(m.group(1)), m.group(2))),
                                 f"Mix {int(m.group(1)):02d} {m.group(2)}"))
 
-        def conn_of(nn):
-            v = self._byname[outputs[nn]["src"]["name"]]["value"].strip()
+        def conn_of(tok):
+            v = self._byname[outputs[tok]["src"]["name"]]["value"].strip()
             if v == "Direct":
-                return ("pcm", nn)
+                return ("pcm", pcm_of[tok])
             m = re.match(r"^PCM (\d+)$", v)
             if m:
                 return ("pcm", int(m.group(1)))
@@ -1292,9 +1428,11 @@ class Panel(Gtk.ApplicationWindow):
             return None
 
         bay = PatchBay(sources, outs, self._out_pair_of, conn_of,
-                       lambda nn, sid, o=outputs: self._patch_set(o, nn, sid),
-                       lambda nn: self.names.get(f"out:{nn:02d}",
-                                                 f"OUT {nn + 1}"))
+                       lambda t, sid, o=outputs, p=pcm_of:
+                       self._patch_set(o, p, t, sid),
+                       lambda t: self.names.get(f"out:{t}",
+                                                tok_label(t, out=True)),
+                       lambda t, p=pcm_of: ("pcm", p[t]))
         for nn in outs:
             name = outputs[nn]["src"]["name"]
             # _sync keeps Source in snapshots/scenes and follows external
@@ -1330,25 +1468,27 @@ class Panel(Gtk.ApplicationWindow):
         sc.set_child(outer)
         return sc
 
-    def _patch_set(self, outputs, nn, sid):
+    def _patch_set(self, outputs, pcm_of, tok, sid):
         """Write one patchbay connection. An ST-linked pair patches as a unit:
         a mix lands as L/R, a PCM feed as the even-aligned consecutive pair."""
-        partner = self._out_pair_of.get(nn)
+        partner = self._out_pair_of.get(tok)
         if partner is not None:
-            e, o = min(nn, partner), max(nn, partner)
+            e, o = ((tok, partner) if tok_parts(tok)[2] % 2 == 0
+                    else (partner, tok))
             if sid[0] == "mix":
                 writes = [(e, ("mix", sid[1], "L")), (o, ("mix", sid[1], "R"))]
             else:
                 mm = sid[1] - (sid[1] % 2)
                 writes = [(e, ("pcm", mm)), (o, ("pcm", mm + 1))]
         else:
-            writes = [(nn, sid)]
+            writes = [(tok, sid)]
         for ch, s in writes:
             c = outputs.get(ch, {}).get("src")
             if not c:
                 continue
             if s[0] == "pcm":
-                val = "Direct" if s[1] == ch else f"PCM {s[1]:02d}"
+                val = ("Direct" if s[1] == pcm_of.get(ch)
+                       else f"PCM {s[1]:02d}")
             else:
                 val = f"Mix {s[1]:02d} {s[2]}"
             if val != "Direct" and val not in (c["items"] or []):
@@ -1360,8 +1500,11 @@ class Panel(Gtk.ApplicationWindow):
 
     def _name_label(self, nn, kind="in", default=None):
         """Editable, persisted channel name (kept in sync across tabs)."""
-        key = f"{kind}:{nn:02d}"
-        default = default or f"ch {nn + 1}"
+        key = f"{kind}:{nn}"
+        if default is None:
+            slot, bank, idx = tok_parts(nn)
+            default = (tok_label(nn).lower() if bank or slot
+                       else f"ch {idx + 1}")
         lbl = Gtk.EditableLabel(text=self.names.get(key, default))
         lbl.set_halign(Gtk.Align.CENTER)
         lbl.set_max_width_chars(7)
@@ -1431,12 +1574,12 @@ class Panel(Gtk.ApplicationWindow):
                            lambda v, s=f: s.set_value(self._as_int(v, lo)))
             m = _SND.match(c["name"])
             if m and m.group(3) == "Volume":
-                key = (int(m.group(1)), int(m.group(2)))
+                key = (int(m.group(1)), m.group(2))
                 self._send_scales[key] = f
                 self._last_val[key] = int(f.get_value())
             m = _OUT.match(c["name"])
             if m and m.group(2) == "Volume":
-                self._out_scales[int(m.group(1))] = f
+                self._out_scales[m.group(1)] = f
         wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3,
                        halign=Gtk.Align.CENTER)
         row.append(f)

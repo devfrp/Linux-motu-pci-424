@@ -304,6 +304,8 @@ static int cmd_status(snd_hctl_t *hctl, const char *ctlname)
 	snd_hctl_elem_t *elem;
 	snd_ctl_elem_info_t *info;
 	int inputs = 0, mixes = 0, sends = 0, outputs = 0, total = 0;
+	char slotname[20];
+	int s, first = 1;
 
 	printf("MOTU card on %s\n", ctlname);
 
@@ -339,6 +341,20 @@ static int cmd_status(snd_hctl_t *hctl, const char *ctlname)
 		else if (strncmp(nm, "Output ", 7) == 0 && strstr(nm, "Volume"))
 			outputs++;
 	}
+	/* attached AudioWire interfaces, one RO enum per populated slot */
+	for (s = 0; s < 4; s++) {
+		snprintf(slotname, sizeof(slotname), "Slot %c Interface",
+			 'A' + s);
+		if (!(elem = find_by_name(hctl, slotname)))
+			continue;
+		if (snd_hctl_elem_info(elem, info) != 0)
+			continue;
+		printf(first ? "  Interfaces   : %c=" : ", %c=", 'A' + s);
+		print_value(elem, info);
+		first = 0;
+	}
+	if (!first)
+		putchar('\n');
 	printf("  Mixer        : %d input(s), %d mix bus(es), %d matrix send(s)\n",
 	       inputs, mixes, sends);
 	if (outputs) {

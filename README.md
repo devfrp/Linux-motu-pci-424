@@ -119,6 +119,13 @@ source jacks for PCM feeds and mix buses wired to the output jacks by virtual
 cables you drag, with a global bypass switch), a Clock & format tab, and a
 Diagnostics tab that works even with no card and no driver loaded.
 
+The whole layout adapts to the converters attached to the PCI-424's AudioWire
+slots: the driver names every channel per slot and bank (analog, ADAT, TDIF,
+AES/EBU, main out, phones — see `docs/cuemix-control-map.md`), and the console
+regroups its strips and patchbay jacks under "slot · model — bank" headers.
+A 24I/O brings 24 analog I/O, a 1224 brings 8 analog I/O plus an AES/EBU pair
+and main outs — that combination is exactly what `--demo` simulates.
+
 On top of the basics: stereo-pair and gang linking, A/B scenes, header
 TALK / LISTEN talkback buttons, per-bus mix copy/reset, JSON mix snapshots
 (Ctrl+S / Ctrl+O), Ctrl+Z undo of mix-wide
@@ -130,7 +137,7 @@ re-polled in the background, so the console follows changes made elsewhere
 ```sh
 ./install.sh --gui        # installs the launcher + its runtime deps
 motu424-gui               # or launch from your app menu ("MOTU CueMix")
-motu424-gui --demo        # full console against a synthetic card, no hardware
+motu424-gui --demo        # full console against a synthetic 24I/O + 1224 rig
 ```
 
 Needs `python-gobject` + `gtk4` (added automatically by `--gui`). The mixer

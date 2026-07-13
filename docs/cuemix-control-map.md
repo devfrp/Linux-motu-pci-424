@@ -43,8 +43,20 @@ that enumeration is Phase 3.5 and is discovered at runtime.
 ## Planned ALSA kcontrol names
 
 The driver (Phase 5.2/5.3, needs a card) will register these; `motu424-ctl`
-already knows them and pretty-prints the ones it finds. `N` = input index,
-`K` = mix-bus index (0-based), both zero-padded to 2 digits in the element name.
+already knows them and pretty-prints the ones it finds. `K` = mix-bus index
+(0-based, zero-padded to 2 digits).
+
+`NN` below stands for a **channel token**. Its full form is
+`<slot> <bank> <index>` — e.g. `Input B AES 01 Trim Volume`,
+`Output A Analog 17 Source` — where the slot letter (`A`–`D`) is the
+AudioWire jack the interface hangs off, the bank is one of `Analog`, `ADAT`,
+`TDIF`, `AES`, `SPDIF`, `Main`, `Phones`, and the index is 0-based within the
+bank (zero-padded to 2 digits). A bare index (`Input 03 …`) remains legal —
+one anonymous bank — and is what the tools parsed before banking existed, so
+both generations of the contract render fine. Channel counts, banks and slots
+all come from the Phase 3.5 enumeration of whatever converters are attached
+(e.g. a 24I/O contributes `Analog 00`–`23` both ways; a 1224 contributes
+`Analog 00`–`07`, an `AES` I/O pair, and a `Main` output pair).
 
 | kcontrol name (iface MIXER)     | type    | notes |
 |---------------------------------|---------|-------|
@@ -52,6 +64,7 @@ already knows them and pretty-prints the ones it finds. `N` = input index,
 | `Clock Rate`                    | INT, RO | locked rate in Hz (info/status) |
 | `Sample Rate`                   | ENUM    | requested rate (44100…192000); `Clock Rate` stays the RO locked readout |
 | `Meters`                        | BOOL    | enable level metering |
+| `Slot S Interface`              | ENUM RO | model of the interface on AudioWire slot `S` (`A`–`D`), e.g. `24I/O`, `1224`; absent slots register nothing |
 | `Input NN Trim Volume`          | INT     | analog trim, dB (per-iface range) |
 | `Input NN Pad Switch`           | BOOL    | −20 dB pad |
 | `Input NN Phase Switch`         | BOOL    | polarity invert |
@@ -73,13 +86,17 @@ already knows them and pretty-prints the ones it finds. `N` = input index,
 | `Patchbay Switch`               | BOOL    | patchbay bypass: off = every output carries its direct PCM feed |
 
 `Output NN` addresses **mono output channels**. Like inputs, an even channel's
-`Stereo Switch` pairs it with NN+1; the GUI then links the pair's volume
-faders and patches the pair as a unit (a mix lands as L/R, a PCM feed as the
-even-aligned consecutive pair). `Direct` is output NN's own PCM feed — the
-identity routing the bypass falls back to; `PCM MM` cross-patches any PCM
-channel into this output.
+`Stereo Switch` pairs it with the next index in its bank; the GUI then links
+the pair's volume faders and patches the pair as a unit (a mix lands as L/R,
+a PCM feed as the even-aligned consecutive pair). `Direct` is the output's own
+PCM feed — the identity routing the bypass falls back to; `PCM MM`
+cross-patches any PCM channel into this output, where `MM` is the output's
+position in enumeration order (slots A→D, banks Analog → ADAT → TDIF → AES →
+S/PDIF → Main → Phones, then index) — i.e. the fixed-frame channel the
+transport carries for that output.
 
-The output/patchbay rows are **not** in the TouchOSC dump; they model what the
+The output/patchbay rows and `Slot S Interface` are **not** in the TouchOSC
+dump; they model what the
 vendor CueMix console does when it assigns a mix bus to an output pair, plus a
 Linux-side convenience: a *virtual patchbay* that can also feed a pair its
 direct PCM channels, with `Patchbay Switch` as a global bypass (off = identity

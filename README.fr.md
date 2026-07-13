@@ -127,6 +127,14 @@ virtuels que l'on tire à la souris, avec un interrupteur de contournement
 global), un onglet Horloge & format, et un onglet Diagnostics qui fonctionne
 même sans carte ni pilote chargé.
 
+Toute la disposition s'adapte aux convertisseurs reliés aux slots AudioWire de
+la PCI-424 : le pilote nomme chaque canal par slot et par banque (analogique,
+ADAT, TDIF, AES/EBU, main out, casque — voir `docs/cuemix-control-map.md`), et
+la console regroupe ses tranches et les jacks du patchbay sous des en-têtes
+« slot · modèle — banque ». Une 24I/O apporte 24 entrées/sorties analogiques,
+une 1224 apporte 8 entrées/sorties analogiques plus une paire AES/EBU et des
+sorties main — c'est exactement la combinaison que simule `--demo`.
+
 Au-delà des bases : liaison paires stéréo et gangs, scènes A/B, boutons
 TALK / LISTEN (talkback) dans l'en-tête, copie/reset de mix par bus, snapshots
 de mix en JSON (Ctrl+S / Ctrl+O), annulation Ctrl+Z des
@@ -139,7 +147,7 @@ avec le contrôle que vous manipulez.
 ```sh
 ./install.sh --gui        # installe le lanceur + ses dépendances d'exécution
 motu424-gui               # ou depuis le menu d'applications (« MOTU CueMix »)
-motu424-gui --demo        # console complète sur une carte synthétique, sans matériel
+motu424-gui --demo        # console complète sur un rig 24I/O + 1224 synthétique
 ```
 
 Nécessite `python-gobject` + `gtk4` (ajoutés automatiquement par `--gui`). Les
