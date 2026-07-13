@@ -121,11 +121,15 @@ kcontrols et le rend comme la vraie console : un onglet par bus de mix
 panoramique rotatif, mute/solo/gang, le master du bus épinglé à droite), un
 onglet Entrées (gain, pad, phase, paires stéréo), un onglet Sorties (tranches
 de monitoring mono, liables en paires stéréo comme les entrées), un onglet
-Patchbay (dessiné comme une vraie baie de brassage — des jacks sources pour
-les flux PCM et les bus de mix, reliés aux jacks de sortie par des câbles
-virtuels que l'on tire à la souris, avec un interrupteur de contournement
-global), un onglet Horloge & format, et un onglet Diagnostics qui fonctionne
-même sans carte ni pilote chargé.
+Patchbay (optionnel, sans cordons d'origine — dessiné comme une vraie baie de
+brassage normalisée : chaque sortie est à son « normal », les main out étant
+normalisées sur le programme stéréo du système pour que le son du PC sorte sur
+les moniteurs sans configuration ; on tire des câbles virtuels à la souris
+pour patcher le reste ; survoler un jack montre ce qu'il porte, « Unpatch
+all » retire tous les cordons en une seule étape annulable, et un
+interrupteur global contourne la baie en retombant sur ces normals), un
+onglet Horloge & format, et un onglet Diagnostics qui fonctionne même sans
+carte ni pilote chargé.
 
 Toute la disposition s'adapte aux convertisseurs reliés aux slots AudioWire de
 la PCI-424 : le pilote nomme chaque canal par slot et par banque (analogique,
@@ -133,7 +137,9 @@ ADAT, TDIF, AES/EBU, main out, casque — voir `docs/cuemix-control-map.md`), et
 la console regroupe ses tranches et les jacks du patchbay sous des en-têtes
 « slot · modèle — banque ». Une 24I/O apporte 24 entrées/sorties analogiques,
 une 1224 apporte 8 entrées/sorties analogiques plus une paire AES/EBU et des
-sorties main — c'est exactement la combinaison que simule `--demo`. La console
+sorties main — c'est exactement la combinaison que simule `--demo`, et
+`--rig 24io,2408` accroche d'autres convertisseurs (24io, 1224, 2408, hd192)
+aux quatre slots AudioWire à la place. La console
 suit aussi la carte dans le temps : quand le jeu de contrôles enregistrés
 change (chargement/déchargement du module, boîtiers branchés à chaud, nombre
 de canaux qui rétrécit aux familles 2x/4x), elle se reconstruit au poll
@@ -141,7 +147,8 @@ suivant en conservant l'onglet actif — changez la fréquence dans `--demo`
 pour voir le rétrécissement en direct.
 
 Au-delà des bases : liaison paires stéréo et gangs, scènes A/B, boutons
-TALK / LISTEN (talkback) dans l'en-tête, copie/reset de mix par bus, snapshots
+TALK / LISTEN (talkback) dans l'en-tête (maintenir = momentané, clic bref =
+verrouillé), copie/reset de mix par bus, snapshots
 de mix en JSON (Ctrl+S / Ctrl+O), annulation Ctrl+Z des
 opérations globales, noms de canaux éditables, et un dialogue « Shortcuts &
 tips » sur F1. Les écritures de contrôles sont regroupées dans un thread de

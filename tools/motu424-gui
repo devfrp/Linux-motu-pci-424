@@ -21,10 +21,16 @@ renders it like the real console:
     docs/cuemix-control-map.md) and the strips regroup under "slot - model -
     bank" headers (analog / ADAT / AES-EBU / main out / phones);
   * a "Patchbay" tab - drawn like a real bay: source jacks (PCM feeds, mix
-    bus L/R) wired to output jacks by virtual cables you drag between them;
-    double-click an output jack returns it to its direct feed, ST-linked
-    pairs patch together as L/R. One switch disables the whole patchbay:
-    off = direct routing, and the bay dims;
+    bus L/R) wired to output jacks by virtual cables you drag between them.
+    It is optional and ships with no cords - every output sits at its
+    NORMAL: its own direct PCM feed, except Main outs which are normalled to
+    the system stereo program (PCM 1/2, drawn as a dashed line) so desktop
+    sound reaches the monitors unconfigured. Double-click an output jack to
+    unpatch it (back to its normal), "Unpatch all" pulls every cord in one
+    undoable step, hovering a jack prelights it and tells you what it
+    carries; ST-linked pairs patch together as L/R. One switch disables the
+    whole patchbay: off = fall back to the normals, and the bay dims (the
+    demo ships with it off);
   * a "Clock & format" tab - clock source, a sample-rate selector grouped by
     1x/2x/4x clock family, locked rate, metering;
   * a "Diagnostics" tab - PCI / kernel-module / ALSA / kernel-log health
@@ -50,8 +56,10 @@ Console behaviours beyond the basics:
     scroll over it, double-click to recentre;
   * A/B scenes in the header (arm SET, then A or B stores; A/B alone recalls),
     persisted across sessions;
-  * TALK / LISTEN latching talkback buttons in the header (shown when the card
-    exposes them; the atten level lives in Clock & format);
+  * TALK / LISTEN talkback buttons in the header (shown when the card exposes
+    them; the atten level lives in Clock & format) - push-to-talk like the
+    console button they mimic: hold to talk momentarily, a quick click
+    latches;
   * per-bus COPY (push this mix's sends to another mix) and RST (sends back to
     unity, pans centred, mutes/solos off) on the master strip;
   * gang groups: send strips with G engaged move together (keeping their
@@ -79,6 +87,8 @@ kcontrols.
 
 Run:  motu424-gui            (needs python-gobject + gtk4; deps: ./install.sh --gui)
       motu424-gui --demo     (synthetic card, to preview the console)
+      motu424-gui --rig 24io,2408   (pick the simulated converters per slot:
+                                     24io, 1224, 2408, hd192 — implies --demo)
 """
 import json
 import math
@@ -89,6 +99,18 @@ import subprocess
 import sys
 import threading
 import time
+
+if any(a in ("-h", "--help") for a in sys.argv[1:]):
+    sys.stdout.write(__doc__)
+    sys.exit(0)
+_skip = False
+for _a in sys.argv[1:]:
+    if _skip:
+        _skip = False               # value consumed by --rig
+    elif _a == "--rig":
+        _skip = True
+    elif _a != "--demo" and not _a.startswith("--rig="):
+        sys.exit(f"motu424-gui: unknown option '{_a}' (see --help)")
 
 try:
     import gi
@@ -104,7 +126,9 @@ except Exception as e:  # noqa: BLE001
     sys.exit(1)
 
 APP_ID = "org.motu.motu424ctl"
-DEMO = "--demo" in sys.argv[1:]
+DEMO = ("--demo" in sys.argv[1:]
+        or any(a == "--rig" or a.startswith("--rig=")
+               for a in sys.argv[1:]))    # --rig implies the synthetic card
 
 CONF_DIR = os.path.join(GLib.get_user_config_dir(), "motu424")
 NAMES_FILE = os.path.join(CONF_DIR, "channel-names.json")
@@ -307,6 +331,15 @@ def tok_label(tok, out=False):
     return f"{slot}·{cap}" if slot else cap
 
 
+def tok_normal_val(tok):
+    """An output's factory NORMAL — what it carries with nothing patched.
+    Main outs are normalled to the system stereo program (PCM 1/2) so desktop
+    sound reaches the monitors unconfigured; everything else to its own
+    direct feed. The patchbay bypass falls back to these normals."""
+    _slot, bank, idx = tok_parts(tok)
+    return f"PCM {idx % 2:02d}" if bank == "Main" else "Direct"
+
+
 def build_model(controls):
     """Group flat controls into the CueMix matrix model."""
     inputs, buses, outputs, talkback, slots = {}, {}, {}, {}, {}
@@ -360,7 +393,45 @@ def build_model(controls):
 # slot -> interface model -> banks (bank, inputs, outputs). The default demo
 # rig is a 24I/O in slot A plus a 1224 in slot B (8 analog I/O, an AES/EBU
 # pair, main outs) — everything the console shows flows from this table.
-DEMO_RIG = (
+#
+# `--rig 24io,2408` picks other converters for the PCI-424's four AudioWire
+# slots (A-D, in order; demo approximations of the vendor lineup).
+RIG_IFACES = {
+    "24io": ("24I/O", (("Analog", 24, 24),)),
+    "1224": ("1224", (("Analog", 8, 8), ("AES", 2, 2), ("Main", 0, 2))),
+    "2408": ("2408mk3", (("Analog", 8, 8), ("ADAT", 24, 24),
+                         ("SPDIF", 2, 2), ("Main", 0, 2))),
+    "hd192": ("HD192", (("Analog", 12, 12), ("AES", 2, 2))),
+}
+
+
+def _rig_from_argv(args):
+    spec = None
+    for k, a in enumerate(args):
+        if a == "--rig" and k + 1 < len(args):
+            spec = args[k + 1]
+        elif a.startswith("--rig="):
+            spec = a.split("=", 1)[1]
+    if spec is None:
+        return None
+    rig = []
+    for slot, name in zip("ABCD", spec.replace("+", ",").split(",")):
+        name = name.strip().lower()
+        if not name or name in ("none", "empty"):
+            continue
+        if name not in RIG_IFACES:
+            sys.exit(f"motu424-gui: unknown --rig interface '{name}' "
+                     f"(available: {', '.join(RIG_IFACES)}, none)")
+        model, banks = RIG_IFACES[name]
+        rig.append((slot, model, banks))
+    if not rig:
+        sys.exit("motu424-gui: --rig lists no interface "
+                 f"(available: {', '.join(RIG_IFACES)})")
+    return tuple(rig)
+
+
+RIG_ARG = _rig_from_argv(sys.argv[1:])
+DEMO_RIG = RIG_ARG or (
     ("A", "24I/O", (("Analog", 24, 24),)),
     ("B", "1224", (("Analog", 8, 8), ("AES", 2, 2), ("Main", 0, 2))),
 )
@@ -423,26 +494,25 @@ def demo_controls(rig=DEMO_RIG, n_bus=3, family=1):
                     b(sp + "Mute Switch", "off"), b(sp + "Solo Switch", "off")]
     out += [b("Talkback Switch", "off"), b("Listenback Switch", "off"),
             i("Talkback Atten Volume", 20, 0, 40)]
-    out.append(b("Patchbay Switch", "on"))
+    out.append(b("Patchbay Switch", "off"))    # optional feature: ships bypassed
     # outputs are mono channels; an even channel can stereo-pair with the next
     # one in its bank. PCM MM = the feed output #MM (enumeration order) carries
     # when Direct.
     sources = (["Direct"] + [f"PCM {mm:02d}" for mm in range(len(outs_))]
                + [f"Mix {kk:02d} {s}" for kk in range(n_bus)
                   for s in ("L", "R")])
-    for mm, tok in enumerate(outs_):
+    for tok in outs_:
         _slot, bank, idx = tok_parts(tok)
         op = f"Output {tok} "
         st = bank in ("AES", "Main") or (tok.startswith("A Analog") and idx < 2)
-        if bank == "Main":
-            src = f"Mix 00 {'L' if idx % 2 == 0 else 'R'}"     # mains monitor mix 0
-        elif bank == "AES" and n_bus > 1:
-            src = f"Mix 01 {'L' if idx % 2 == 0 else 'R'}"
-        else:
-            src = "Direct"
+        # nothing is patched out of the box; outputs sit at their NORMALS,
+        # like a bay with no cords in it: own direct PCM feed everywhere,
+        # except Main outs which are normalled to the system stereo program
+        # (PCM 1/2) so desktop sound reaches the monitors unconfigured
+        value = f"PCM {idx % 2:02d}" if bank == "Main" else "Direct"
         out += [i(op + "Volume", 100, 0, 127), b(op + "Mute Switch", "off"),
                 b(op + "Stereo Switch", "on" if st and idx % 2 == 0 else "off"),
-                {"name": op + "Source", "type": "enum", "value": src,
+                {"name": op + "Source", "type": "enum", "value": value,
                  "items": sources, "min": None, "max": None}]
     return out
 
@@ -671,11 +741,14 @@ class Knob(Gtk.DrawingArea):
 
 
 class PatchBay(Gtk.DrawingArea):
-    """A drawn patchbay: source jacks on the left (every output's PCM feed +
-    each mix bus L/R), output jacks on the right, one virtual cable per
-    output. Drag a cable between a source and an output to patch them;
-    double-click an output jack to fall back to its direct feed. ST-linked
-    pairs (bracketed) patch together as L/R."""
+    """A drawn patchbay: source jacks on the left (PCM feeds + each mix bus
+    L/R), output jacks on the right, a virtual cable per *patched* output.
+    Like a normalled hardware bay it starts with no cords: an output sitting
+    at its NORMAL draws no cable — except Main outs, whose normal is the
+    system stereo program (PCM 1/2) and shows as a faint dashed line. Drag a
+    cable between a source and an output to patch; double-click an output
+    jack to unpatch it (back to its normal). ST-linked pairs (bracketed)
+    patch together as L/R."""
 
     ROW = 30
     PAD_Y = 34
@@ -687,7 +760,7 @@ class PatchBay(Gtk.DrawingArea):
     PCM_RGB = (0.47, 0.52, 0.57)
 
     def __init__(self, sources, outs, pair_of, get_conn, set_conn, out_label,
-                 direct_of):
+                 normal_of):
         # sources: ordered [(sid, label)]; sid = ("pcm", mm) | ("mix", kk, "L"/"R")
         super().__init__()
         self.sources = sources
@@ -696,10 +769,11 @@ class PatchBay(Gtk.DrawingArea):
         self.get_conn = get_conn       # token -> sid | None
         self.set_conn = set_conn       # (token, sid) — the panel writes controls
         self.out_label = out_label     # token -> persisted display name
-        self.direct_of = direct_of     # token -> its own direct-feed sid
+        self.normal_of = normal_of     # token -> its factory-normal sid
         self._drag_from = None         # ("src", sid) | ("out", nn)
         self._drag_a = None            # drag start point
         self._drag_xy = None           # current pointer
+        self._hover = None             # jack under the pointer
         rows = max(len(sources), len(outs))
         self.set_content_height(2 * self.PAD_Y + rows * self.ROW)
         self.set_content_width(2 * self.GUTTER + 320)
@@ -714,6 +788,12 @@ class PatchBay(Gtk.DrawingArea):
         dbl = Gtk.GestureClick()
         dbl.connect("pressed", self._dbl)
         self.add_controller(dbl)
+        mot = Gtk.EventControllerMotion()
+        mot.connect("motion", self._motion)
+        mot.connect("leave", self._leave)
+        self.add_controller(mot)
+        self.set_has_tooltip(True)
+        self.connect("query-tooltip", self._tooltip)
 
     # geometry ---------------------------------------------------------------
     def _src_xy(self, i):
@@ -770,7 +850,46 @@ class PatchBay(Gtk.DrawingArea):
         if n == 2 and self.is_sensitive():
             hit = self._jack_at(x, y)
             if hit and hit[0] == "out":
-                self.set_conn(hit[1], self.direct_of(hit[1]))
+                self.set_conn(hit[1], self.normal_of(hit[1]))
+
+    def _motion(self, _c, x, y):
+        hover = self._jack_at(x, y)
+        if hover != self._hover:
+            self._hover = hover
+            self.set_cursor_from_name(
+                "pointer" if hover and self.is_sensitive() else None)
+            self.queue_draw()
+
+    def _leave(self, _c):
+        if self._hover:
+            self._hover = None
+            self.set_cursor_from_name(None)
+            self.queue_draw()
+
+    def _src_label(self, sid):
+        return next((l for s, l in self.sources if s == sid), "?")
+
+    def _tooltip(self, _w, x, y, _kb, tip):
+        """Hovering a jack tells you what it carries / feeds."""
+        hit = self._jack_at(x, y)
+        if not hit:
+            return False
+        if hit[0] == "out":
+            nn = hit[1]
+            sid, normal = self.get_conn(nn), self.normal_of(nn)
+            what = self._src_label(sid) if sid else "?"
+            txt = f"{self.out_label(nn)}  ←  {what}"
+            txt += ("   (its normal — nothing patched)" if sid == normal
+                    else "   — double-click to unpatch")
+        else:
+            sid = hit[1]
+            fed = [self.out_label(nn) for nn in self.outs
+                   if self.get_conn(nn) == sid]
+            txt = self._src_label(sid) + (
+                "  →  " + ", ".join(fed) if fed
+                else "  —  feeds nothing; drag it to an output jack")
+        tip.set_text(txt)
+        return True
 
     # drawing ----------------------------------------------------------------
     def _cable(self, cr, x1, y1, x2, y2, rgb, alpha, width, dashed=False):
@@ -831,11 +950,16 @@ class PatchBay(Gtk.DrawingArea):
                 cr.move_to(x + 12, y1)
                 cr.curve_to(x + 20, y1, x + 20, y2, x + 12, y2)
                 cr.stroke()
-        # cables
+        # cables — an output at its normal draws none (identity) or a faint
+        # dashed "normal" line (Main outs <- system program); a real cord
+        # only appears once something is actually patched
         for j, nn in enumerate(self.outs):
             sid = self.get_conn(nn)
             if sid is None:
                 continue
+            normal = self.normal_of(nn)
+            if sid == normal and sid == ("pcm", j):
+                continue                        # identity normal: empty bay
             try:
                 i = next(k for k, (s, _l) in enumerate(self.sources)
                          if s == sid)
@@ -843,7 +967,11 @@ class PatchBay(Gtk.DrawingArea):
                 continue
             x1, y1 = self._src_xy(i)
             x2, y2 = self._out_xy(j)
-            self._cable(cr, x1, y1, x2, y2, self._rgb(sid), 0.9 * dim, 3)
+            if sid == normal:
+                self._cable(cr, x1, y1, x2, y2, self.PCM_RGB, 0.45 * dim, 2,
+                            dashed=True)
+            else:
+                self._cable(cr, x1, y1, x2, y2, self._rgb(sid), 0.9 * dim, 3)
         # drag preview
         target = None
         if self._drag_from and self._drag_xy:
@@ -860,17 +988,19 @@ class PatchBay(Gtk.DrawingArea):
                 x1, y1 = self._out_xy(j)
                 rgb = (0.84, 0.87, 0.89)
             self._cable(cr, x1, y1, *self._drag_xy, rgb, 0.8, 2.5, dashed=True)
-        # jacks + labels
+        # jacks + labels (hover prelights a jack when nothing is being dragged)
+        hov = self._hover if self.is_sensitive() and not self._drag_from else None
         for i, (sid, label) in enumerate(self.sources):
             x, y = self._src_xy(i)
             self._jack(cr, x, y, self._rgb(sid), dim,
-                       lit=target == ("src", sid))
+                       lit=target == ("src", sid) or hov == ("src", sid))
             self._text(cr, x - 14, y, label, dim, align_right=True)
         for j, nn in enumerate(self.outs):
             x, y = self._out_xy(j)
             sid = self.get_conn(nn)
             rgb = self._rgb(sid) if sid else self.PCM_RGB
-            self._jack(cr, x, y, rgb, dim, lit=target == ("out", nn))
+            self._jack(cr, x, y, rgb, dim,
+                       lit=target == ("out", nn) or hov == ("out", nn))
             self._text(cr, x + 14, y, self.out_label(nn), dim, bright=True)
 
 
@@ -919,7 +1049,9 @@ class Panel(Gtk.ApplicationWindow):
         self.card_dd.connect("notify::selected", lambda *_: self.reload())
         header.pack_start(self.card_dd)
         if DEMO:
-            tag = Gtk.Label(label="demo")
+            cap = "demo" if not RIG_ARG else (
+                "demo · " + "+".join(m for _s, m, _b in DEMO_RIG))
+            tag = Gtk.Label(label=cap)
             tag.add_css_class("dim-label")
             header.pack_start(tag)
 
@@ -973,15 +1105,25 @@ class Panel(Gtk.ApplicationWindow):
         self.tb_btns = {}
         for cap, cls, key, tip in (
                 ("TALK", "talk", "Talkback Switch",
-                 "Talkback — route the talkback input into the mixes "
+                 "Talkback — route the talkback input into the mixes; "
+                 "hold to talk momentarily, a quick click latches "
                  "(atten level lives in Clock & format)"),
                 ("LISTEN", "listen", "Listenback Switch",
-                 "Listenback — route the listenback input into the mixes")):
+                 "Listenback — route the listenback input into the mixes; "
+                 "hold for momentary, a quick click latches")):
             b = Gtk.ToggleButton(label=cap)
             b.add_css_class("scene")
             b.add_css_class(cls)
             b.set_tooltip_text(tip)
             b.connect("toggled", self._on_toggle, key)
+            # push-to-talk, like the console button it mimics: engage on
+            # *press*; released after a beat = momentary (drops back off),
+            # a quick click latches instead
+            hold = Gtk.GestureClick()
+            hold.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+            hold.connect("pressed", self._tb_press, b)
+            hold.connect("released", self._tb_release, b)
+            b.add_controller(hold)
             self.tb_btns[key] = b
             self.tb_box.append(b)
         self.tb_box.set_visible(False)
@@ -1396,13 +1538,16 @@ class Panel(Gtk.ApplicationWindow):
         if src:
             lbl = Gtk.Label(label="")
             lbl.add_css_class("sub")
-            def show(_v=None, l=lbl, name=src["name"]):
+            def show(_v=None, l=lbl, name=src["name"],
+                     normal=tok_normal_val(nn)):
                 pb = self._byname.get("Patchbay Switch")
-                if pb and pb["value"].split(",")[0].strip() != "on":
-                    l.set_text("← direct (patchbay off)")
-                    return
-                v = self._byname[name]["value"].strip()
-                l.set_text("← direct" if v == "Direct" else f"← {v}")
+                bypassed = bool(pb) and pb["value"].split(",")[0].strip() != "on"
+                # bypassed, the hardware falls back to the output's normal
+                v = normal if bypassed else self._byname[name]["value"].strip()
+                txt = ("← direct" if v == "Direct"
+                       else "← system stereo" if v == normal
+                       else f"← {v}")
+                l.set_text(txt + (" (patchbay off)" if bypassed else ""))
             show()
             self._observe(src["name"], show)
             self._observe("Patchbay Switch", show)
@@ -1452,12 +1597,19 @@ class Panel(Gtk.ApplicationWindow):
                 return ("mix", int(m.group(1)), m.group(2))
             return None
 
+        def normal_of(tok):
+            v = tok_normal_val(tok)
+            m = re.match(r"^PCM (\d+)$", v)
+            if m and int(m.group(1)) < len(outs):
+                return ("pcm", int(m.group(1)))
+            return ("pcm", pcm_of[tok])
+
         bay = PatchBay(sources, outs, self._out_pair_of, conn_of,
                        lambda t, sid, o=outputs, p=pcm_of:
                        self._patch_set(o, p, t, sid),
                        lambda t: self.names.get(f"out:{t}",
                                                 tok_label(t, out=True)),
-                       lambda t, p=pcm_of: ("pcm", p[t]))
+                       normal_of)
         for nn in outs:
             name = outputs[nn]["src"]["name"]
             # _sync keeps Source in snapshots/scenes and follows external
@@ -1467,6 +1619,30 @@ class Panel(Gtk.ApplicationWindow):
 
         head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         head.append(Gtk.Label(label="Virtual patchbay", xalign=0, hexpand=True))
+
+        def unpatch_all(_b):
+            # pull every cord: back to the normals, as one undo step
+            want = {}
+            for t in outs:
+                c = outputs[t]["src"]
+                val = tok_normal_val(t)
+                if val != "Direct" and val not in (c["items"] or []):
+                    val = "Direct"
+                if self._byname[c["name"]]["value"].strip() != val:
+                    want[c["name"]] = val
+            if not want:
+                self._show_status("patchbay already at its normals")
+                return
+            n = self._apply_snapshot(want)
+            self._show_status(f"unpatched {n} outputs back to their normals "
+                              "(Ctrl+Z undoes)")
+
+        clear = Gtk.Button(label="Unpatch all")
+        clear.add_css_class("tbtn")
+        clear.set_tooltip_text("Pull every cord — return all outputs to "
+                               "their normals (one Ctrl+Z undoes it)")
+        clear.connect("clicked", unpatch_all)
+        head.append(clear)
         if pb:
             def on(v):
                 return v.split(",")[0].strip() == "on"
@@ -1475,17 +1651,25 @@ class Panel(Gtk.ApplicationWindow):
                                 "output carries its own PCM channel")
             head.append(sw)
             bay.set_sensitive(on(pb["value"]))
+            clear.set_sensitive(on(pb["value"]))
             self._observe(pb["name"],
-                          lambda v, b=bay: (b.set_sensitive(on(v)),
-                                            b.queue_draw()))
+                          lambda v, b=bay, c=clear: (b.set_sensitive(on(v)),
+                                                     c.set_sensitive(on(v)),
+                                                     b.queue_draw()))
         outer.append(head)
-        note = Gtk.Label(label="Drag a virtual cable between a source jack (a "
-                               "PCM feed or a mix bus channel) and an output "
-                               "jack; double-click an output jack to return it "
-                               "to its direct feed. ST-linked pairs (bracketed) "
-                               "patch together as L/R. Switched off, the "
-                               "patchbay is bypassed: every output carries its "
-                               "own PCM channel.", xalign=0, wrap=True)
+        note = Gtk.Label(label="Optional — nothing is patched out of the box; "
+                               "every output sits at its normal, like a bay "
+                               "with no cords: its own direct PCM feed, except "
+                               "Main outs which are normalled to the system "
+                               "stereo program (PCM 1-2, the dashed line) so "
+                               "desktop sound reaches the monitors. Drag a "
+                               "virtual cable between a source jack and an "
+                               "output jack to patch; double-click an output "
+                               "jack to unpatch (back to its normal). "
+                               "ST-linked pairs (bracketed) patch together as "
+                               "L/R. Switched off, the whole patchbay is "
+                               "bypassed onto those same normals.",
+                         xalign=0, wrap=True)
         note.add_css_class("sub")
         outer.append(note)
         outer.append(bay)
@@ -2005,6 +2189,11 @@ class Panel(Gtk.ApplicationWindow):
         btn = Gtk.Button(label="Refresh diagnostics")
         btn.connect("clicked", lambda *_: self._diag_refresh())
         bar.append(btn)
+        cp = Gtk.Button(label="Copy report")
+        cp.set_tooltip_text("Copy the whole report to the clipboard — handy "
+                            "for bug reports")
+        cp.connect("clicked", self._diag_copy)
+        bar.append(cp)
         self.diag_spin = Gtk.Spinner()
         bar.append(self.diag_spin)
         box.append(bar)
@@ -2099,6 +2288,12 @@ class Panel(Gtk.ApplicationWindow):
         self.diag_view.get_buffer().set_text(text)
         return False
 
+    def _diag_copy(self, *_):
+        buf = self.diag_view.get_buffer()
+        text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        self.get_clipboard().set(text)
+        self._show_status("diagnostics report copied to the clipboard")
+
     # -- window niceties -------------------------------------------------------
     def _on_tab(self, _act, _param, i):
         if self._nb and i < self._nb.get_n_pages():
@@ -2126,11 +2321,16 @@ class Panel(Gtk.ApplicationWindow):
         ("ST on an input / output", "stereo pair — links the pair's faders"),
         ("SOLO (header)", "lit while any solo is on; click clears them all"),
         ("SET then A or B", "store a scene; A / B alone recalls it"),
-        ("TALK / LISTEN (header)", "latch talkback / listenback into the mixes"),
+        ("TALK / LISTEN (header)", "talkback / listenback into the mixes — "
+                                   "hold to talk momentarily, a quick click "
+                                   "latches"),
         ("CPY / RST (master strip)", "copy sends to another mix / reset the mix"),
-        ("Patchbay tab", "drag virtual cables from source jacks to output "
-                         "jacks; double-click a jack = direct feed; the "
-                         "switch bypasses the whole bay"),
+        ("Patchbay tab", "optional, no cords by default (outputs sit at "
+                         "their normals; Main outs carry the system stereo, "
+                         "dashed); drag virtual cables to patch, double-click "
+                         "a jack to unpatch, 'Unpatch all' pulls every cord, "
+                         "hovering a jack shows what it carries; the switch "
+                         "bypasses the bay"),
         ("Ctrl+Z", "undo the last mix-wide change"),
         ("Ctrl+S / Ctrl+O", "save / load a mix snapshot"),
         ("Ctrl+R", "reload controls"),
@@ -2267,6 +2467,19 @@ class Panel(Gtk.ApplicationWindow):
             return
         self._touch(name)
         self._apply(name, "on" if btn.get_active() else "off")
+
+    TB_HOLD_S = 0.4      # held longer than this = momentary push-to-talk
+
+    def _tb_press(self, g, _n, _x, _y, btn):
+        g.set_state(Gtk.EventSequenceState.CLAIMED)    # we own the click
+        btn._tb_t0 = time.monotonic()
+        btn.set_active(not btn.get_active())           # engage on press
+
+    def _tb_release(self, _g, _n, _x, _y, btn):
+        # still on after a long press: it was push-to-talk — let go = stop
+        if (btn.get_active()
+                and time.monotonic() - getattr(btn, "_tb_t0", 0) > self.TB_HOLD_S):
+            btn.set_active(False)
 
     def _on_switch(self, _sw, state, name):
         if not self._syncing:

@@ -2,9 +2,18 @@
 Type=Application
 Name=MOTU CueMix (motu424)
 GenericName=Audio Mixer
+GenericName[fr]=Console de mixage audio
 Comment=Control panel for the MOTU PCI-324/424 sound card
+Comment[fr]=Panneau de contrôle de la carte son MOTU PCI-324/424
 Exec=motu424-gui
 Icon=audio-card
 Terminal=false
 Categories=AudioVideo;Audio;Mixer;GTK;
-Keywords=MOTU;CueMix;mixer;ALSA;clock;
+Keywords=MOTU;CueMix;mixer;ALSA;clock;patchbay;monitoring;
+Keywords[fr]=MOTU;CueMix;mixage;ALSA;horloge;patchbay;écoute;
+Actions=Demo;
+
+[Desktop Action Demo]
+Name=Preview the console (demo mode)
+Name[fr]=Aperçu de la console (mode démo)
+Exec=motu424-gui --demo
