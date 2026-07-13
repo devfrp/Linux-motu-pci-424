@@ -13,11 +13,14 @@ renders it like the real console:
     strip pinned on the right, outside the scroll area;
   * an "Inputs" tab - per-input analog conditioning (trim fader, pad, phase,
     stereo pair, mute);
-  * an "Outputs" tab - one monitor strip per output pair (volume fader, meter,
-    mute) with the pair's routed source shown under the strip;
-  * a "Patchbay" tab - a virtual patchbay assigning each output pair its
-    source (a mix bus or the pair's direct PCM feed). One switch disables the
-    whole patchbay: off = direct routing, and the matrix greys out;
+  * an "Outputs" tab - one mono monitor strip per output (volume fader, meter,
+    mute, ST stereo link) with the routed source shown under the strip;
+    ST-linked pairs move their volume faders together;
+  * a "Patchbay" tab - drawn like a real bay: source jacks (PCM feeds, mix
+    bus L/R) wired to output jacks by virtual cables you drag between them;
+    double-click an output jack returns it to its direct feed, ST-linked
+    pairs patch together as L/R. One switch disables the whole patchbay:
+    off = direct routing, and the bay dims;
   * a "Clock & format" tab - clock source, a sample-rate selector grouped by
     1x/2x/4x clock family, locked rate, metering;
   * a "Diagnostics" tab - PCI / kernel-module / ALSA / kernel-log health
@@ -225,12 +228,13 @@ _IN = re.compile(r"^Input (\d+) (Trim Volume|Pad Switch|Phase Switch|"
 _MAS = re.compile(r"^Mix (\d+) Master Volume$")
 _MMU = re.compile(r"^Mix (\d+) Mute Switch$")
 _SND = re.compile(r"^Mix (\d+) Input (\d+) (Volume|Pan|Mute Switch|Solo Switch)$")
-_OUT = re.compile(r"^Output (\d+) (Volume|Mute Switch|Source)$")
+_OUT = re.compile(r"^Output (\d+) (Volume|Mute Switch|Stereo Switch|Source)$")
 _INKEY = {"Trim Volume": "trim", "Pad Switch": "pad", "Phase Switch": "phase",
           "Stereo Switch": "stereo", "Mute Switch": "mute"}
 _SNDKEY = {"Volume": "vol", "Pan": "pan", "Mute Switch": "mute",
            "Solo Switch": "solo"}
-_OUTKEY = {"Volume": "vol", "Mute Switch": "mute", "Source": "src"}
+_OUTKEY = {"Volume": "vol", "Mute Switch": "mute", "Stereo Switch": "stereo",
+           "Source": "src"}
 
 
 def build_model(controls):
@@ -278,7 +282,7 @@ def build_model(controls):
             "globals": glob, "other": other}
 
 
-def demo_controls(n_in=8, n_bus=3, n_out=4):
+def demo_controls(n_in=8, n_bus=3, n_out=8):
     """Synthetic CueMix kcontrol set so the console can be previewed without a card."""
     import random
     out = [
@@ -316,12 +320,18 @@ def demo_controls(n_in=8, n_bus=3, n_out=4):
     out += [b("Talkback Switch", "off"), b("Listenback Switch", "off"),
             i("Talkback Atten Volume", 20, 0, 40)]
     out.append(b("Patchbay Switch", "on"))
-    sources = ["Direct"] + [f"Mix {kk:02d}" for kk in range(n_bus)]
+    # outputs are mono channels; even channels can stereo-pair with the next
+    sources = (["Direct"] + [f"PCM {mm:02d}" for mm in range(n_out)]
+               + [f"Mix {kk:02d} {s}" for kk in range(n_bus)
+                  for s in ("L", "R")])
     for nn in range(n_out):
         op = f"Output {nn:02d} "
+        kk = nn // 2
+        src = (f"Mix {kk:02d} {'L' if nn % 2 == 0 else 'R'}"
+               if kk < n_bus and nn < 4 else "Direct")
         out += [i(op + "Volume", 100, 0, 127), b(op + "Mute Switch", "off"),
-                {"name": op + "Source", "type": "enum",
-                 "value": f"Mix {nn:02d}" if nn < n_bus else "Direct",
+                b(op + "Stereo Switch", "on" if nn in (0, 2) else "off"),
+                {"name": op + "Source", "type": "enum", "value": src,
                  "items": sources, "min": None, "max": None}]
     return out
 
@@ -549,6 +559,207 @@ class Knob(Gtk.DrawingArea):
         cr.stroke()
 
 
+class PatchBay(Gtk.DrawingArea):
+    """A drawn patchbay: source jacks on the left (every output's PCM feed +
+    each mix bus L/R), output jacks on the right, one virtual cable per
+    output. Drag a cable between a source and an output to patch them;
+    double-click an output jack to fall back to its direct feed. ST-linked
+    pairs (bracketed) patch together as L/R."""
+
+    ROW = 30
+    PAD_Y = 34
+    JACK_R = 6.5
+    GUTTER = 130                       # label gutter each side
+    HIT = 16                           # jack grab radius
+    HUES = ((0.35, 0.55, 0.84), (0.94, 0.65, 0.23), (0.54, 0.44, 0.82),
+            (0.34, 0.79, 0.42), (0.90, 0.33, 0.29), (0.36, 0.76, 0.78))
+    PCM_RGB = (0.47, 0.52, 0.57)
+
+    def __init__(self, sources, outs, pair_of, get_conn, set_conn, out_label):
+        # sources: ordered [(sid, label)]; sid = ("pcm", nn) | ("mix", kk, "L"/"R")
+        super().__init__()
+        self.sources = sources
+        self.outs = outs               # ordered output channel indexes
+        self.pair_of = pair_of        # nn -> ST partner (for the bracket)
+        self.get_conn = get_conn       # nn -> sid | None
+        self.set_conn = set_conn       # (nn, sid) — the panel writes controls
+        self.out_label = out_label     # nn -> persisted display name
+        self._drag_from = None         # ("src", sid) | ("out", nn)
+        self._drag_a = None            # drag start point
+        self._drag_xy = None           # current pointer
+        rows = max(len(sources), len(outs))
+        self.set_content_height(2 * self.PAD_Y + rows * self.ROW)
+        self.set_content_width(2 * self.GUTTER + 320)
+        self.set_hexpand(True)
+        self.set_vexpand(True)
+        self.set_draw_func(self._draw)
+        drag = Gtk.GestureDrag()
+        drag.connect("drag-begin", self._begin)
+        drag.connect("drag-update", self._update)
+        drag.connect("drag-end", self._end)
+        self.add_controller(drag)
+        dbl = Gtk.GestureClick()
+        dbl.connect("pressed", self._dbl)
+        self.add_controller(dbl)
+
+    # geometry ---------------------------------------------------------------
+    def _src_xy(self, i):
+        return (self.GUTTER,
+                self.PAD_Y + i * self.ROW + self.ROW / 2)
+
+    def _out_xy(self, j):
+        return (self.get_width() - self.GUTTER,
+                self.PAD_Y + j * self.ROW + self.ROW / 2)
+
+    def _jack_at(self, x, y):
+        for i, (sid, _l) in enumerate(self.sources):
+            jx, jy = self._src_xy(i)
+            if (x - jx) ** 2 + (y - jy) ** 2 <= self.HIT ** 2:
+                return ("src", sid)
+        for j, nn in enumerate(self.outs):
+            jx, jy = self._out_xy(j)
+            if (x - jx) ** 2 + (y - jy) ** 2 <= self.HIT ** 2:
+                return ("out", nn)
+        return None
+
+    def _rgb(self, sid):
+        if sid[0] == "mix":
+            return self.HUES[sid[1] % len(self.HUES)]
+        return self.PCM_RGB
+
+    # interaction ------------------------------------------------------------
+    def _begin(self, _g, x, y):
+        if not self.is_sensitive():
+            return
+        self._drag_from = self._jack_at(x, y)
+        self._drag_a = (x, y)
+        self._drag_xy = (x, y)
+        if self._drag_from:
+            self.queue_draw()
+
+    def _update(self, _g, dx, dy):
+        if self._drag_from:
+            self._drag_xy = (self._drag_a[0] + dx, self._drag_a[1] + dy)
+            self.queue_draw()
+
+    def _end(self, _g, dx, dy):
+        start, self._drag_from = self._drag_from, None
+        if start and self._drag_xy:
+            target = self._jack_at(*self._drag_xy)
+            if target and target[0] != start[0]:
+                out = start[1] if start[0] == "out" else target[1]
+                sid = start[1] if start[0] == "src" else target[1]
+                self.set_conn(out, sid)
+        self._drag_xy = None
+        self.queue_draw()
+
+    def _dbl(self, _g, n, x, y):
+        if n == 2 and self.is_sensitive():
+            hit = self._jack_at(x, y)
+            if hit and hit[0] == "out":
+                self.set_conn(hit[1], ("pcm", hit[1]))
+
+    # drawing ----------------------------------------------------------------
+    def _cable(self, cr, x1, y1, x2, y2, rgb, alpha, width, dashed=False):
+        sag = 16 + abs(y2 - y1) * 0.08
+        c1 = (x1 + (x2 - x1) * 0.35, y1 + sag)
+        c2 = (x2 - (x2 - x1) * 0.35, y2 + sag)
+        if dashed:
+            cr.set_dash((5, 4))
+        cr.set_line_width(width + 2)
+        cr.set_source_rgba(0, 0, 0, 0.35 * alpha)     # shadow under the cable
+        cr.move_to(x1, y1)
+        cr.curve_to(*c1, *c2, x2, y2)
+        cr.stroke()
+        cr.set_line_width(width)
+        cr.set_source_rgba(*rgb, alpha)
+        cr.move_to(x1, y1)
+        cr.curve_to(*c1, *c2, x2, y2)
+        cr.stroke()
+        cr.set_dash(())
+
+    def _jack(self, cr, x, y, rgb, dim, lit=False):
+        cr.set_source_rgba(*rgb, 0.28 * dim + (0.5 if lit else 0))
+        cr.arc(x, y, self.JACK_R + 3.5, 0, 2 * math.pi)
+        cr.fill()
+        cr.set_line_width(2)
+        cr.set_source_rgba(*rgb, dim)
+        cr.arc(x, y, self.JACK_R, 0, 2 * math.pi)
+        cr.stroke()
+        cr.set_source_rgba(0.04, 0.05, 0.06, dim)     # the hole
+        cr.arc(x, y, self.JACK_R - 2.5, 0, 2 * math.pi)
+        cr.fill()
+
+    def _text(self, cr, x, y, s, dim, align_right=False, bright=False):
+        cr.select_font_face("monospace")
+        cr.set_font_size(10)
+        if align_right:
+            x -= cr.text_extents(s).width
+        cr.set_source_rgba(*((0.84, 0.87, 0.89) if bright
+                             else (0.55, 0.60, 0.65)), dim)
+        cr.move_to(x, y + 3.5)
+        cr.show_text(s)
+
+    def _draw(self, _area, cr, w, h):
+        dim = 1.0 if self.is_sensitive() else 0.35
+        cr.set_source_rgba(0.09, 0.106, 0.125, dim)   # bay panel
+        cr.rectangle(0, 0, w, h)
+        cr.fill()
+        self._text(cr, self.GUTTER - 8, 16, "SOURCES", dim, align_right=True)
+        self._text(cr, w - self.GUTTER + 8, 16, "OUTPUTS", dim)
+        # ST brackets between linked output jacks
+        for j, nn in enumerate(self.outs):
+            if self.pair_of.get(nn) == nn + 1:
+                x, y1 = self._out_xy(j)
+                _x, y2 = self._out_xy(j + 1)
+                cr.set_line_width(1.5)
+                cr.set_source_rgba(0.55, 0.60, 0.65, 0.7 * dim)
+                cr.move_to(x + 12, y1)
+                cr.curve_to(x + 20, y1, x + 20, y2, x + 12, y2)
+                cr.stroke()
+        # cables
+        for j, nn in enumerate(self.outs):
+            sid = self.get_conn(nn)
+            if sid is None:
+                continue
+            try:
+                i = next(k for k, (s, _l) in enumerate(self.sources)
+                         if s == sid)
+            except StopIteration:
+                continue
+            x1, y1 = self._src_xy(i)
+            x2, y2 = self._out_xy(j)
+            self._cable(cr, x1, y1, x2, y2, self._rgb(sid), 0.9 * dim, 3)
+        # drag preview
+        target = None
+        if self._drag_from and self._drag_xy:
+            hit = self._jack_at(*self._drag_xy)
+            if hit and hit[0] != self._drag_from[0]:
+                target = hit
+            if self._drag_from[0] == "src":
+                i = next(k for k, (s, _l) in enumerate(self.sources)
+                         if s == self._drag_from[1])
+                x1, y1 = self._src_xy(i)
+                rgb = self._rgb(self._drag_from[1])
+            else:
+                j = self.outs.index(self._drag_from[1])
+                x1, y1 = self._out_xy(j)
+                rgb = (0.84, 0.87, 0.89)
+            self._cable(cr, x1, y1, *self._drag_xy, rgb, 0.8, 2.5, dashed=True)
+        # jacks + labels
+        for i, (sid, label) in enumerate(self.sources):
+            x, y = self._src_xy(i)
+            self._jack(cr, x, y, self._rgb(sid), dim,
+                       lit=target == ("src", sid))
+            self._text(cr, x - 14, y, label, dim, align_right=True)
+        for j, nn in enumerate(self.outs):
+            x, y = self._out_xy(j)
+            sid = self.get_conn(nn)
+            rgb = self._rgb(sid) if sid else self.PCM_RGB
+            self._jack(cr, x, y, rgb, dim, lit=target == ("out", nn))
+            self._text(cr, x + 14, y, self.out_label(nn), dim, bright=True)
+
+
 class Panel(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="motu424 — CueMix")
@@ -565,6 +776,8 @@ class Panel(Gtk.ApplicationWindow):
         self._byname = {}                   # kcontrol name -> control dict
         self._touched = {}                  # name -> monotonic time of last user edit
         self._send_scales = {}              # (bus, input) -> Gtk.Scale
+        self._out_scales = {}               # output -> Gtk.Scale
+        self._out_pair_of = {}              # output -> stereo partner output
         self._solo_btns = []
         self._pair_of = {}                  # input -> stereo partner input
         self._gang = set()                  # (bus, input) strips ganged together
@@ -681,6 +894,8 @@ class Panel(Gtk.ApplicationWindow):
         self._obs = {}
         self._byname = {}
         self._send_scales = {}
+        self._out_scales = {}
+        self._out_pair_of = {}
         self._solo_btns = []
         self._pair_of = {}
         self._gang = set()
@@ -744,6 +959,13 @@ class Panel(Gtk.ApplicationWindow):
                         and nn % 2 == 0 and nn + 1 in model["inputs"]):
                     self._pair_of[nn] = nn + 1
                     self._pair_of[nn + 1] = nn
+            # output stereo pairs follow the same even/odd convention
+            for nn, o in model["outputs"].items():
+                st = o.get("stereo")
+                if (st and st["value"].split(",")[0].strip() == "on"
+                        and nn % 2 == 0 and nn + 1 in model["outputs"]):
+                    self._out_pair_of[nn] = nn + 1
+                    self._out_pair_of[nn + 1] = nn
             for kk in sorted(model["buses"]):
                 nb.append_page(self._bus_page(kk, model),
                                Gtk.Label(label=f"Mix {kk:02d}"))
@@ -976,21 +1198,40 @@ class Panel(Gtk.ApplicationWindow):
         box.append(self._name_label(nn))
         return box
 
-    @staticmethod
-    def _out_caption(nn):
-        """Output pair nn covers physical channels 2nn+1 / 2nn+2."""
-        return f"{2 * nn + 1}-{2 * nn + 2}"
+    def _fan_out(self, nn, v, user):
+        """Fan an output-volume move out to its stereo partner (absolute)."""
+        if not user or self._fanning:
+            return
+        partner = self._out_pair_of.get(nn)
+        s = self._out_scales.get(partner) if partner is not None else None
+        if not s:
+            return
+        self._fanning = True
+        try:
+            s.set_value(v)                      # its handler writes it out
+        finally:
+            self._fanning = False
 
     def _output_strip(self, nn, out):
-        """Monitor strip for one output pair: volume, mute, routed source."""
-        pair = self._out_caption(nn)
-        box = self._strip_box(f"OUT {pair}", master=False)
+        """Mono monitor strip for one output: volume, mute, stereo link,
+        routed source. ST-linked pairs move their volume faders together."""
+        box = self._strip_box(f"OUT {nn + 1}", master=False)
         vol = out.get("vol")
-        box.append(self._fader_row(vol, default=self._unity(vol)))
+        box.append(self._fader_row(vol, default=self._unity(vol),
+                                   on_change=lambda v, user, nn=nn:
+                                   self._fan_out(nn, v, user)))
+        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3,
+                       halign=Gtk.Align.CENTER)
         if out.get("mute"):
-            btn = self._toggle(out["mute"], "MUTE", "m")
-            btn.set_halign(Gtk.Align.CENTER)
-            box.append(btn)
+            btns.append(self._toggle(out["mute"], "M", "m"))
+        if out.get("stereo"):
+            b = self._toggle(out["stereo"], "ST", "link")
+            b.set_tooltip_text("Stereo pair — links this pair's volume faders; "
+                               "on the patchbay the pair patches as one (L/R)")
+            b.connect("toggled", lambda *_: GLib.idle_add(self.reload)
+                      if not self._syncing else None)
+            btns.append(b)
+        box.append(btns)
         src = out.get("src")
         if src:
             lbl = Gtk.Label(label="")
@@ -1006,7 +1247,7 @@ class Panel(Gtk.ApplicationWindow):
             self._observe(src["name"], show)
             self._observe("Patchbay Switch", show)
             box.append(lbl)
-        box.append(self._name_label(nn, kind="out", default=f"out {pair}"))
+        box.append(self._name_label(nn, kind="out", default=f"out {nn + 1}"))
         return box
 
     def _outputs_page(self, outputs):
@@ -1020,14 +1261,47 @@ class Panel(Gtk.ApplicationWindow):
         return sc
 
     def _patchbay_page(self, model):
-        """Virtual patchbay: each output pair picks its source. The Patchbay
-        switch bypasses the whole thing (direct routing) and greys the grid."""
+        """The drawn patchbay: source jacks wired to output jacks by virtual
+        cables. The Patchbay switch bypasses the whole thing (direct routing)
+        and dims the bay."""
         outputs, pb = model["outputs"], model["patchbay"]
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
                         margin_top=16, margin_bottom=16, margin_start=16,
                         margin_end=16)
         outer.add_css_class("patch")
-        grid = Gtk.Grid(row_spacing=8, column_spacing=12)
+
+        outs = [nn for nn in sorted(outputs) if outputs[nn].get("src")]
+        items = (outputs[outs[0]]["src"]["items"] or []) if outs else []
+        sources = [(("pcm", nn), f"PCM {nn + 1}") for nn in outs]
+        for it in items:
+            m = re.match(r"^Mix (\d+) ([LR])$", it)
+            if m:
+                sources.append(((("mix", int(m.group(1)), m.group(2))),
+                                f"Mix {int(m.group(1)):02d} {m.group(2)}"))
+
+        def conn_of(nn):
+            v = self._byname[outputs[nn]["src"]["name"]]["value"].strip()
+            if v == "Direct":
+                return ("pcm", nn)
+            m = re.match(r"^PCM (\d+)$", v)
+            if m:
+                return ("pcm", int(m.group(1)))
+            m = re.match(r"^Mix (\d+) ([LR])$", v)
+            if m:
+                return ("mix", int(m.group(1)), m.group(2))
+            return None
+
+        bay = PatchBay(sources, outs, self._out_pair_of, conn_of,
+                       lambda nn, sid, o=outputs: self._patch_set(o, nn, sid),
+                       lambda nn: self.names.get(f"out:{nn:02d}",
+                                                 f"OUT {nn + 1}"))
+        for nn in outs:
+            name = outputs[nn]["src"]["name"]
+            # _sync keeps Source in snapshots/scenes and follows external
+            # changes; _obs redraws on local cable drags too
+            self._register(name, lambda _v, b=bay: b.queue_draw())
+            self._observe(name, lambda _v, b=bay: b.queue_draw())
+
         head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         head.append(Gtk.Label(label="Virtual patchbay", xalign=0, hexpand=True))
         if pb:
@@ -1035,40 +1309,54 @@ class Panel(Gtk.ApplicationWindow):
                 return v.split(",")[0].strip() == "on"
             sw = self._inline_widget(pb)
             sw.set_tooltip_text("Enable the patchbay — off bypasses it: every "
-                                "output pair carries its own PCM channels")
+                                "output carries its own PCM channel")
             head.append(sw)
-            grid.set_sensitive(on(pb["value"]))
-            self._observe(pb["name"], lambda v, g=grid: g.set_sensitive(on(v)))
+            bay.set_sensitive(on(pb["value"]))
+            self._observe(pb["name"],
+                          lambda v, b=bay: (b.set_sensitive(on(v)),
+                                            b.queue_draw()))
         outer.append(head)
-        note = Gtk.Label(label="Routes each output pair to a mix bus or to its "
-                               "direct PCM feed. Switched off, the patchbay is "
-                               "bypassed: every pair carries its own PCM "
-                               "channels.", xalign=0, wrap=True)
+        note = Gtk.Label(label="Drag a virtual cable between a source jack (a "
+                               "PCM feed or a mix bus channel) and an output "
+                               "jack; double-click an output jack to return it "
+                               "to its direct feed. ST-linked pairs (bracketed) "
+                               "patch together as L/R. Switched off, the "
+                               "patchbay is bypassed: every output carries its "
+                               "own PCM channel.", xalign=0, wrap=True)
         note.add_css_class("sub")
         outer.append(note)
-        r = 0
-        for nn in sorted(outputs):
-            src = outputs[nn].get("src")
-            if not src:
-                continue
-            cap = Gtk.Label(label=f"OUT {self._out_caption(nn)}", xalign=0)
-            cap.add_css_class("cap")
-            arrow = Gtk.Label(label="←")
-            arrow.add_css_class("dim-label")
-            dd = self._inline_widget(src)
-            dd.set_halign(Gtk.Align.START)
-            name = Gtk.Label(label=self.names.get(f"out:{nn:02d}", ""),
-                             xalign=0)
-            name.add_css_class("sub")
-            grid.attach(cap, 0, r, 1, 1)
-            grid.attach(arrow, 1, r, 1, 1)
-            grid.attach(dd, 2, r, 1, 1)
-            grid.attach(name, 3, r, 1, 1)
-            r += 1
-        outer.append(grid)
+        outer.append(bay)
         sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         sc.set_child(outer)
         return sc
+
+    def _patch_set(self, outputs, nn, sid):
+        """Write one patchbay connection. An ST-linked pair patches as a unit:
+        a mix lands as L/R, a PCM feed as the even-aligned consecutive pair."""
+        partner = self._out_pair_of.get(nn)
+        if partner is not None:
+            e, o = min(nn, partner), max(nn, partner)
+            if sid[0] == "mix":
+                writes = [(e, ("mix", sid[1], "L")), (o, ("mix", sid[1], "R"))]
+            else:
+                mm = sid[1] - (sid[1] % 2)
+                writes = [(e, ("pcm", mm)), (o, ("pcm", mm + 1))]
+        else:
+            writes = [(nn, sid)]
+        for ch, s in writes:
+            c = outputs.get(ch, {}).get("src")
+            if not c:
+                continue
+            if s[0] == "pcm":
+                val = "Direct" if s[1] == ch else f"PCM {s[1]:02d}"
+            else:
+                val = f"Mix {s[1]:02d} {s[2]}"
+            if val != "Direct" and val not in (c["items"] or []):
+                self._show_status(f"{c['name']}: '{val}' is not available on "
+                                  "this card", err=True)
+                continue
+            self._touch(c["name"])
+            self._apply(c["name"], val)
 
     def _name_label(self, nn, kind="in", default=None):
         """Editable, persisted channel name (kept in sync across tabs)."""
@@ -1146,6 +1434,9 @@ class Panel(Gtk.ApplicationWindow):
                 key = (int(m.group(1)), int(m.group(2)))
                 self._send_scales[key] = f
                 self._last_val[key] = int(f.get_value())
+            m = _OUT.match(c["name"])
+            if m and m.group(2) == "Volume":
+                self._out_scales[int(m.group(1))] = f
         wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3,
                        halign=Gtk.Align.CENTER)
         row.append(f)
@@ -1643,13 +1934,14 @@ class Panel(Gtk.ApplicationWindow):
         ("click a meter", "clear its clip lamp"),
         ("click a channel name", "rename it (saved, shared across tabs)"),
         ("M / S / G buttons", "mute, solo, gang (ganged strips move together)"),
-        ("ST on an input", "stereo pair — links the pair's send faders"),
+        ("ST on an input / output", "stereo pair — links the pair's faders"),
         ("SOLO (header)", "lit while any solo is on; click clears them all"),
         ("SET then A or B", "store a scene; A / B alone recalls it"),
         ("TALK / LISTEN (header)", "latch talkback / listenback into the mixes"),
         ("CPY / RST (master strip)", "copy sends to another mix / reset the mix"),
-        ("Patchbay tab", "route each output pair to a mix or its direct PCM "
-                         "feed; the switch bypasses the whole patchbay"),
+        ("Patchbay tab", "drag virtual cables from source jacks to output "
+                         "jacks; double-click a jack = direct feed; the "
+                         "switch bypasses the whole bay"),
         ("Ctrl+Z", "undo the last mix-wide change"),
         ("Ctrl+S / Ctrl+O", "save / load a mix snapshot"),
         ("Ctrl+R", "reload controls"),
