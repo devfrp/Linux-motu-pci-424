@@ -66,13 +66,18 @@ already knows them and pretty-prints the ones it finds. `N` = input index,
 | `Talkback Switch`               | BOOL    | talkback into the mixes (`TALK` label in the layout) |
 | `Listenback Switch`             | BOOL    | listenback into the mixes (`LISTEN`) |
 | `Talkback Atten Volume`         | INT     | dB the mixes duck while talk/listen is engaged (`ATTEN`) |
-| `Output NN Volume`              | INT     | output-pair monitor level |
-| `Output NN Mute Switch`         | BOOL    | output-pair mute |
-| `Output NN Source`              | ENUM    | patchbay: `Direct` or the mix bus feeding pair NN |
-| `Patchbay Switch`               | BOOL    | patchbay bypass: off = every pair carries its direct PCM feed |
+| `Output NN Volume`              | INT     | mono output monitor level |
+| `Output NN Mute Switch`         | BOOL    | output mute |
+| `Output NN Stereo Switch`       | BOOL    | pair NN/NN+1 (same convention as inputs) |
+| `Output NN Source`              | ENUM    | patchbay: `Direct`, `PCM MM` (any PCM feed), or `Mix KK L` / `Mix KK R` |
+| `Patchbay Switch`               | BOOL    | patchbay bypass: off = every output carries its direct PCM feed |
 
-`Output NN` addresses **output pairs** (pair NN = physical channels 2NN+1 /
-2NN+2 — AudioWire outputs are stereo pairs, and each mix bus is stereo).
+`Output NN` addresses **mono output channels**. Like inputs, an even channel's
+`Stereo Switch` pairs it with NN+1; the GUI then links the pair's volume
+faders and patches the pair as a unit (a mix lands as L/R, a PCM feed as the
+even-aligned consecutive pair). `Direct` is output NN's own PCM feed — the
+identity routing the bypass falls back to; `PCM MM` cross-patches any PCM
+channel into this output.
 
 The output/patchbay rows are **not** in the TouchOSC dump; they model what the
 vendor CueMix console does when it assigns a mix bus to an output pair, plus a

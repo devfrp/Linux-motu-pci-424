@@ -120,10 +120,12 @@ kcontrols et le rend comme la vraie console : un onglet par bus de mix
 (tranches avec fader d'envoi, vumètre à maintien de crête, potentiomètre de
 panoramique rotatif, mute/solo/gang, le master du bus épinglé à droite), un
 onglet Entrées (gain, pad, phase, paires stéréo), un onglet Sorties (tranches
-de monitoring par paire de sorties), un onglet Patchbay (un patchbay virtuel
-qui route chaque paire de sorties vers un bus de mix ou son flux PCM direct,
-avec un interrupteur de contournement global), un onglet Horloge & format, et
-un onglet Diagnostics qui fonctionne même sans carte ni pilote chargé.
+de monitoring mono, liables en paires stéréo comme les entrées), un onglet
+Patchbay (dessiné comme une vraie baie de brassage — des jacks sources pour
+les flux PCM et les bus de mix, reliés aux jacks de sortie par des câbles
+virtuels que l'on tire à la souris, avec un interrupteur de contournement
+global), un onglet Horloge & format, et un onglet Diagnostics qui fonctionne
+même sans carte ni pilote chargé.
 
 Au-delà des bases : liaison paires stéréo et gangs, scènes A/B, boutons
 TALK / LISTEN (talkback) dans l'en-tête, copie/reset de mix par bus, snapshots

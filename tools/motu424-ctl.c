@@ -342,7 +342,7 @@ static int cmd_status(snd_hctl_t *hctl, const char *ctlname)
 	printf("  Mixer        : %d input(s), %d mix bus(es), %d matrix send(s)\n",
 	       inputs, mixes, sends);
 	if (outputs) {
-		printf("  Outputs      : %d pair(s)", outputs);
+		printf("  Outputs      : %d output(s)", outputs);
 		if ((elem = find_by_name(hctl, "Patchbay Switch"))) {
 			snd_ctl_elem_info_alloca(&info);
 			if (snd_hctl_elem_info(elem, info) == 0) {
