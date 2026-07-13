@@ -36,9 +36,12 @@ Console behaviours beyond the basics:
     lamp (click a meter to clear its clip);
   * control writes are coalesced and flushed from a worker thread, so fader
     drags never block on `motu424-ctl` round-trips;
-  * the hardware is re-polled in the background and the console follows
-    changes made elsewhere (alsamixer, a second instance) without fighting
-    the control you are currently touching;
+  * the hardware is re-polled in the background: value changes made elsewhere
+    (alsamixer, a second instance) flow in without fighting the control you
+    are currently touching, and if the control set itself changes - module
+    loaded or unloaded, converters hot-plugged, channel counts shrinking in
+    the 2x/4x rate families - the console rebuilds itself around the new set,
+    keeping the tab you were on;
   * inputs flagged as a stereo pair get their send faders linked (moving one
     moves its partner);
   * a global SOLO indicator lights whenever any solo is engaged - click it to
@@ -69,7 +72,8 @@ The mixer is card-gated (driver Phase 5), so with no MOTU card the kcontrols do
 not exist yet and the console has nothing to populate. Run with `--demo` to see
 the full console against a synthetic PCI-424 rig - a 24I/O in slot A plus a
 1224 in slot B (8 analog I/O, an AES/EBU pair, main outs), 3 mix buses; the
-demo card keeps state, so snapshots and linking can be exercised. On real
+demo card keeps state, so snapshots and linking can be exercised, and switching
+the sample rate re-enumerates it live (the 2x/4x analog/ADAT shrink). On real
 hardware it fills in automatically once the driver registers its CueMix
 kcontrols.
 
@@ -362,11 +366,18 @@ DEMO_RIG = (
 )
 
 
-def demo_controls(rig=DEMO_RIG, n_bus=3):
+def demo_controls(rig=DEMO_RIG, n_bus=3, family=1):
     """Synthetic CueMix kcontrol set so the console can be previewed without a
     card. Channel counts, banks and slots all flow from `rig`; the GUI adapts
-    to whatever is listed, exactly as it will to the driver's enumeration."""
+    to whatever is listed, exactly as it will to the driver's enumeration.
+    `family` (1/2/4) models the AudioWire bandwidth shrink: analog and ADAT/
+    TDIF banks carry half the channels at 2x rates, a quarter at 4x."""
     import random
+
+    def bank_count(bank, n):
+        if bank in ("Analog", "ADAT", "TDIF") and family > 1:
+            return max(2, (n // family) & ~1)      # whole stereo pairs only
+        return n
     out = [
         {"name": "Clock Source", "type": "enum", "value": "Internal",
          "items": ["Internal", "Word Clock", "ADAT", "SPDIF", "AES/EBU"],
@@ -390,8 +401,10 @@ def demo_controls(rig=DEMO_RIG, n_bus=3):
         out.append({"name": f"Slot {slot} Interface", "type": "enum",
                     "value": iface, "items": [iface], "min": None, "max": None})
         for bank, n_in, n_out in banks:
-            ins += [f"{slot} {bank} {nn:02d}" for nn in range(n_in)]
-            outs_ += [f"{slot} {bank} {nn:02d}" for nn in range(n_out)]
+            ins += [f"{slot} {bank} {nn:02d}"
+                    for nn in range(bank_count(bank, n_in))]
+            outs_ += [f"{slot} {bank} {nn:02d}"
+                      for nn in range(bank_count(bank, n_out))]
     for tok in ins:
         _slot, bank, idx = tok_parts(tok)
         p = f"Input {tok} "
@@ -889,6 +902,8 @@ class Panel(Gtk.ApplicationWindow):
         self._undo_stack = []               # previous values of mix-wide ops
         self._name_labels = {}              # "in:<token>" -> [EditableLabel, ...]
         self._slots = {}                    # AudioWire slot -> interface model
+        self._ctl_names = set()             # control set at the last rebuild
+        self._demo_fam = 1                  # demo card's current rate family
         self._nb = None
         self._help_win = None
         self.demo = demo_controls() if DEMO else None
@@ -991,6 +1006,10 @@ class Panel(Gtk.ApplicationWindow):
         return self.cards[self.card_dd.get_selected()][0]
 
     def reload(self):
+        cur_tab = None                          # keep the active tab across rebuilds
+        if self._nb is not None and self._nb.get_current_page() >= 0:
+            cur_tab = self._nb.get_tab_label_text(
+                self._nb.get_nth_page(self._nb.get_current_page()))
         self.meters = []
         self._sync = {}
         self._obs = {}
@@ -1091,6 +1110,12 @@ class Panel(Gtk.ApplicationWindow):
             if 0 <= self._restore_page < nb.get_n_pages():
                 nb.set_current_page(self._restore_page)
             self._restore_page = None
+        elif cur_tab is not None:
+            for i in range(nb.get_n_pages()):
+                if nb.get_tab_label_text(nb.get_nth_page(i)) == cur_tab:
+                    nb.set_current_page(i)
+                    break
+        self._ctl_names = set(self._byname)
         self._update_solo_ind()
 
     def _update_clock_label(self):
@@ -1735,9 +1760,19 @@ class Panel(Gtk.ApplicationWindow):
         except ValueError:
             return fallback
 
+    @staticmethod
+    def _family_div(hz):
+        """Rate -> AudioWire family divisor (1x/2x/4x)."""
+        try:
+            hz = int(str(hz).split(",")[0])
+        except ValueError:
+            return 1
+        return 1 if hz <= 48000 else (2 if hz <= 96000 else 4)
+
     def _poll(self):
-        """Follow changes made outside the GUI (alsamixer, another instance)."""
-        if DEMO or self._poll_busy or not self._sync:
+        """Follow changes made outside the GUI (alsamixer, another instance),
+        and the card itself coming, going, or re-registering controls."""
+        if DEMO or self._poll_busy:
             return True
         self._poll_busy = True
         dev = self.current_dev()
@@ -1750,11 +1785,22 @@ class Panel(Gtk.ApplicationWindow):
     def _poll_done(self, rc, out):
         self._poll_busy = False
         if rc != 0:
+            if self._ctl_names:                 # card was there, is gone now
+                self.reload()
+                self._show_status("card disappeared — console cleared",
+                                  err=True)
+            return False
+        ctrls = parse_list(out)
+        if {c["name"] for c in ctrls} != self._ctl_names:
+            # driver (un)registered controls: module load, hot-plug, or the
+            # 2x/4x rate-family channel shrink — rebuild around the new set
+            self.reload()
+            self._show_status("card control set changed — console rebuilt")
             return False
         now = time.monotonic()
         self._syncing = True
         try:
-            for c in parse_list(out):
+            for c in ctrls:
                 name = c["name"]
                 if name not in self._sync:
                     continue
@@ -2147,12 +2193,29 @@ class Panel(Gtk.ApplicationWindow):
             self._byname[name]["value"] = value
         self._notify(name, value)
         if DEMO:
-            # the demo card locks instantly onto the requested rate
+            # the demo card locks instantly onto the requested rate, and
+            # re-enumerates like the real driver will: analog/ADAT banks
+            # carry fewer channels in the 2x/4x families
             if name == "Sample Rate" and "Clock Rate" in self._byname:
                 self._byname["Clock Rate"]["value"] = value
                 if "Clock Rate" in self._sync:
                     self._sync["Clock Rate"](value)
                 self._update_clock_label()
+                fam = self._family_div(value)
+                if fam != self._demo_fam:
+                    self._demo_fam = fam
+                    old = {c["name"]: c["value"] for c in self.demo}
+                    self.demo = demo_controls(family=fam)
+                    for c in self.demo:
+                        if c["name"] in ("Sample Rate", "Clock Rate"):
+                            c["value"] = value
+                        elif c["name"] in old:      # surviving channels keep state
+                            c["value"] = old[c["name"]]
+                    self._show_status(
+                        f"demo: {fam}x family — analog/ADAT banks carry "
+                        "fewer channels" if fam > 1 else
+                        "demo: 1x family — full channel counts restored")
+                    GLib.idle_add(self.reload)
             return
         self.writer.push(name, value, self.current_dev())
 

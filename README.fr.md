@@ -133,7 +133,12 @@ ADAT, TDIF, AES/EBU, main out, casque — voir `docs/cuemix-control-map.md`), et
 la console regroupe ses tranches et les jacks du patchbay sous des en-têtes
 « slot · modèle — banque ». Une 24I/O apporte 24 entrées/sorties analogiques,
 une 1224 apporte 8 entrées/sorties analogiques plus une paire AES/EBU et des
-sorties main — c'est exactement la combinaison que simule `--demo`.
+sorties main — c'est exactement la combinaison que simule `--demo`. La console
+suit aussi la carte dans le temps : quand le jeu de contrôles enregistrés
+change (chargement/déchargement du module, boîtiers branchés à chaud, nombre
+de canaux qui rétrécit aux familles 2x/4x), elle se reconstruit au poll
+suivant en conservant l'onglet actif — changez la fréquence dans `--demo`
+pour voir le rétrécissement en direct.
 
 Au-delà des bases : liaison paires stéréo et gangs, scènes A/B, boutons
 TALK / LISTEN (talkback) dans l'en-tête, copie/reset de mix par bus, snapshots
