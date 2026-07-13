@@ -124,7 +124,11 @@ slots: the driver names every channel per slot and bank (analog, ADAT, TDIF,
 AES/EBU, main out, phones — see `docs/cuemix-control-map.md`), and the console
 regroups its strips and patchbay jacks under "slot · model — bank" headers.
 A 24I/O brings 24 analog I/O, a 1224 brings 8 analog I/O plus an AES/EBU pair
-and main outs — that combination is exactly what `--demo` simulates.
+and main outs — that combination is exactly what `--demo` simulates. The
+console also follows the card over time: when the registered control set
+changes (module load/unload, converters hot-plugged, channel counts shrinking
+in the 2x/4x rate families) it rebuilds itself on the next poll, keeping the
+tab you were on — flip the sample rate in `--demo` to watch the shrink live.
 
 On top of the basics: stereo-pair and gang linking, A/B scenes, header
 TALK / LISTEN talkback buttons, per-bus mix copy/reset, JSON mix snapshots

@@ -38,7 +38,9 @@ input analog conditioning (trim/pad/phase/stereo) and per-bus master level+mute.
 
 The concrete channel/bus *counts* depend on the attached AudioWire interface
 (2408, 24I/O, 896HD, HD192, …) and shrink with the sample-rate family (1x/2x/4x);
-that enumeration is Phase 3.5 and is discovered at runtime.
+that enumeration is Phase 3.5 and is discovered at runtime. The tools re-`list`
+and rebuild whenever the registered control set changes, so re-enumeration
+(hot-plug, rate-family shrink) is transparent to them.
 
 ## Planned ALSA kcontrol names
 
