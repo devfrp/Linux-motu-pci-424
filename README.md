@@ -114,9 +114,13 @@ rebuilds the CueMix model from the kcontrol names and renders it like the real
 console: one tab per mix bus (channel strips with send fader, peak-hold meter,
 rotary pan pot, mute/solo/gang, the bus master pinned on the right), an Inputs
 tab (trim, pad, phase, stereo pairs), an Outputs tab (mono monitor strips,
-stereo-linkable like the inputs), a Patchbay tab (drawn like a real bay —
-source jacks for PCM feeds and mix buses wired to the output jacks by virtual
-cables you drag, with a global bypass switch), a Clock & format tab, and a
+stereo-linkable like the inputs), a Patchbay tab (optional, no cords by
+default — drawn like a real normalled bay: outputs sit at their normals, with
+main outs normalled to the system's stereo program so desktop sound reaches
+the monitors unconfigured, and you drag virtual cables to patch anything else;
+hovering a jack tells you what it carries, "Unpatch all" pulls every cord in
+one undoable step, and a global switch bypasses the bay back onto the
+normals), a Clock & format tab, and a
 Diagnostics tab that works even with no card and no driver loaded.
 
 The whole layout adapts to the converters attached to the PCI-424's AudioWire
@@ -124,14 +128,17 @@ slots: the driver names every channel per slot and bank (analog, ADAT, TDIF,
 AES/EBU, main out, phones — see `docs/cuemix-control-map.md`), and the console
 regroups its strips and patchbay jacks under "slot · model — bank" headers.
 A 24I/O brings 24 analog I/O, a 1224 brings 8 analog I/O plus an AES/EBU pair
-and main outs — that combination is exactly what `--demo` simulates. The
+and main outs — that combination is exactly what `--demo` simulates, and
+`--rig 24io,2408` hangs other converters (24io, 1224, 2408, hd192) off the
+four AudioWire slots instead. The
 console also follows the card over time: when the registered control set
 changes (module load/unload, converters hot-plugged, channel counts shrinking
 in the 2x/4x rate families) it rebuilds itself on the next poll, keeping the
 tab you were on — flip the sample rate in `--demo` to watch the shrink live.
 
 On top of the basics: stereo-pair and gang linking, A/B scenes, header
-TALK / LISTEN talkback buttons, per-bus mix copy/reset, JSON mix snapshots
+TALK / LISTEN talkback buttons (hold to talk momentarily, a quick click
+latches), per-bus mix copy/reset, JSON mix snapshots
 (Ctrl+S / Ctrl+O), Ctrl+Z undo of mix-wide
 operations, editable channel names, and a "Shortcuts & tips" dialog on F1.
 Control writes are coalesced through a worker thread and the hardware is

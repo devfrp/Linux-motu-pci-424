@@ -85,7 +85,13 @@ all come from the Phase 3.5 enumeration of whatever converters are attached
 | `Output NN Mute Switch`         | BOOL    | output mute |
 | `Output NN Stereo Switch`       | BOOL    | pair NN/NN+1 (same convention as inputs) |
 | `Output NN Source`              | ENUM    | patchbay: `Direct`, `PCM MM` (any PCM feed), or `Mix KK L` / `Mix KK R` |
-| `Patchbay Switch`               | BOOL    | patchbay bypass: off = every output carries its direct PCM feed |
+| `Patchbay Switch`               | BOOL    | patchbay bypass: off = every output falls back to its **normal** (below). **Factory default: off** — the patchbay is optional and ships with nothing patched |
+
+Every output has a **normal** — what it carries with nothing patched, and what
+the bypass falls back to: its own direct PCM feed, **except a `Main` bank,
+whose normal is `PCM 00`/`PCM 01`** (the system's stereo program), so the
+computer's sound reaches the main monitors with zero configuration. The driver
+must register `Output NN Source` at these normals.
 
 `Output NN` addresses **mono output channels**. Like inputs, an even channel's
 `Stereo Switch` pairs it with the next index in its bank; the GUI then links
