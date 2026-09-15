@@ -3,7 +3,7 @@
 #
 # get.sh - one-line bootstrap installer for the motu424 ALSA driver.
 #
-#   curl -fsSL https://raw.githubusercontent.com/devfrp/Linux-motu-pci-424/main/get.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/samplaman/motu_pcie_424_linux/main/get.sh | sh
 #   curl -fsSL .../get.sh | sh -s -- --no-dkms -y   # pass options to install.sh
 #   wget -qO- .../get.sh | sh
 #
@@ -15,7 +15,7 @@
 #   MOTU424_DIR     checkout dir    (default: ${TMPDIR:-/tmp}/motu-pci-424)
 set -eu
 
-REPO="${MOTU424_REPO:-https://github.com/devfrp/Linux-motu-pci-424.git}"
+REPO="${MOTU424_REPO:-https://github.com/samplaman/motu_pcie_424_linux.git}"
 BRANCH="${MOTU424_BRANCH:-main}"
 DEST="${MOTU424_DIR:-${TMPDIR:-/tmp}/motu-pci-424}"
 

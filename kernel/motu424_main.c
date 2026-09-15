@@ -30,9 +30,11 @@ MODULE_PARM_DESC(enable, "Enable the MOTU PCI-424 card.");
 static const struct pci_device_id motu424_ids[] = {
 	{ PCI_DEVICE(MOTU424_VENDOR_ID, MOTU424_DEV_PCI424_A) },	/* PCI-324  */
 	{ PCI_DEVICE(MOTU424_VENDOR_ID, MOTU424_DEV_PCI424_B) },	/* PCI-424  */
+	{ PCI_DEVICE(MOTU424_VENDOR_ID, MOTU424_DEV_PCI424_C) },	/* PCIe-424 */
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, motu424_ids);
+MODULE_FIRMWARE(MOTU424_PCIE_FW_NAME);
 
 /*
  * Interrupt handler. The card raises one IRQ per elapsed period, per active
@@ -125,10 +127,39 @@ static int motu424_probe(struct pci_dev *pci, const struct pci_device_id *ent)
 		chip->bars[i].flags = pci_resource_flags(pci, i);
 	}
 
-	/* No bus mastering: the card is fed by PIO, it never DMAs host RAM. */
+	switch (ent->device) {
+	case MOTU424_DEV_PCI424_A:
+		chip->type = MOTU424_TYPE_PCI324;
+		chip->is_pcie = false;
+		snprintf(chip->model, sizeof(chip->model), "MOTU PCI-324");
+		break;
+	case MOTU424_DEV_PCI424_B:
+		chip->type = MOTU424_TYPE_PCI424;
+		chip->is_pcie = false;
+		snprintf(chip->model, sizeof(chip->model), "MOTU PCI-424");
+		break;
+	case MOTU424_DEV_PCI424_C:
+		chip->type = MOTU424_TYPE_PCIE424;
+		chip->is_pcie = true;
+		snprintf(chip->model, sizeof(chip->model), "MOTU PCIe-424");
+		break;
+	default:
+		chip->type = MOTU424_TYPE_PCI424;
+		chip->is_pcie = false;
+		snprintf(chip->model, sizeof(chip->model), "MOTU PCI-Unknown");
+		break;
+	}
 
-	snprintf(chip->model, sizeof(chip->model), "MOTU PCI-%s",
-		 ent->device == MOTU424_DEV_PCI424_A ? "324" : "424");
+	/* Initialize PCIe BAR overrides to -1 (auto-detect) */
+	chip->pcie_bar_a = -1;
+	chip->pcie_bar_b = -1;
+	chip->pcie_bar_port = -1;
+	chip->pcie_bar_fw = -1;
+	chip->pcie_fw_offset = MOTU424_HDEXPRESS_LOAD_ADDR;
+
+	/* Bus mastering: enabled for PCIe (for ARM/FPGA boot & DMA) */
+	if (chip->is_pcie)
+		pci_set_master(pci);
 
 	/* Bring the hardware to a known idle state before enabling IRQs. */
 	err = motu424_hw_init(chip);

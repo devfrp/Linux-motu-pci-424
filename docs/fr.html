@@ -188,7 +188,7 @@
       <a href="index.html">EN</a>
       <a href="fr.html" class="active" aria-current="page">FR</a>
     </span>
-    <a class="gh" href="https://github.com/devfrp/Linux-motu-pci-424">GitHub&nbsp;↗</a>
+    <a class="gh" href="https://github.com/samplaman/motu_pcie_424_linux">GitHub&nbsp;↗</a>
     <button id="themetog" title="Changer de thème" aria-label="Basculer le thème clair/sombre">◐</button>
   </nav>
 </div></header>
@@ -203,11 +203,11 @@
     <div class="cta">
       <a class="btn p" href="#install">Installer en une ligne</a>
       <a class="btn" href="#re">Lire les découvertes RE</a>
-      <a class="btn" href="https://github.com/devfrp/Linux-motu-pci-424">Code source</a>
+      <a class="btn" href="https://github.com/samplaman/motu_pcie_424_linux">Code source</a>
     </div>
     <div class="term">
       <span class="p">$</span>
-      <code id="cmd">curl -fsSL https://raw.githubusercontent.com/devfrp/Linux-motu-pci-424/main/get.sh | sh</code>
+      <code id="cmd">curl -fsSL https://raw.githubusercontent.com/samplaman/motu_pcie_424_linux/main/get.sh | sh</code>
       <button id="cpb" onclick="cp()">copier</button>
     </div>
   </div>
@@ -288,15 +288,15 @@
     <div>
       <h3>Une ligne</h3>
       <pre class="blk"><span class="c"># dépendances + module DKMS + outils + chargement</span>
-curl -fsSL https://raw.githubusercontent.com/<span class="f">devfrp/Linux-motu-pci-424</span>/main/get.sh | sh
+curl -fsSL https://raw.githubusercontent.com/<span class="f">samplaman/motu_pcie_424_linux</span>/main/get.sh | sh
 
 <span class="c"># avec l'interface GTK</span>
 curl -fsSL …/get.sh | sh -s -- <span class="f">--gui</span></pre>
     </div>
     <div>
       <h3>Cloner &amp; compiler</h3>
-      <pre class="blk">git clone https://github.com/devfrp/Linux-motu-pci-424
-cd motu-pci-424
+      <pre class="blk">git clone https://github.com/samplaman/motu_pcie_424_linux
+cd motu_pcie_424_linux
 ./install.sh            <span class="c"># ou : make && make load</span>
 
 motu424-ctl             <span class="c"># état CueMix (CLI)</span>
@@ -324,8 +324,8 @@ motu424-gui             <span class="c"># panneau graphique</span></pre>
     Rétro-ingénierie menée pour l'interopérabilité avec du matériel que nous possédons ; seuls des faits entrent
     dans les sources, les binaires du constructeur ne sont jamais redistribués. Projet ni affilié ni approuvé par Mark of the Unicorn,&nbsp;Inc.</div>
   <div class="links">
-    <a href="https://github.com/devfrp/Linux-motu-pci-424">GitHub</a><span>·</span>
-    <a href="https://github.com/devfrp/Linux-motu-pci-424/blob/main/docs/REVERSE_ENGINEERING_PLAN.md">Plan&nbsp;RE</a><span>·</span>
+    <a href="https://github.com/samplaman/motu_pcie_424_linux">GitHub</a><span>·</span>
+    <a href="https://github.com/samplaman/motu_pcie_424_linux/blob/main/docs/REVERSE_ENGINEERING_PLAN.md">Plan&nbsp;RE</a><span>·</span>
     <a href="index.html">English</a>
   </div>
 </div></footer>

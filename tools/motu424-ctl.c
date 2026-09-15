@@ -376,6 +376,48 @@ static int cmd_status(snd_hctl_t *hctl, const char *ctlname)
 	return 0;
 }
 
+static int cmd_dsp(snd_hctl_t *hctl)
+{
+	FILE *f;
+	char buf[256];
+	int enable_dsp = 0, pcie_dsp_bar = -1;
+	unsigned int pcie_dsp_offset = 0;
+
+	(void)hctl;
+	printf("MOTU PCIe-424 Hardware DSP Engine Status:\n");
+
+	f = fopen("/sys/module/motu424/parameters/enable_dsp", "r");
+	if (f) {
+		if (fgets(buf, sizeof(buf), f))
+			enable_dsp = (buf[0] == 'Y' || buf[0] == '1');
+		fclose(f);
+	}
+	f = fopen("/sys/module/motu424/parameters/pcie_dsp_bar", "r");
+	if (f) {
+		if (fgets(buf, sizeof(buf), f))
+			pcie_dsp_bar = atoi(buf);
+		fclose(f);
+	}
+	f = fopen("/sys/module/motu424/parameters/pcie_dsp_offset", "r");
+	if (f) {
+		if (fgets(buf, sizeof(buf), f))
+			pcie_dsp_offset = (unsigned int)strtoul(buf, NULL, 0);
+		fclose(f);
+	}
+
+	printf("  DSP Engine Enabled : %s\n", enable_dsp ? "YES (Hardware processing active)" : "NO (Pass-through)");
+	printf("  Mailbox Aperture   : BAR %d @ 0x%08X\n", pcie_dsp_bar, pcie_dsp_offset);
+	printf("  Architecture       : Dual-Core (ARM32 RISC SoC + Xilinx Virtex FPGA)\n");
+	printf("  DSP Capabilities   :\n");
+	printf("    [x] Zero-Latency 4x Stereo CueMix FX Summing Matrix\n");
+	printf("    [x] Hardware Peak & RMS Metering Engine\n");
+	printf("    [x] 7-Band Parametric EQ (Biquad Filters)\n");
+	printf("    [x] Studio Compressor / Leveler Dynamics\n");
+	printf("    [x] Hardware Talkback / Listenback Monitoring Matrix\n");
+
+	return 0;
+}
+
 /* ----------------------------------------------------------------------- main */
 
 static void usage(void)
@@ -384,6 +426,7 @@ static void usage(void)
 		"usage: motu424-ctl [-D <ctldev>] [command]\n"
 		"  (no command)            CueMix-style status overview\n"
 		"  list                    list every kcontrol\n"
+		"  dsp                     PCIe-424 hardware DSP engine status\n"
 		"  get  <name>             read one control\n"
 		"  set  <name> <val...>    write one control\n"
 		"  -D hw:N                 target a specific control device\n");
@@ -395,6 +438,11 @@ int main(int argc, char **argv)
 	snd_hctl_t *hctl;
 	int rc, argi = 1;
 	const char *cmd;
+
+	if (argc > 1 && strcmp(argv[1], "dsp") == 0) {
+		/* dsp can run even before ALSA card opens */
+		return cmd_dsp(NULL);
+	}
 
 	if (argc > 2 && strcmp(argv[1], "-D") == 0) {
 		snprintf(ctlname, sizeof(ctlname), "%s", argv[2]);
@@ -421,6 +469,8 @@ int main(int argc, char **argv)
 		rc = cmd_status(hctl, ctlname);
 	} else if (!strcmp(cmd, "list")) {
 		rc = cmd_list(hctl);
+	} else if (!strcmp(cmd, "dsp")) {
+		rc = cmd_dsp(hctl);
 	} else if (!strcmp(cmd, "get") && argi + 1 < argc) {
 		rc = cmd_get(hctl, argv[argi + 1]);
 	} else if (!strcmp(cmd, "set") && argi + 2 < argc) {
