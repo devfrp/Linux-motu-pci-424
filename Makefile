@@ -16,7 +16,7 @@ KDIR    ?= /lib/modules/$(KVER)/build
 PWD     := $(shell pwd)
 MODNAME := motu424
 
-.PHONY: all module tools clean load unload install probe ctl
+.PHONY: all module tools clean load unload install install-firmware probe ctl
 
 all: module tools
 
@@ -30,7 +30,14 @@ clean:
 	-$(MAKE) -C $(KDIR) M=$(PWD)/kernel clean
 	-$(MAKE) -C tools clean
 
-install: module
+install-firmware:
+	@if [ -f vendor/HDExpress_FullImageRun.bin ]; then \
+		install -d /lib/firmware; \
+		install -m 0644 vendor/HDExpress_FullImageRun.bin /lib/firmware/HDExpress_FullImageRun.bin; \
+		echo "PCIe firmware installed: /lib/firmware/HDExpress_FullImageRun.bin"; \
+	fi
+
+install: module install-firmware
 	$(MAKE) -C $(KDIR) M=$(PWD)/kernel modules_install
 	depmod -a
 

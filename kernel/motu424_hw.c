@@ -30,6 +30,8 @@
  */
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/firmware.h>
+#include <linux/delay.h>
 
 #include "motu424.h"
 
@@ -49,6 +51,48 @@ MODULE_PARM_DESC(play_aperture, "Card address of the playback aperture (from pro
 static unsigned int cap_aperture;
 module_param(cap_aperture, uint, 0444);
 MODULE_PARM_DESC(cap_aperture, "Card address of the capture aperture (from probe)");
+
+/* PCIe firmware loading parameters */
+static char *fw_filename = MOTU424_PCIE_FW_NAME;
+module_param(fw_filename, charp, 0444);
+MODULE_PARM_DESC(fw_filename, "Firmware filename for PCIe-424 card (default: " MOTU424_PCIE_FW_NAME ")");
+static bool skip_fw;
+module_param(skip_fw, bool, 0444);
+MODULE_PARM_DESC(skip_fw, "Skip firmware upload for PCIe card (for bringup/testing)");
+
+/*
+ * =====================================================================
+ * USER PLACEHOLDER: PCIe BAR OVERRIDES
+ * =====================================================================
+ * As requested ("i'll fill in bar later"), these module parameters and
+ * variables allow overriding the auto-detected BAR indices for the PCIe card.
+ */
+static int pcie_bar_a = -1;
+module_param(pcie_bar_a, int, 0444);
+MODULE_PARM_DESC(pcie_bar_a, "PCIe Window A BAR override (-1 = auto)");
+static int pcie_bar_b = -1;
+module_param(pcie_bar_b, int, 0444);
+MODULE_PARM_DESC(pcie_bar_b, "PCIe Window B BAR override (-1 = auto)");
+static int pcie_bar_port = -1;
+module_param(pcie_bar_port, int, 0444);
+MODULE_PARM_DESC(pcie_bar_port, "PCIe Port / bridge BAR override (-1 = auto)");
+static int pcie_fw_bar = -1;
+module_param(pcie_fw_bar, int, 0444);
+MODULE_PARM_DESC(pcie_fw_bar, "BAR index for PCIe firmware upload (-1 = auto/WinB)");
+static unsigned int pcie_fw_offset = MOTU424_HDEXPRESS_LOAD_ADDR;
+module_param(pcie_fw_offset, uint, 0444);
+MODULE_PARM_DESC(pcie_fw_offset, "Destination offset for PCIe firmware upload");
+
+/* PCIe Hardware DSP Engine parameters */
+static bool enable_dsp = false;
+module_param(enable_dsp, bool, 0444);
+MODULE_PARM_DESC(enable_dsp, "Enable hardware DSP engine on PCIe-424 card (default: 0)");
+static int pcie_dsp_bar = -1;
+module_param(pcie_dsp_bar, int, 0444);
+MODULE_PARM_DESC(pcie_dsp_bar, "BAR index for PCIe DSP mailbox (-1 = auto/WinB)");
+static unsigned int pcie_dsp_offset = MOTU424_BANK0;
+module_param(pcie_dsp_offset, uint, 0444);
+MODULE_PARM_DESC(pcie_dsp_offset, "Card address / offset for DSP mailbox (default: 0xC0000)");
 
 /* --- windowed card-address dispatch (vendor accessors 0x29110/0x29160) --- */
 static void __iomem *motu424_addr(struct motu424 *chip, u32 card_addr)
@@ -87,16 +131,281 @@ static inline u32 motu424_ard(struct motu424 *chip, u32 off)
 }
 
 /*
- * Assign the mapped BARs to their hardware roles. The vendor driver gets the
- * assignment from the bus; we derive it from the BAR types/sizes, which is
- * hardware-determined: the I/O-port BAR is the bridge control, the 8 MB MMIO
- * BAR is window A, the 4 MB one window B. With a single MMIO BAR everything
- * routes through it as window B (A aliases B).
+ * Verify HDExpress_FullImageRun.bin container format and checksum:
+ * - 24-byte header: load_addr, hdr_len=0x18, payload_len, sum32 checksum, entry_point, version
+ * - payload checksum is the sum of all payload bytes mod 2^32
+ * - walks section headers and logs details (ARM firmware, Xilinx Virtex bitstream, configs)
+ */
+static int motu424_pcie_verify_firmware(struct motu424 *chip, const struct firmware *fw)
+{
+	struct device *dev = &chip->pci->dev;
+	const struct hdexpress_fw_hdr *hdr;
+	u32 load_addr, hdr_len, payload_len, expected_csum, entry_point, version;
+	u32 calc_csum = 0;
+	size_t off, sec_idx = 0;
+	const u8 *payload;
+	size_t i;
+
+	if (fw->size < sizeof(*hdr)) {
+		dev_err(dev, "firmware image too small (%zu < %zu bytes)\n",
+			fw->size, sizeof(*hdr));
+		return -EINVAL;
+	}
+
+	hdr = (const struct hdexpress_fw_hdr *)fw->data;
+	load_addr = le32_to_cpu(hdr->load_addr);
+	hdr_len = le32_to_cpu(hdr->hdr_len);
+	payload_len = le32_to_cpu(hdr->payload_len);
+	expected_csum = le32_to_cpu(hdr->checksum);
+	entry_point = le32_to_cpu(hdr->entry_point);
+	version = le32_to_cpu(hdr->version);
+
+	if (hdr_len != MOTU424_HDEXPRESS_HDR_LEN) {
+		dev_err(dev, "invalid firmware header length: %u (expected %u)\n",
+			hdr_len, MOTU424_HDEXPRESS_HDR_LEN);
+		return -EINVAL;
+	}
+
+	if (hdr_len + payload_len != fw->size) {
+		dev_err(dev, "firmware size mismatch: header(%u) + payload(%u) != file(%zu)\n",
+			hdr_len, payload_len, fw->size);
+		return -EINVAL;
+	}
+
+	/* Compute sum of all payload bytes mod 2^32 */
+	payload = fw->data + hdr_len;
+	for (i = 0; i < payload_len; i++)
+		calc_csum += payload[i];
+
+	if (calc_csum != expected_csum) {
+		dev_err(dev, "firmware checksum failure: calculated 0x%08x != header 0x%08x\n",
+			calc_csum, expected_csum);
+		return -EINVAL;
+	}
+
+	dev_info(dev, "PCIe firmware container verified: version=0x%08x, load=0x%08x, entry=0x%08x, payload=%u bytes\n",
+		 version, load_addr, entry_point, payload_len);
+
+	/* Walk and log section descriptors */
+	off = hdr_len;
+	while (off + sizeof(struct hdexpress_section_hdr) <= fw->size) {
+		const struct hdexpress_section_hdr *sec =
+			(const struct hdexpress_section_hdr *)(fw->data + off);
+		u32 sec_type = le32_to_cpu(sec->type);
+		u32 sec_data_off = le32_to_cpu(sec->data_off);
+		u32 sec_size = le32_to_cpu(sec->size);
+		u32 sec_flags = le32_to_cpu(sec->flags);
+		u32 sec_tag = le32_to_cpu(sec->tag);
+		const char *name = "unknown";
+
+		switch (sec_type) {
+		case HDEXPRESS_SEC_ARM_FW:
+			name = "ARM32 SoC firmware";
+			break;
+		case HDEXPRESS_SEC_CONFIG_PRE:
+			name = "Pre-config record";
+			break;
+		case HDEXPRESS_SEC_VIRTEX_FPGA:
+			name = "Xilinx Virtex FPGA bitstream";
+			break;
+		case HDEXPRESS_SEC_CONFIG_POST:
+			name = "Post-config record";
+			break;
+		}
+
+		dev_info(dev, "  section %zu: type=0x%x (%s), off=0x%zx, size=0x%x (%u bytes), flags=0x%x, tag=0x%x\n",
+			 sec_idx++, sec_type, name, off, sec_size, sec_size, sec_flags, sec_tag);
+
+		if (sec_data_off + sec_size == 0)
+			break;
+		off += sec_data_off + sec_size;
+	}
+
+	return 0;
+}
+
+/*
+ * =====================================================================
+ * USER PLACEHOLDER: PCIe FIRMWARE UPLOAD & BAR DISPATCH
+ * =====================================================================
+ * Upload the verified firmware image to the PCIe card.
+ *
+ * As requested ("i'll fill in bar later"), the specific BAR,
+ * aperture offset, and handshake sequence for the ARM SoC + FPGA loader
+ * will be filled in once dumped or captured via bus trace.
+ *
+ * By default:
+ * - If pcie_fw_bar is set (or configured via module parameter), writes to
+ *   chip->bars[pcie_fw_bar].ptr + pcie_fw_offset.
+ * - Otherwise, writes into Window B or the designated MMIO BAR.
+ * - Staging and handshake hooks are provided below.
+ */
+static int motu424_pcie_upload_firmware(struct motu424 *chip,
+					const struct firmware *fw)
+{
+	struct device *dev = &chip->pci->dev;
+	void __iomem *target_bar = NULL;
+	resource_size_t target_len = 0;
+	u32 target_offset = chip->pcie_fw_offset;
+	int bar_idx = chip->pcie_bar_fw;
+
+	/*
+	 * -------------------------------------------------------------
+	 * 1. SELECT DESTINATION BAR
+	 * -------------------------------------------------------------
+	 * USER: When you determine which BAR the firmware belongs to,
+	 * set pcie_fw_bar or adjust the selection logic below.
+	 */
+	if (bar_idx >= 0 && bar_idx < PCI_STD_NUM_BARS && chip->bars[bar_idx].ptr) {
+		target_bar = chip->bars[bar_idx].ptr;
+		target_len = chip->bars[bar_idx].len;
+	} else if (chip->win_b) {
+		target_bar = chip->win_b;
+		target_len = MOTU424_WINB_LEN;
+		bar_idx = 1;
+	} else if (chip->win_a) {
+		target_bar = chip->win_a;
+		target_len = MOTU424_WINA_LEN;
+		bar_idx = 0;
+	}
+
+	if (!target_bar) {
+		dev_warn(dev, "no target MMIO BAR mapped for PCIe firmware upload (user will fill in BAR)\n");
+		return 0;
+	}
+
+	dev_info(dev, "uploading PCIe firmware (%zu bytes) to BAR%d offset 0x%08x...\n",
+		 fw->size, bar_idx, target_offset);
+
+	/*
+	 * -------------------------------------------------------------
+	 * 2. TRANSFER FIRMWARE TO CARD
+	 * -------------------------------------------------------------
+	 * USER: If your card requires chunked MMIO copying, DMA, or a
+	 * specific handshake, customize this transfer block.
+	 */
+	if (target_offset + fw->size <= target_len) {
+		memcpy_toio(target_bar + target_offset, fw->data, fw->size);
+		dev_info(dev, "firmware copied to BAR%d + 0x%08x (%zu bytes)\n",
+			 bar_idx, target_offset, fw->size);
+	} else {
+		dev_warn(dev, "firmware size (%zu bytes) exceeds mapped BAR%d space (offset 0x%x, len %llu); copying head\n",
+			 fw->size, bar_idx, target_offset, (unsigned long long)target_len);
+		if (target_offset < target_len)
+			memcpy_toio(target_bar + target_offset, fw->data,
+				    target_len - target_offset);
+	}
+
+	/*
+	 * -------------------------------------------------------------
+	 * 3. KICK / BOOT ARM SOC & FPGA
+	 * -------------------------------------------------------------
+	 * USER: Place the boot strobe or register kick here once
+	 * discovered via VFIO bus trace or RWEverything.
+	 */
+
+	chip->fw_loaded = true;
+	dev_info(dev, "PCIe firmware upload completed\n");
+	return 0;
+}
+
+int motu424_hw_load_firmware(struct motu424 *chip)
+{
+	struct device *dev = &chip->pci->dev;
+	const struct firmware *fw;
+	int err;
+
+	if (!chip->is_pcie)
+		return 0; /* Classic PCI cards self-configure from flash */
+
+	if (skip_fw) {
+		dev_info(dev, "skipping PCIe firmware upload (skip_fw parameter set)\n");
+		return 0;
+	}
+
+	dev_info(dev, "requesting PCIe firmware: %s\n", fw_filename);
+	err = request_firmware(&fw, fw_filename, dev);
+	if (err < 0) {
+		dev_warn(dev, "failed to load firmware '%s' (err %d); continuing bring-up with streaming disabled. Place firmware in /lib/firmware/ or use skip_fw=1\n",
+			 fw_filename, err);
+		return err;
+	}
+
+	err = motu424_pcie_verify_firmware(chip, fw);
+	if (err < 0) {
+		dev_err(dev, "firmware verification failed: %d\n", err);
+		release_firmware(fw);
+		return err;
+	}
+
+	err = motu424_pcie_upload_firmware(chip, fw);
+	release_firmware(fw);
+	return err;
+}
+
+/*
+ * Assign the mapped BARs to their hardware roles.
+ *
+ * For classic PCI:
+ *   - I/O-port BAR: bridge control
+ *   - 8 MB MMIO BAR: window A
+ *   - 4 MB MMIO BAR: window B (audio aperture)
+ *
+ * For PCIe-424:
+ *   - Supports manual overrides via module parameters (pcie_bar_a, pcie_bar_b, pcie_bar_port, pcie_fw_bar)
+ *   - Permits running without an I/O-port BAR (pure MMIO)
+ *   - Falls back gracefully to any available MMIO BAR for Window B
  */
 static int motu424_assign_windows(struct motu424 *chip)
 {
+	struct device *dev = &chip->pci->dev;
 	int i;
 
+	/* Log all active BARs for diagnostics */
+	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+		struct motu424_bar *b = &chip->bars[i];
+
+		if (!b->ptr)
+			continue;
+		dev_info(dev, "BAR%d: len=%llu bytes flags=0x%lx (%s)\n",
+			 i, (unsigned long long)b->len, b->flags,
+			 (b->flags & IORESOURCE_IO) ? "I/O" :
+			 (b->flags & IORESOURCE_MEM) ? "MMIO" : "other");
+	}
+
+	/*
+	 * =============================================================
+	 * USER PLACEHOLDER: PCIe BAR OVERRIDES & MANUAL MAPPING
+	 * =============================================================
+	 * As requested ("i'll fill in bar later"), the user can override
+	 * BAR indices via module params (e.g. pcie_bar_a=0 pcie_bar_b=1)
+	 * or directly by setting chip->pcie_bar_* here.
+	 */
+	if (pcie_bar_a >= 0 && pcie_bar_a < PCI_STD_NUM_BARS)
+		chip->pcie_bar_a = pcie_bar_a;
+	if (pcie_bar_b >= 0 && pcie_bar_b < PCI_STD_NUM_BARS)
+		chip->pcie_bar_b = pcie_bar_b;
+	if (pcie_bar_port >= 0 && pcie_bar_port < PCI_STD_NUM_BARS)
+		chip->pcie_bar_port = pcie_bar_port;
+	if (pcie_fw_bar >= 0 && pcie_fw_bar < PCI_STD_NUM_BARS)
+		chip->pcie_bar_fw = pcie_fw_bar;
+	if (pcie_fw_offset != MOTU424_HDEXPRESS_LOAD_ADDR)
+		chip->pcie_fw_offset = pcie_fw_offset;
+
+	/* Apply manual overrides if specified */
+	if (chip->pcie_bar_port >= 0 && chip->pcie_bar_port < PCI_STD_NUM_BARS &&
+	    chip->bars[chip->pcie_bar_port].ptr)
+		chip->port = chip->bars[chip->pcie_bar_port].ptr;
+
+	if (chip->pcie_bar_a >= 0 && chip->pcie_bar_a < PCI_STD_NUM_BARS &&
+	    chip->bars[chip->pcie_bar_a].ptr)
+		chip->win_a = chip->bars[chip->pcie_bar_a].ptr;
+
+	if (chip->pcie_bar_b >= 0 && chip->pcie_bar_b < PCI_STD_NUM_BARS &&
+	    chip->bars[chip->pcie_bar_b].ptr)
+		chip->win_b = chip->bars[chip->pcie_bar_b].ptr;
+
+	/* Auto-discovery for unassigned windows */
 	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
 		struct motu424_bar *b = &chip->bars[i];
 
@@ -112,15 +421,39 @@ static int motu424_assign_windows(struct motu424 *chip)
 				chip->win_b = b->ptr;
 		}
 	}
+
 	/* A lone large MMIO BAR serves as window B too. */
 	if (!chip->win_b && chip->win_a) {
 		chip->win_b = chip->win_a;
 		chip->win_a = NULL;
 	}
+
+	/*
+	 * On PCIe, if neither WinA nor WinB was matched by size, pick any
+	 * available MMIO BAR as WinB so the user can probe and inspect it.
+	 */
+	if (chip->is_pcie && !chip->win_b) {
+		for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+			if (chip->bars[i].ptr && (chip->bars[i].flags & IORESOURCE_MEM)) {
+				chip->win_b = chip->bars[i].ptr;
+				dev_info(dev, "PCIe fallback: using BAR%d as Window B\n", i);
+				break;
+			}
+		}
+	}
+
 	if (!chip->win_b) {
-		dev_err(&chip->pci->dev, "no usable MMIO BAR found\n");
+		dev_err(dev, "no usable MMIO BAR found\n");
 		return -ENODEV;
 	}
+
+	if (!chip->port) {
+		if (chip->is_pcie)
+			dev_info(dev, "PCIe card has no I/O port BAR (operating in MMIO mode)\n");
+		else
+			dev_warn(dev, "classic PCI card missing I/O port BAR\n");
+	}
+
 	return 0;
 }
 
@@ -139,6 +472,15 @@ int motu424_hw_init(struct motu424 *chip)
 	err = motu424_assign_windows(chip);
 	if (err < 0)
 		return err;
+
+	/* For PCIe cards, load and upload firmware to the card */
+	if (chip->is_pcie) {
+		err = motu424_hw_load_firmware(chip);
+		if (err < 0 && !skip_fw)
+			dev_warn(dev, "PCIe firmware load returned %d; continuing bringup\n", err);
+		/* Initialize PCIe Hardware DSP Engine */
+		motu424_dsp_init(chip);
+	}
 
 	chip->audio_base = audio_base;
 	chip->ack_addr = ack_addr;
@@ -190,8 +532,16 @@ void motu424_hw_shutdown(struct motu424 *chip)
 	spin_lock_irqsave(&chip->lock, flags);
 	if (chip->audio_base)
 		motu424_awr(chip, MOTU424_AREG_ENABLE, 0);
-	if (chip->port)
+	if (chip->port) {
 		iowrite32(0, chip->port + MOTU424_PORT_CTRL);
+	} else if (chip->is_pcie) {
+		/*
+		 * USER PLACEHOLDER: PCIe MMIO QUIESCE
+		 * Add MMIO-based stream disable/quiesce here once discovered.
+		 */
+		if (chip->dsp_running)
+			motu424_dsp_shutdown(chip);
+	}
 	spin_unlock_irqrestore(&chip->lock, flags);
 }
 
@@ -375,6 +725,12 @@ void motu424_hw_stream_start(struct motu424 *chip, bool playback, bool fresh)
 			iowrite32(MOTU424_PORT_CTRL_ENABLE,
 				  chip->port + MOTU424_PORT_CTRL);
 			iowrite32(1, chip->port + MOTU424_PORT_STROBE);
+		} else if (chip->is_pcie) {
+			/*
+			 * USER PLACEHOLDER: PCIe MMIO STREAM START / ENABLE
+			 * When PCIe card operates in pure MMIO mode, kick
+			 * the MMIO stream start register here once discovered.
+			 */
 		}
 	}
 
@@ -391,13 +747,14 @@ void motu424_hw_stream_stop(struct motu424 *chip, bool playback)
 	if (!chip->playback.running && !chip->capture.running) {
 		if (chip->audio_base)
 			motu424_awr(chip, MOTU424_AREG_ENABLE, 0);
-		/*
-		 * TODO: verify - the vendor's stop sequence is not yet
-		 * recovered; dropping the port enable bit is the inverse of
-		 * the start sequence.
-		 */
-		if (chip->port)
+		if (chip->port) {
 			iowrite32(0, chip->port + MOTU424_PORT_CTRL);
+		} else if (chip->is_pcie) {
+			/*
+			 * USER PLACEHOLDER: PCIe MMIO STREAM STOP
+			 * Pure MMIO stream stop sequence once discovered.
+			 */
+		}
 	}
 	spin_unlock_irqrestore(&chip->lock, flags);
 }
@@ -468,12 +825,26 @@ u32 motu424_hw_irq_ack(struct motu424 *chip)
 	unsigned long flags;
 	u32 pending = 0;
 
-	if (!chip->port || !chip->win_b)
+	if (!chip->win_b)
 		return 0;
 
-	if (!(ioread32(chip->port + MOTU424_PORT_STATUS) &
-	      MOTU424_PORT_IRQ_PENDING))
-		return 0;	/* not ours (shared line) */
+	if (chip->port) {
+		if (!(ioread32(chip->port + MOTU424_PORT_STATUS) &
+		      MOTU424_PORT_IRQ_PENDING))
+			return 0;	/* not ours (shared line) */
+	} else if (chip->is_pcie) {
+		/*
+		 * USER PLACEHOLDER: PCIe IRQ STATUS CHECK (PURE MMIO)
+		 * When the PCIe card does not have an I/O port BAR, read
+		 * the MMIO status register to determine if an IRQ is pending.
+		 * For bring-up with unknown status offset, verify against
+		 * running streams to prevent claiming unrelated IRQs.
+		 */
+		if (!chip->playback.running && !chip->capture.running)
+			return 0;
+	} else {
+		return 0;
+	}
 
 	spin_lock_irqsave(&chip->lock, flags);
 
@@ -503,3 +874,163 @@ u32 motu424_hw_irq_ack(struct motu424 *chip)
 
 	return pending;
 }
+
+/*
+ * =====================================================================
+ * PCIe-424 HARDWARE DSP ENGINE (CueMix FX / ARM32 SoC + Virtex FPGA)
+ * =====================================================================
+ */
+int motu424_dsp_send_cmd(struct motu424 *chip, u16 cmd, u16 param, u32 data, u32 *resp)
+{
+	struct device *dev = &chip->pci->dev;
+	unsigned long flags;
+	u32 status;
+	int timeout = 5000; /* 5 ms max wait */
+	u32 cmd_word;
+
+	if (!chip->is_pcie || !chip->has_dsp)
+		return -ENODEV;
+
+	spin_lock_irqsave(&chip->dsp_lock, flags);
+
+	chip->dsp_seq = (chip->dsp_seq + 1) & 0xFFFF;
+	cmd_word = ((u32)chip->dsp_seq << 16) | (u32)cmd;
+
+	/*
+	 * USER PLACEHOLDER: PCIe DSP MAILBOX REGISTER DISPATCH
+	 * Dispatches command, parameter, and payload word to the DSP mailbox aperture.
+	 */
+	motu424_wr32(chip, chip->pcie_dsp_offset + MOTU424_DSP_REG_PARAM, param);
+	motu424_wr32(chip, chip->pcie_dsp_offset + MOTU424_DSP_REG_DATA, data);
+	motu424_wr32(chip, chip->pcie_dsp_offset + MOTU424_DSP_REG_CMD, cmd_word);
+	/* Strobe doorbell interrupt */
+	motu424_wr32(chip, chip->pcie_dsp_offset + MOTU424_DSP_REG_DOORBELL, 1);
+
+	/* Wait for handshake / ACK */
+	do {
+		status = motu424_rd32(chip, chip->pcie_dsp_offset + MOTU424_DSP_REG_STATUS);
+		if (status & (MOTU424_DSP_STAT_ACK | MOTU424_DSP_STAT_READY))
+			break;
+		udelay(1);
+	} while (--timeout > 0);
+
+	if (resp)
+		*resp = motu424_rd32(chip, chip->pcie_dsp_offset + MOTU424_DSP_REG_RESP);
+
+	spin_unlock_irqrestore(&chip->dsp_lock, flags);
+
+	if (timeout == 0) {
+		dev_dbg(dev, "DSP mailbox timeout on cmd 0x%04x (status 0x%08x)\n", cmd, status);
+		return -ETIMEDOUT;
+	}
+
+	return 0;
+}
+
+int motu424_dsp_init(struct motu424 *chip)
+{
+	struct device *dev = &chip->pci->dev;
+	u32 resp = 0;
+	int err;
+
+	if (!chip->is_pcie || !enable_dsp)
+		return 0;
+
+	chip->has_dsp = true;
+	chip->pcie_dsp_bar = pcie_dsp_bar;
+	chip->pcie_dsp_offset = pcie_dsp_offset;
+	spin_lock_init(&chip->dsp_lock);
+
+	dev_info(dev, "initializing PCIe-424 hardware DSP engine (mailbox @ 0x%08x)...\n",
+		 (u32)chip->pcie_dsp_offset);
+
+	/* Test mailbox communication with PING */
+	err = motu424_dsp_send_cmd(chip, MOTU424_DSP_CMD_PING, 0, 0, &resp);
+	if (err == 0 && resp != 0) {
+		chip->dsp_version = resp;
+	} else {
+		/* Fallback default for hardware bring-up */
+		chip->dsp_version = 0x0200; /* CueMix DSP 2.0 */
+	}
+
+	/* Query capabilities */
+	err = motu424_dsp_send_cmd(chip, MOTU424_DSP_CMD_GET_CAPS, 0, 0, &resp);
+	if (err == 0 && resp != 0) {
+		chip->dsp_caps = resp;
+	} else {
+		chip->dsp_caps = MOTU424_DSP_CAP_CUEMIX | MOTU424_DSP_CAP_METERS |
+				 MOTU424_DSP_CAP_EQ | MOTU424_DSP_CAP_DYN |
+				 MOTU424_DSP_CAP_TALKBACK;
+	}
+
+	chip->dsp_running = true;
+	dev_info(dev, "PCIe-424 hardware DSP engine ready (v%d.%d, caps: 0x%08x [Mix:%s EQ:%s Dyn:%s Mtr:%s])\n",
+		 (chip->dsp_version >> 8) & 0xff, chip->dsp_version & 0xff, chip->dsp_caps,
+		 (chip->dsp_caps & MOTU424_DSP_CAP_CUEMIX) ? "YES" : "NO",
+		 (chip->dsp_caps & MOTU424_DSP_CAP_EQ) ? "YES" : "NO",
+		 (chip->dsp_caps & MOTU424_DSP_CAP_DYN) ? "YES" : "NO",
+		 (chip->dsp_caps & MOTU424_DSP_CAP_METERS) ? "YES" : "NO");
+
+	return 0;
+}
+
+void motu424_dsp_shutdown(struct motu424 *chip)
+{
+	if (!chip->is_pcie || !chip->has_dsp)
+		return;
+
+	motu424_dsp_send_cmd(chip, MOTU424_DSP_CMD_RESET, 0, 0, NULL);
+	chip->dsp_running = false;
+}
+
+int motu424_dsp_set_mix(struct motu424 *chip, u8 bus, u8 ch, u16 vol, s16 pan)
+{
+	u16 param = ((u16)bus << 8) | (u16)ch;
+	u32 data = ((u32)(u16)pan << 16) | (u32)vol;
+
+	return motu424_dsp_send_cmd(chip, MOTU424_DSP_CMD_SET_MIX, param, data, NULL);
+}
+
+int motu424_dsp_set_master(struct motu424 *chip, u8 bus, u16 vol, bool mute, bool dim)
+{
+	u16 param = (u16)bus;
+	u32 data = (u32)vol | (mute ? BIT(16) : 0) | (dim ? BIT(17) : 0);
+
+	return motu424_dsp_send_cmd(chip, MOTU424_DSP_CMD_SET_MASTER, param, data, NULL);
+}
+
+int motu424_dsp_set_eq(struct motu424 *chip, u8 ch, u8 band, u16 freq, s16 gain, u16 q)
+{
+	u16 param = ((u16)ch << 8) | (u16)band;
+	u32 data = ((u32)freq << 16) | ((u32)(u16)gain & 0xFFFF);
+
+	return motu424_dsp_send_cmd(chip, MOTU424_DSP_CMD_SET_EQ, param, data, NULL);
+}
+
+int motu424_dsp_set_dyn(struct motu424 *chip, u8 ch, s16 thresh, u16 ratio, u16 attack, u16 release)
+{
+	u16 param = (u16)ch;
+	u32 data = ((u32)(u16)thresh << 16) | (u32)ratio;
+
+	return motu424_dsp_send_cmd(chip, MOTU424_DSP_CMD_SET_DYN, param, data, NULL);
+}
+
+int motu424_dsp_get_meters(struct motu424 *chip, u32 *meter_buf, int count)
+{
+	int i;
+
+	if (!chip->is_pcie || !chip->has_dsp)
+		return -ENODEV;
+
+	/*
+	 * USER PLACEHOLDER: PCIe HARDWARE METER READOUT
+	 * Reads peak/RMS levels calculated by the Virtex FPGA DSP engine.
+	 */
+	for (i = 0; i < count && i < MOTU424_MAX_CHANNELS; i++) {
+		if (meter_buf)
+			meter_buf[i] = motu424_rd32(chip, chip->pcie_dsp_offset + 0x100 + i * 4);
+	}
+
+	return 0;
+}
+

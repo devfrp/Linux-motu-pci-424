@@ -210,6 +210,18 @@ load_module() {
 	fi
 }
 
+install_firmware() {
+	FW_SRC="vendor/HDExpress_FullImageRun.bin"
+	FW_DST="/lib/firmware/HDExpress_FullImageRun.bin"
+	if [ -f "$FW_SRC" ]; then
+		log "installing PCIe container firmware ($FW_SRC -> $FW_DST)"
+		$SUDO install -d /lib/firmware
+		$SUDO install -m0644 "$FW_SRC" "$FW_DST" 2>/dev/null && \
+			log "PCIe container firmware installed to $FW_DST" || \
+			warn "failed to install firmware to $FW_DST"
+	fi
+}
+
 uninstall() {
 	log "uninstalling $PKG"
 	$SUDO modprobe -r "$PKG" 2>/dev/null || $SUDO rmmod "$PKG" 2>/dev/null || true
@@ -218,6 +230,10 @@ uninstall() {
 	$SUDO rm -f /usr/local/bin/motu424-probe /usr/local/bin/motu424-ctl \
 		/usr/local/bin/motu424-gui \
 		/usr/local/share/applications/motu424-gui.desktop
+	if [ -f /lib/firmware/HDExpress_FullImageRun.bin ]; then
+		log "removing /lib/firmware/HDExpress_FullImageRun.bin"
+		$SUDO rm -f /lib/firmware/HDExpress_FullImageRun.bin
+	fi
 	$SUDO depmod -a || true
 	log "done. (Module source in this repo was left untouched.)"
 }
@@ -236,8 +252,14 @@ fi
 
 if [ "$USE_DKMS" -eq 1 ]; then install_dkms; fi
 if [ "$USE_DKMS" -ne 1 ]; then install_intree; fi
+install_firmware
 build_tools
 load_module
+
+FW_NOTE="Firmware note: classic PCI-324/424 self-configures from onboard flash (no host firmware upload needed)."
+if [ -f /lib/firmware/HDExpress_FullImageRun.bin ]; then
+	FW_NOTE="Firmware note: HDExpress_FullImageRun.bin is installed in /lib/firmware for PCIe HD Express cards."
+fi
 
 cat <<EOF
 
@@ -252,8 +274,5 @@ Next steps:
                         re-run with --gui to install those)
   • Remove everything:  ./install.sh --uninstall
 
-Firmware note: reverse-engineering indicates the classic PCI-324/424 self-
-configures its FPGA from onboard flash, so NO host firmware upload is expected -
-nothing to install (see docs/fpga-upload.md). The PCIe HD Express variant uses a
-separate on-board ARM+Xilinx image and is out of scope for this driver.
+$FW_NOTE
 EOF

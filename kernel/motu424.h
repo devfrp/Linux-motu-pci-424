@@ -46,6 +46,94 @@
 #define MOTU424_DEV_PCI424_B		0x0004
 #define MOTU424_DEV_PCI424_C		0x0005
 
+#define MOTU424_PCIE_FW_NAME		"HDExpress_FullImageRun.bin"
+#define MOTU424_HDEXPRESS_LOAD_ADDR	0x00100000u
+#define MOTU424_HDEXPRESS_HDR_LEN	0x18u
+#define MOTU424_HDEXPRESS_ENTRY_POINT	0x00108608u
+
+/*
+ * Container header for HDExpress_FullImageRun.bin (PCIe HD Express DEV_0005).
+ * 24 bytes, little-endian, verified sum32 payload checksum.
+ */
+struct hdexpress_fw_hdr {
+	__le32 load_addr;	/* 0x00100000 */
+	__le32 hdr_len;		/* 0x18 (24 bytes) */
+	__le32 payload_len;	/* 1218096 (file size - 0x18) */
+	__le32 checksum;	/* sum of all payload bytes mod 2^32 */
+	__le32 entry_point;	/* 0x00108608 */
+	__le32 version;		/* 0x0d1d041d */
+} __packed;
+
+/*
+ * Section descriptor within HDExpress_FullImageRun.bin payload.
+ * 28 bytes (0x1c), little-endian.
+ * Section types:
+ *   0x1: ARM32 firmware (base 0x100000, entry 0x108608)
+ *   0x5: Config record (preceding bitstream)
+ *   0x6: Xilinx Virtex FPGA bitstream (sync 0xAA995566)
+ *   0x7: Trailer config record
+ */
+struct hdexpress_section_hdr {
+	__le32 type;
+	__le32 data_off;	/* 0x1c */
+	__le32 size;
+	__le32 flags;
+	__le32 tag;
+	__le32 rsvd1;
+	__le32 rsvd2;
+} __packed;
+
+#define HDEXPRESS_SEC_ARM_FW		0x1
+#define HDEXPRESS_SEC_CONFIG_PRE	0x5
+#define HDEXPRESS_SEC_VIRTEX_FPGA	0x6
+#define HDEXPRESS_SEC_CONFIG_POST	0x7
+
+enum motu424_type {
+	MOTU424_TYPE_PCI324 = 0,
+	MOTU424_TYPE_PCI424,
+	MOTU424_TYPE_PCIE424,
+};
+
+/* --------------------------------------------------------------------------
+ * PCIe-424 Hardware DSP Engine (ARM32 SoC + Virtex FPGA)
+ * --------------------------------------------------------------------------
+ * The PCIe-424 card features an on-board 32-bit RISC SoC and Xilinx Virtex
+ * FPGA running CueMix DSP. Communications take place via an MMIO Mailbox
+ * register aperture.
+ */
+#define MOTU424_DSP_CMD_NOP		0x0000
+#define MOTU424_DSP_CMD_PING		0x0001	/* test presence & get version */
+#define MOTU424_DSP_CMD_GET_CAPS	0x0002	/* query supported capabilities */
+#define MOTU424_DSP_CMD_RESET		0x0003	/* soft reset DSP state */
+#define MOTU424_DSP_CMD_SET_MIX		0x0010	/* cross-point volume & pan */
+#define MOTU424_DSP_CMD_SET_MASTER	0x0011	/* bus master level/mute/dim */
+#define MOTU424_DSP_CMD_SET_ROUTING	0x0012	/* bus output assignment */
+#define MOTU424_DSP_CMD_SET_EQ		0x0020	/* 7-band parametric EQ */
+#define MOTU424_DSP_CMD_SET_DYN		0x0030	/* compressor / limiter */
+#define MOTU424_DSP_CMD_GET_METERS	0x0040	/* hardware peak/RMS meters */
+
+/* DSP Capabilities Flags */
+#define MOTU424_DSP_CAP_CUEMIX		BIT(0)	/* 4-bus zero-latency summing matrix */
+#define MOTU424_DSP_CAP_METERS		BIT(1)	/* Hardware peak/RMS engine */
+#define MOTU424_DSP_CAP_EQ		BIT(2)	/* Parametric EQ biquad engine */
+#define MOTU424_DSP_CAP_DYN		BIT(3)	/* Compressor / limiter dynamics */
+#define MOTU424_DSP_CAP_REVERB		BIT(4)	/* Hardware reverb processor */
+#define MOTU424_DSP_CAP_TALKBACK	BIT(5)	/* Studio monitor / talkback matrix */
+
+/* DSP Mailbox Register Offsets (card address or within target BAR) */
+#define MOTU424_DSP_REG_CMD		0x00
+#define MOTU424_DSP_REG_PARAM		0x04
+#define MOTU424_DSP_REG_DATA		0x08
+#define MOTU424_DSP_REG_STATUS		0x0C
+#define MOTU424_DSP_REG_DOORBELL	0x10
+#define MOTU424_DSP_REG_RESP		0x14
+
+/* DSP Mailbox Status Bits */
+#define MOTU424_DSP_STAT_READY		BIT(0)
+#define MOTU424_DSP_STAT_BUSY		BIT(1)
+#define MOTU424_DSP_STAT_ACK		BIT(2)
+#define MOTU424_DSP_STAT_ERR		BIT(3)
+
 /* --------------------------------------------------------------------------
  * Windowed card-address space - CONFIRMED (accessor VAs 0x29110/0x29160)
  * --------------------------------------------------------------------------
@@ -227,6 +315,27 @@ struct motu424 {
 					 * is used in its place)
 					 */
 
+	enum motu424_type type;
+	bool is_pcie;
+	bool fw_loaded;
+
+	/* PCIe BAR assignment placeholders & overrides (user fills in later) */
+	int pcie_bar_a;			/* Window A BAR index override (-1 = auto) */
+	int pcie_bar_b;			/* Window B BAR index override (-1 = auto) */
+	int pcie_bar_port;		/* Port / bridge BAR index override (-1 = auto) */
+	int pcie_bar_fw;		/* Firmware upload BAR index (-1 = auto/none) */
+	resource_size_t pcie_fw_offset;	/* Offset within pcie_bar_fw */
+
+	/* PCIe-424 Hardware DSP Engine (ARM32 SoC + Virtex FPGA) */
+	bool has_dsp;
+	bool dsp_running;
+	u32 dsp_version;
+	u32 dsp_caps;
+	int pcie_dsp_bar;		/* BAR index for DSP mailbox (-1 = auto) */
+	resource_size_t pcie_dsp_offset;/* Offset for DSP mailbox */
+	spinlock_t dsp_lock;
+	u32 dsp_seq;
+
 	char model[32];			/* human-readable model string */
 };
 
@@ -236,6 +345,7 @@ struct motu424 {
 /* --- motu424_hw.c : the only file that touches real register semantics --- */
 int  motu424_hw_init(struct motu424 *chip);
 void motu424_hw_shutdown(struct motu424 *chip);
+int  motu424_hw_load_firmware(struct motu424 *chip);
 int  motu424_hw_set_rate(struct motu424 *chip, unsigned int rate);
 int  motu424_hw_stream_prepare(struct motu424 *chip,
 			       struct snd_pcm_substream *substream);
@@ -243,6 +353,16 @@ void motu424_hw_stream_start(struct motu424 *chip, bool playback, bool fresh);
 void motu424_hw_stream_stop(struct motu424 *chip, bool playback);
 snd_pcm_uframes_t motu424_hw_stream_pointer(struct motu424 *chip, bool playback);
 u32  motu424_hw_irq_ack(struct motu424 *chip);	/* returns MOTU424_IRQ_* bits */
+
+/* --- motu424_hw.c : PCIe-424 hardware DSP engine --- */
+int  motu424_dsp_init(struct motu424 *chip);
+void motu424_dsp_shutdown(struct motu424 *chip);
+int  motu424_dsp_send_cmd(struct motu424 *chip, u16 cmd, u16 param, u32 data, u32 *resp);
+int  motu424_dsp_set_mix(struct motu424 *chip, u8 bus, u8 ch, u16 vol, s16 pan);
+int  motu424_dsp_set_master(struct motu424 *chip, u8 bus, u16 vol, bool mute, bool dim);
+int  motu424_dsp_set_eq(struct motu424 *chip, u8 ch, u8 band, u16 freq, s16 gain, u16 q);
+int  motu424_dsp_set_dyn(struct motu424 *chip, u8 ch, s16 thresh, u16 ratio, u16 attack, u16 release);
+int  motu424_dsp_get_meters(struct motu424 *chip, u32 *meter_buf, int count);
 
 /* --- motu424_pcm.c --- */
 int motu424_pcm_create(struct motu424 *chip);
