@@ -7,6 +7,10 @@
 Un pilote ALSA Linux écrit de zéro pour la carte audio **MOTU PCI-324 / PCI-424**
 et ses interfaces de sortie AudioWire (2408, 24I/O, 828, HD192, 896HD, …).
 
+<p align="center">
+  <img src="docs/screenshots/mixer-console.png" alt="Console de mixage MOTU PCI-424 CueMix FX" width="100%">
+</p>
+
 > **État : le pilote implémente le modèle matériel rétro-conçu ; en attente
 > d'une vraie carte.** Toute la mécanique PCI / IRQ / ALSA est réelle et
 > complète, et la couche matérielle encode désormais le modèle récupéré du
@@ -119,7 +123,9 @@ source de vérité unique. Elle reconstruit le modèle CueMix à partir des noms
 kcontrols et le rend comme la vraie console : un onglet par bus de mix
 (tranches avec fader d'envoi, vumètre à maintien de crête, potentiomètre de
 panoramique rotatif, mute/solo/gang, le master du bus épinglé à droite), un
-onglet Entrées (gain, pad, phase, paires stéréo), un onglet Sorties (tranches
+onglet **DSP Studio** (courbes d'égaliseur paramétrique 7 bandes de précision et
+processeur de dynamique matériel avec compresseur à genou et vumètre de réduction de gain),
+un onglet Entrées (gain, pad, phase, paires stéréo), un onglet Sorties (tranches
 de monitoring mono, liables en paires stéréo comme les entrées), un onglet
 Patchbay (optionnel, sans cordons d'origine — dessiné comme une vraie baie de
 brassage normalisée : chaque sortie est à son « normal », les main out étant
@@ -130,6 +136,18 @@ all » retire tous les cordons en une seule étape annulable, et un
 interrupteur global contourne la baie en retombant sur ces normals), un
 onglet Horloge & format, et un onglet Diagnostics qui fonctionne même sans
 carte ni pilote chargé.
+
+<p align="center">
+  <img src="docs/screenshots/mixer-console.png" alt="Console de mixage CueMix FX" width="100%">
+  <br>
+  <em>Console de mixage : Tranches par bus avec faders d'envoi, vumètres à maintien de crête, panoramique et sortie master</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/dsp-studio.png" alt="DSP Studio CueMix FX" width="100%">
+  <br>
+  <em>DSP Studio : Égaliseur paramétrique 7 bandes de précision et processeur de dynamique matériel (compresseur et vumètre GR)</em>
+</p>
 
 Toute la disposition s'adapte aux convertisseurs reliés aux slots AudioWire de
 la PCI-424 : le pilote nomme chaque canal par slot et par banque (analogique,
