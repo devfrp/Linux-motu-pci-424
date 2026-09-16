@@ -7,6 +7,10 @@
 A from-scratch Linux ALSA driver for the **MOTU PCI-324 / PCI-424** audio card
 and its AudioWire breakout interfaces (2408, 24I/O, 828, HD192, 896HD, …).
 
+<p align="center">
+  <img src="docs/screenshots/mixer-console.png" alt="MOTU PCI-424 CueMix FX - Mixer Console" width="100%">
+</p>
+
 > **Status: driver implements the reverse-engineered hardware model; awaiting
 > a real card.** The PCI / IRQ / ALSA machinery is real and complete, and the
 > hardware layer now encodes the model recovered from the vendor Windows driver
@@ -112,16 +116,29 @@ automatically as the driver registers them, and degrades cleanly when absent.
 over `motu424-ctl`, so the tested CLI stays the single source of truth. It
 rebuilds the CueMix model from the kcontrol names and renders it like the real
 console: one tab per mix bus (channel strips with send fader, peak-hold meter,
-rotary pan pot, mute/solo/gang, the bus master pinned on the right), an Inputs
-tab (trim, pad, phase, stereo pairs), an Outputs tab (mono monitor strips,
-stereo-linkable like the inputs), a Patchbay tab (optional, no cords by
-default — drawn like a real normalled bay: outputs sit at their normals, with
-main outs normalled to the system's stereo program so desktop sound reaches
-the monitors unconfigured, and you drag virtual cables to patch anything else;
-hovering a jack tells you what it carries, "Unpatch all" pulls every cord in
+rotary pan pot, mute/solo/gang, the bus master pinned on the right), a **DSP Studio**
+tab (precision 7-band parametric EQ curves and hardware dynamics processor with
+knee compressor & GR meter), an Inputs tab (trim, pad, phase, stereo pairs), an
+Outputs tab (mono monitor strips, stereo-linkable like the inputs), a Patchbay
+tab (optional, no cords by default — drawn like a real normalled bay: outputs sit at
+their normals, with main outs normalled to the system's stereo program so desktop
+sound reaches the monitors unconfigured, and you drag virtual cables to patch anything
+else; hovering a jack tells you what it carries, "Unpatch all" pulls every cord in
 one undoable step, and a global switch bypasses the bay back onto the
 normals), a Clock & format tab, and a
 Diagnostics tab that works even with no card and no driver loaded.
+
+<p align="center">
+  <img src="docs/screenshots/mixer-console.png" alt="CueMix FX Mixer Console" width="100%">
+  <br>
+  <em>Mixer Console: Per-bus strips with send faders, peak-hold meters, rotary pan pots, and master monitor output</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/dsp-studio.png" alt="CueMix FX DSP Studio" width="100%">
+  <br>
+  <em>DSP Studio: Precision 7-band parametric EQ curves and hardware dynamics processor (knee compressor & GR meter)</em>
+</p>
 
 The whole layout adapts to the converters attached to the PCI-424's AudioWire
 slots: the driver names every channel per slot and bank (analog, ADAT, TDIF,
