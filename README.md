@@ -39,7 +39,7 @@ Installs on any distro (deps + DKMS module + tools). Details and options under
 | `tools/motu424-probe.c` | Userspace BAR enumerator/dumper (windowed model) for reverse engineering |
 | `tools/motu424-ctl.c` | **CueMix-style management CLI** (clock/format + monitor mixer) over alsa-lib |
 | `tools/motu424-gui` | **GTK4 mixing console** in the CueMix FX style (a front-end over `motu424-ctl`) |
-| `tools/re/` | Static-RE helpers (`vtable-scan.py`, capstone `xref.py`) |
+| `tools/re/` | Static-RE helpers (`vtable-scan.py`, capstone `xref.py`, `extract-firmware.py`) |
 | `get.sh` | **`curl \| sh` bootstrap** — fetch sources + run the installer |
 | `install.sh` | **Cross-distro installer** (deps + DKMS + tools) |
 | `ARCHITECTURE.md` | Design notes: the 3-layer split + hardware-confinement rule |
