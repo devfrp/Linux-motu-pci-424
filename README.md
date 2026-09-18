@@ -111,17 +111,22 @@ automatically as the driver registers them, and degrades cleanly when absent.
 `tools/motu424-gui` is a GTK4 **CueMix FX-style mixing console** — a front-end
 over `motu424-ctl`, so the tested CLI stays the single source of truth. It
 rebuilds the CueMix model from the kcontrol names and renders it like the real
-console: one tab per mix bus (channel strips with send fader, peak-hold meter,
-rotary pan pot, mute/solo/gang, the bus master pinned on the right), an Inputs
-tab (trim, pad, phase, stereo pairs), an Outputs tab (mono monitor strips,
-stereo-linkable like the inputs), a Patchbay tab (optional, no cords by
-default — drawn like a real normalled bay: outputs sit at their normals, with
-main outs normalled to the system's stereo program so desktop sound reaches
-the monitors unconfigured, and you drag virtual cables to patch anything else;
-hovering a jack tells you what it carries, "Unpatch all" pulls every cord in
-one undoable step, and a global switch bypasses the bay back onto the
-normals), a Clock & format tab, and a
-Diagnostics tab that works even with no card and no driver loaded.
+console: an Inputs tab (channel strips combining per-input analog conditioning
+— trim, pad, phase, stereo pairs — with each channel's send into the console's
+one mix: fader, peak-hold meter, rotary pan pot, mute/solo/gang, with the mix
+master pinned on the right outside the scroll), an Outputs tab (mono monitor
+strips, stereo-linkable like the inputs), a Patchbay tab (optional, no cords
+by default — drawn like a real normalled bay: every patchable output sits at
+its normal, direct PCM feed; main outs are hard-normalled to the system's
+stereo program instead and aren't patchable, so desktop sound always reaches
+the monitors; drag virtual cables to patch anything else, hovering a jack
+tells you what it carries, "Unpatch all" pulls every cord in one undoable
+step, and a global switch bypasses the bay back onto the normals), a Clock &
+format tab, and a Diagnostics tab that works even with no card and no driver
+loaded. On cards that report a hardware DSP insert engine (PCIe-424 / HD
+Express — not yet attached by this driver, so it's a preview), each strip
+also gets a virtual FX insert: a local 3-band EQ curve, not wired to any
+kcontrol yet.
 
 The whole layout adapts to the converters attached to the PCI-424's AudioWire
 slots: the driver names every channel per slot and bank (analog, ADAT, TDIF,
@@ -136,9 +141,7 @@ changes (module load/unload, converters hot-plugged, channel counts shrinking
 in the 2x/4x rate families) it rebuilds itself on the next poll, keeping the
 tab you were on — flip the sample rate in `--demo` to watch the shrink live.
 
-On top of the basics: stereo-pair and gang linking, A/B scenes, header
-TALK / LISTEN talkback buttons (hold to talk momentarily, a quick click
-latches), per-bus mix copy/reset, JSON mix snapshots
+On top of the basics: stereo-pair and gang linking, JSON mix snapshots
 (Ctrl+S / Ctrl+O), Ctrl+Z undo of mix-wide
 operations, editable channel names, and a "Shortcuts & tips" dialog on F1.
 Control writes are coalesced through a worker thread and the hardware is
@@ -155,6 +158,28 @@ Needs `python-gobject` + `gtk4` (added automatically by `--gui`). The mixer
 kcontrols are Phase 5 (card-gated): with no MOTU card the console has nothing
 to populate — preview it with `--demo`; on real hardware it fills in
 automatically once the driver registers its controls.
+
+##### Screenshots
+
+`--demo` against the synthetic 24I/O + 1224 rig, one tab at a time:
+
+**Inputs** — channel strips scrolled from slot A (24I/O, analog) into slot B
+(1224, AES/EBU), with the mix master pinned on the right:
+
+<img src="docs/screenshots/inputs-1-slot-a.png" width="49%"> <img src="docs/screenshots/inputs-2-slot-b.png" width="49%">
+
+**Outputs** — mono monitor strips, scrolled across the 24I/O's analog outs:
+
+<img src="docs/screenshots/outputs-1.png" width="49%"> <img src="docs/screenshots/outputs-2.png" width="49%">
+
+**Patchbay** — no cords by default; every jack sits at its normal:
+
+![Patchbay tab](docs/screenshots/patchbay.png)
+
+**Clock & format** and **Diagnostics** (the latter works with no card and no
+driver loaded — this is a real report from the machine these were taken on):
+
+<img src="docs/screenshots/clock-format.png" width="49%"> <img src="docs/screenshots/diagnostics.png" width="49%">
 
 ## Reverse engineering
 
