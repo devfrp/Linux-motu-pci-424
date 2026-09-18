@@ -8,29 +8,35 @@ for talking to the driver's ALSA kcontrols). It reads `motu424-ctl list`, rebuil
 the CueMix model from the kcontrol names (see docs/cuemix-control-map.md), and
 renders it like the real console:
 
-  * one tab per mix bus - a scrollable row of channel strips (send fader +
-    drawn peak-hold meter + rotary pan pot + mute/solo) with the bus MASTER
+  * an "Inputs" tab - a scrollable row of channel strips: per-input analog
+    conditioning (trim pot, pad, phase, stereo pair) on top of the channel's
+    level into the console's mix (send fader + drawn peak-hold meter +
+    rotary pan pot + a full-width MUTE + solo/gang), with the mix MASTER
     strip pinned on the right, outside the scroll area;
-  * an "Inputs" tab - per-input analog conditioning (trim fader, pad, phase,
-    stereo pair, mute);
   * an "Outputs" tab - one mono monitor strip per output (volume fader, meter,
     mute, ST stereo link) with the routed source shown under the strip;
     ST-linked pairs move their volume faders together;
+  * a virtual FX insert per strip (Inputs and Outputs) when the attached
+    card reports a hardware DSP insert engine (PCIe-424 / HD Express only -
+    classic PCI-324/424 never do, and this driver doesn't attach a
+    PCIe-424 yet, so this is a preview): a local 3-band EQ curve, not
+    wired to any kcontrol - nothing to send it to yet;
   * channel counts and layout adapt to the attached AudioWire interfaces: the
     driver names channels per slot and bank ("Input B AES 01 ...", see
     docs/cuemix-control-map.md) and the strips regroup under "slot - model -
     bank" headers (analog / ADAT / AES-EBU / main out / phones);
   * a "Patchbay" tab - drawn like a real bay: source jacks (PCM feeds, mix
     bus L/R) wired to output jacks by virtual cables you drag between them.
-    It is optional and ships with no cords - every output sits at its
-    NORMAL: its own direct PCM feed, except Main outs which are normalled to
-    the system stereo program (PCM 1/2, drawn as a dashed line) so desktop
-    sound reaches the monitors unconfigured. Double-click an output jack to
-    unpatch it (back to its normal), "Unpatch all" pulls every cord in one
-    undoable step, hovering a jack prelights it and tells you what it
-    carries; ST-linked pairs patch together as L/R. One switch disables the
-    whole patchbay: off = fall back to the normals, and the bay dims (the
-    demo ships with it off);
+    Main outs aren't in it - they're hard-normalled to the system stereo
+    program (PCM 1/2) so desktop sound always reaches the monitors and
+    never carries another input/output's feed; only the other outputs are
+    patchable. It is optional and ships with no cords - every patchable
+    output sits at its NORMAL: its own direct PCM feed. Double-click an
+    output jack to unpatch it (back to its normal), "Unpatch all" pulls
+    every cord in one undoable step, hovering a jack prelights it and
+    tells you what it carries; ST-linked pairs patch together as L/R. One
+    switch disables the whole patchbay: off = fall back to the normals,
+    and the bay dims (the demo ships with it off);
   * a "Clock & format" tab - clock source, a sample-rate selector grouped by
     1x/2x/4x clock family, locked rate, metering;
   * a "Diagnostics" tab - PCI / kernel-module / ALSA / kernel-log health
@@ -54,23 +60,16 @@ Console behaviours beyond the basics:
     clear every solo at once;
   * pan is a real rotary pot: drag it vertically (hold Ctrl for fine moves),
     scroll over it, double-click to recentre;
-  * A/B scenes in the header (arm SET, then A or B stores; A/B alone recalls),
-    persisted across sessions;
-  * TALK / LISTEN talkback buttons in the header (shown when the card exposes
-    them; the atten level lives in Clock & format) - push-to-talk like the
-    console button they mimic: hold to talk momentarily, a quick click
-    latches;
-  * per-bus COPY (push this mix's sends to another mix) and RST (sends back to
-    unity, pans centred, mutes/solos off) on the master strip;
+  * RST on the master strip (sends back to unity, pans centred, mutes/solos
+    off);
   * gang groups: send strips with G engaged move together (keeping their
     relative offsets), on top of stereo-pair linking;
   * click any value readout to type an exact number (pan accepts L20 / C / R35);
   * mix snapshots: save/recall the whole console state as JSON from the menu
     (Ctrl+S / Ctrl+O);
-  * Ctrl+Z undoes mix-wide operations (copy, reset, scene recall, snapshot
-    load), walking back through the last twenty;
-  * channel names are editable in place, persist across sessions and stay in
-    sync between the mix tabs and the Inputs tab;
+  * Ctrl+Z undoes mix-wide operations (reset, snapshot load), walking back
+    through the last twenty;
+  * channel names are editable in place and persist across sessions;
   * window size and the active tab are remembered across sessions;
     Alt+1..9 switches tabs, Ctrl+R reloads;
   * double-click a fader to reset it (sends/master to unity, pan to centre,
@@ -79,8 +78,8 @@ Console behaviours beyond the basics:
 The mixer is card-gated (driver Phase 5), so with no MOTU card the kcontrols do
 not exist yet and the console has nothing to populate. Run with `--demo` to see
 the full console against a synthetic PCI-424 rig - a 24I/O in slot A plus a
-1224 in slot B (8 analog I/O, an AES/EBU pair, main outs), 3 mix buses; the
-demo card keeps state, so snapshots and linking can be exercised, and switching
+1224 in slot B (8 analog I/O, an AES/EBU pair, main outs); the demo card
+keeps state, so snapshots and linking can be exercised, and switching
 the sample rate re-enumerates it live (the 2x/4x analog/ADAT shrink). On real
 hardware it fills in automatically once the driver registers its CueMix
 kcontrols.
@@ -99,6 +98,8 @@ import subprocess
 import sys
 import threading
 import time
+
+import cairo
 
 if any(a in ("-h", "--help") for a in sys.argv[1:]):
     sys.stdout.write(__doc__)
@@ -132,7 +133,6 @@ DEMO = ("--demo" in sys.argv[1:]
 
 CONF_DIR = os.path.join(GLib.get_user_config_dir(), "motu424")
 NAMES_FILE = os.path.join(CONF_DIR, "channel-names.json")
-SCENES_FILE = os.path.join(CONF_DIR, "scenes.json")
 UI_FILE = os.path.join(CONF_DIR, "ui-state.json")
 SNAP_DIR = os.path.join(CONF_DIR, "snapshots")
 
@@ -142,56 +142,241 @@ METER_TICK_MS = 50
 PEAK_DECAY = 0.35         # peak-hold fall, fraction of full scale per second
 CLIP_AT = 0.98
 
-# CueMix-ish dark console theme, scoped to our widgets.
+# UAD Console-inspired dark theme, scoped to our widgets.
 CSS = b"""
-.console { background:#15181c; }
-.strip { background:#1b1f24; border:1px solid #262c33; border-radius:7px;
-         padding:8px 7px; margin:4px; }
-.strip.master { background:#20262e; border-color:#3a4a3f; }
-.strip .cap { font-family:monospace; font-size:10px; letter-spacing:.06em;
-              color:#8b97a1; }
-.strip.master .cap { color:#79c98a; }
-.strip .db { font-family:monospace; font-size:11px; color:#d7dee4; }
-.strip .sub { font-family:monospace; font-size:9px; color:#6f7b85;
+/* UAD Console-style skin: flat graphite channel strips on a near-black rack,
+   a cyan/teal accent for engaged/selected state (rather than the glossy Aqua
+   chrome of a CueMix-era app), and crisp LED-ladder meters - closer to the
+   look of Universal Audio's own interface-control software than a generic
+   dark app theme. */
+
+/* -- window chrome ------------------------------------------------------- */
+window.background { background-color:#1b1d20; }
+/* the desktop's own light colour-scheme can win over our forced dark
+   preference for *inherited* foreground colours (labels, dim-label's 55%
+   opacity) even though our explicit panel/button colours above always take
+   precedence - pin a light default so unstyled text stays legible on our
+   dark graphite panels */
+window.background label { color: #c7ccd2; }
+headerbar {
+  background-image: linear-gradient(to bottom, #2a2d31, #1c1e21);
+  border-bottom: 1px solid #0b0c0d;
+  box-shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 1px 3px rgba(0,0,0,.5);
+  min-height: 42px;
+}
+headerbar .title, headerbar label.title {
+  font-family: monospace; font-weight: bold; font-size: 12px;
+  letter-spacing: .08em; color: #d7dce1;
+}
+/* same theme-leak as above, for native dropdowns/switches - pin them to the
+   dark graphite look instead of the desktop's light button */
+dropdown, dropdown button {
+  background-image: linear-gradient(to bottom, #303338, #24262a);
+  color: #c7ccd2;
+  border: 1px solid #0e0f11;
+  border-radius: 1px;
+}
+dropdown:hover, dropdown button:hover {
+  background-image: linear-gradient(to bottom, #383c41, #2a2d31);
+}
+dropdown popover, dropdown popover contents, dropdown listview,
+dropdown listview row {
+  background-color: #202226; color: #c7ccd2;
+}
+dropdown listview row:selected { background-color: #1a4650; }
+
+/* -- console body --------------------------------------------------------- */
+.console {
+  background-color: #1b1d20;
+  background-image: linear-gradient(to bottom, #202226, #17181b),
+                     radial-gradient(circle at 50% -20%,
+                     rgba(255,255,255,.03), transparent 55%);
+}
+/* the notebook's own content area paints an opaque theme background over
+   .console (light or dark depending on the desktop's colour-scheme, which
+   can override our forced dark preference) - neutralise it so our panel
+   stays lit regardless of the host theme */
+notebook, notebook > stack, .console box { background-color: transparent; }
+notebook > header {
+  background-image: linear-gradient(to bottom, #232529, #191a1d);
+  border-bottom: 1px solid #0b0c0d;
+  padding: 0 6px;
+}
+notebook > header > tabs > tab {
+  padding: 9px 18px 8px;
+  color: #74797f;
+  font-family: monospace;
+  font-size: 11px;
+  letter-spacing: .04em;
+  border-bottom: 2px solid transparent;
+  transition: color 120ms ease, background-color 120ms ease,
+              border-color 120ms ease;
+}
+notebook > header > tabs > tab:hover {
+  color: #d7dce1;
+  background-color: rgba(255,255,255,.04);
+}
+notebook > header > tabs > tab:checked {
+  color: #eef2f5;
+  border-bottom-color: #2ec4d6;
+  background-image: linear-gradient(to bottom, rgba(46,196,214,.10),
+                     rgba(46,196,214,.02));
+  box-shadow: inset 0 -1px 0 rgba(0,0,0,.3);
+}
+separator { background-color: #0b0c0d; }
+
+/* -- channel strips -------------------------------------------------------*/
+.strip {
+  background-image: linear-gradient(to bottom, #26282c, #1c1e21);
+  border: 1px solid #0d0e10;
+  border-radius: 1px;
+  padding: 4px 2px 3px;
+  margin: 0;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+}
+.strip.master {
+  background-image: linear-gradient(to bottom, #223034, #191f21);
+  border-color: #1c4c53;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.03), inset 0 2px 0 #2ec4d6;
+}
+.strip .cap {
+  font-family: monospace; font-size: 9px; font-weight: bold;
+  letter-spacing: .06em; color: #9aa1a8;
+  padding-bottom: 3px; margin-bottom: 2px;
+  border-bottom: 1px solid #303338;
+}
+.strip.master .cap { color: #4fd6e6; border-bottom-color: #2a4a4e; }
+.strip .db { font-family:monospace; font-size:11px; color:#e4e7ea; }
+.strip .sub { font-family:monospace; font-size:9px; color:#5c6169;
               letter-spacing:.08em; }
 .strip editablelabel, .strip editablelabel text {
-  font-family:monospace; font-size:10px; color:#c3ccd4; }
-scale.fader trough { min-width:7px; background:#0d1013; border-radius:4px; }
-scale.fader highlight { background:#3a4653; border-radius:4px; }
-scale.fader slider { min-width:22px; min-height:20px; margin:0; background:#c9d2da;
-                     border:1px solid #7c8791; border-radius:3px; }
-scale.fader mark indicator { background:#4a5560; min-height:1px; min-width:6px; }
-.strip.master scale.fader slider { background:#57c96a; border-color:#3a8f49; }
-.tbtn { font-family:monospace; font-size:10px; padding:2px 0; min-width:22px; }
-.tbtn.m:checked { background:#e5534b; color:#0d1013; }
-.tbtn.s:checked { background:#f0a63a; color:#0d1013; }
-.tbtn.p:checked { background:#5a8bd6; color:#0d1013; }
-.tbtn.link:checked { background:#5a8bd6; color:#0d1013; }
-.tbtn.g:checked { background:#8a6fd1; color:#0d1013; }
-.scene { font-family:monospace; font-size:10px; padding:2px 7px; }
-.scene.set:checked { background:#f0a63a; color:#0d1013; }
-.scene.talk:checked { background:#e5534b; color:#0d1013; }
-.scene.listen:checked { background:#5a8bd6; color:#0d1013; }
+  font-family:monospace; font-size:10px; color:#aeb4ba; }
 .strip editablelabel.db, .strip editablelabel.db text {
-  font-size:11px; color:#d7dee4; }
-.diagview, .diagview text { background:#11151a; color:#c3ccd4; }
-.soloind { font-family:monospace; font-size:10px; font-weight:bold;
-           padding:2px 8px; color:#57606a; background:#171b20;
-           border:1px solid #262c33; border-radius:4px; }
-.soloind.on { background:#f0a63a; color:#0d1013; border-color:#f0a63a; }
-.clock { font-family:monospace; font-size:10px; color:#8b97a1; }
-.statusbar { font-family:monospace; font-size:10px; color:#8b97a1;
-             padding:3px 10px; background:#11151a; border-top:1px solid #262c33; }
-.statusbar.err { color:#e5534b; }
-.help { background:#15181c; }
-.help .db { font-family:monospace; font-size:11px; color:#d7dee4; }
-.help .dim-label { color:#8b97a1; }
+  font-size:11px; color:#e4e7ea; }
+
+/* -- faders -- Studio-strip cap: smooth silver-metal, from the DSP Studio
+   reference (branche-PCIe) - a plain dark rail, no colour fill on the
+   track itself (the meter next to it carries the colour), and a light
+   brushed-metal cap with a soft round instead of a ridged paddle -------- */
+scale.fader trough {
+  min-width: 6px;
+  background-color: #090b0e;
+  border: 1px solid #1a222c;
+  border-radius: 4px;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,.7);
+}
+scale.fader highlight { background-color: transparent; }
+scale.fader slider {
+  min-width: 24px; min-height: 20px; margin: 0 -9px;
+  background-image: linear-gradient(to bottom, #e4ecf2 0%, #a8b8c6 45%,
+                     #6a7c8c 55%, #b4c2ce 100%);
+  border: 1px solid #4a5866;
+  border-radius: 4px;
+  box-shadow: 0 3px 6px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.8),
+              inset 0 -1px 0 rgba(0,0,0,.4);
+}
+scale.fader slider:hover {
+  background-image: linear-gradient(to bottom, #f0f6fa 0%, #b8c8d6 45%,
+                     #7a8c9c 55%, #c4d2de 100%);
+  border-color: #6a7888;
+}
+scale.fader mark indicator { background:#4a5866; min-height:1px; min-width:20px; }
+.strip.master scale.fader slider {
+  background-image: linear-gradient(to bottom, #ff6b6b 0%, #e03232 45%,
+                     #9e1a1a 55%, #d63838 100%);
+  border: 1px solid #751414;
+  box-shadow: 0 3px 8px rgba(224,50,50,.4), inset 0 1px 0 rgba(255,255,255,.6),
+              inset 0 -1px 0 rgba(0,0,0,.4);
+}
+.strip.master scale.fader slider:hover {
+  background-image: linear-gradient(to bottom, #ff8080 0%, #f04242 45%,
+                     #b02020 55%, #e84848 100%);
+}
+.strip.master scale.fader mark indicator { background:#e03232; }
+
+/* -- buttons -- flat graphite chips, teal/amber/red engaged states --------*/
+.tbtn {
+  font-family: monospace; font-size: 9px; letter-spacing: .02em;
+  padding: 1px 3px; min-width: 15px;
+  background-image: linear-gradient(to bottom, #2c2f33, #212327);
+  color: #8a9099;
+  border: 1px solid #0d0e10;
+  border-radius: 1px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+  transition: background-image 100ms ease, color 100ms ease,
+              border-color 100ms ease;
+}
+.tbtn:hover {
+  background-image: linear-gradient(to bottom, #383c41, #2a2d31);
+  color: #e4e7ea;
+}
+.tbtn:disabled { opacity: .35; }
+.tbtn.m:checked {
+  background-image: linear-gradient(to bottom, #e2554b, #b6362d);
+  color: #180504; border-color: #7f221b;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.35), 0 0 6px rgba(214,68,56,.4);
+}
+.tbtn.s:checked {
+  background-image: linear-gradient(to bottom, #f0a63a, #c47d1c);
+  color: #1c1002; border-color: #8a5a12;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.3), 0 0 6px rgba(224,147,42,.4);
+}
+.tbtn.p:checked, .tbtn.link:checked {
+  background-image: linear-gradient(to bottom, #4fd6e6, #1e97a8);
+  color: #04191c; border-color: #126873;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.3), 0 0 6px rgba(46,196,214,.4);
+}
+.tbtn.g:checked {
+  background-image: linear-gradient(to bottom, #a98bf0, #6d47c2);
+  color: #100a1e; border-color: #452e80;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.3), 0 0 6px rgba(122,95,194,.4);
+}
+.tbtn.fx.on, .tbtn.fx:checked {
+  background-image: linear-gradient(to bottom, #ec8bd8, #b3389a);
+  color: #260a1f; border-color: #7d2569;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.3), 0 0 6px rgba(179,56,154,.45);
+}
+/* -- indicators, status, misc ---------------------------------------------*/
+.meter {
+  border: 1px solid #000000;
+  border-radius: 1px;
+  padding: 1px;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.8), 0 1px 0 rgba(255,255,255,.03);
+}
+.diagview, .diagview text { background:#17181b; color:#c7ccd2; }
+.soloind {
+  font-family: monospace; font-size: 10px; font-weight: bold;
+  letter-spacing: .05em; padding: 4px 10px;
+  color: #74797f;
+  background-image: linear-gradient(to bottom, #2c2f33, #1e2023);
+  border: 1px solid #0d0e10; border-radius: 1px;
+}
+.soloind.on {
+  background-image: linear-gradient(to bottom, #f0a63a, #c47d1c);
+  color: #1c1002; border-color: #8a5a12;
+  box-shadow: 0 0 8px rgba(224,147,42,.6);
+}
+.clock { font-family:monospace; font-size:10px; letter-spacing:.03em;
+         color:#74797f; }
+.statusbar {
+  font-family: monospace; font-size: 10px; color: #7d838a;
+  padding: 4px 12px;
+  background-image: linear-gradient(to bottom, #1c1e21, #17181b);
+  border-top: 1px solid #0b0c0d;
+}
+.statusbar.err { color:#ff6b5e; }
+.help { background-image: linear-gradient(to bottom, #24262a, #1a1c1f); }
+.help .db { font-family:monospace; font-size:11px; color:#e4e7ea; }
+.help .dim-label { color:#74797f; }
 .patch .cap { font-family:monospace; font-size:10px; letter-spacing:.06em;
-              color:#8b97a1; }
-.patch .sub { font-family:monospace; font-size:9px; color:#6f7b85;
+              color:#9aa1a8; }
+.patch .sub { font-family:monospace; font-size:9px; color:#5c6169;
               letter-spacing:.08em; }
-.bankhdr { font-family:monospace; font-size:9px; letter-spacing:.1em;
-           color:#6f7b85; }
+.bankhdr {
+  font-family: monospace; font-size: 9px; font-weight: bold;
+  letter-spacing: .12em; color: #6b7178;
+  padding: 2px 6px 4px 0;
+}
 """
 
 
@@ -342,7 +527,7 @@ def tok_normal_val(tok):
 
 def build_model(controls):
     """Group flat controls into the CueMix matrix model."""
-    inputs, buses, outputs, talkback, slots = {}, {}, {}, {}, {}
+    inputs, buses, outputs, slots = {}, {}, {}, {}
     glob, other = [], []
     patchbay = None
     for c in controls:
@@ -357,9 +542,6 @@ def build_model(controls):
             continue
         if n == "Patchbay Switch":
             patchbay = c
-            continue
-        if n in ("Talkback Switch", "Listenback Switch"):
-            talkback[n] = c
             continue
         m = _SLOT.match(n)
         if m:
@@ -386,7 +568,7 @@ def build_model(controls):
         else:
             other.append(c)
     return {"inputs": inputs, "buses": buses, "outputs": outputs,
-            "patchbay": patchbay, "talkback": talkback, "slots": slots,
+            "patchbay": patchbay, "slots": slots,
             "globals": glob, "other": other}
 
 
@@ -437,7 +619,7 @@ DEMO_RIG = RIG_ARG or (
 )
 
 
-def demo_controls(rig=DEMO_RIG, n_bus=3, family=1):
+def demo_controls(rig=DEMO_RIG, n_bus=1, family=1):
     """Synthetic CueMix kcontrol set so the console can be previewed without a
     card. Channel counts, banks and slots all flow from `rig`; the GUI adapts
     to whatever is listed, exactly as it will to the driver's enumeration.
@@ -492,8 +674,6 @@ def demo_controls(rig=DEMO_RIG, n_bus=3, family=1):
             out += [i(sp + "Volume", random.randint(40, 110), 0, 127),
                     i(sp + "Pan", random.randint(-60, 60), -100, 100),
                     b(sp + "Mute Switch", "off"), b(sp + "Solo Switch", "off")]
-    out += [b("Talkback Switch", "off"), b("Listenback Switch", "off"),
-            i("Talkback Atten Volume", 20, 0, 40)]
     out.append(b("Patchbay Switch", "off"))    # optional feature: ships bypassed
     # outputs are mono channels; an even channel can stereo-pair with the next
     # one in its bank. PCM MM = the feed output #MM (enumeration order) carries
@@ -571,6 +751,12 @@ def _save_json(path, data):
 # ------------------------------------------------------------------------- gui
 
 def _install_css():
+    # UAD Console is a fixed dark graphite skin, not theme-following — force
+    # the dark GTK variant so native chrome (dropdowns, switches, window
+    # buttons) matches our panels regardless of the desktop theme.
+    settings = Gtk.Settings.get_default()
+    if settings is not None:
+        settings.set_property("gtk-application-prefer-dark-theme", True)
     prov = Gtk.CssProvider()
     prov.load_from_data(CSS)
     Gtk.StyleContext.add_provider_for_display(
@@ -589,8 +775,9 @@ class Meter(Gtk.DrawingArea):
     def __init__(self):
         super().__init__()
         self.level, self.peak, self.clip = 0.0, 0.0, False
-        self.set_content_width(11)
-        self.set_content_height(168)
+        self.set_content_width(7)
+        self.set_content_height(80)
+        self.set_vexpand(True)
         self.set_draw_func(self._draw)
         click = Gtk.GestureClick()
         click.connect("pressed", self._clear_clip)
@@ -656,19 +843,21 @@ class Meter(Gtk.DrawingArea):
 
 class Knob(Gtk.DrawingArea):
     """Rotary pot (270° sweep): drag vertically to turn (Ctrl = fine), scroll
-    over it, double-click to recentre. `on_change` fires on user moves only;
-    `set_value_silent` is the polling/snapshot path."""
+    over it, double-click to reset (centre, or `reset` if given). `on_change`
+    fires on user moves only; `set_value_silent` is the polling/snapshot
+    path."""
 
     SWEEP = math.radians(135)          # each side of 12 o'clock
 
-    def __init__(self, lo, hi, value, on_change):
+    def __init__(self, lo, hi, value, on_change, reset=None):
         super().__init__()
         self.lo, self.hi = lo, hi
         self.value = max(lo, min(hi, value))
         self.on_change = on_change
+        self._reset = (lo + hi) // 2 if reset is None else reset
         self._v0 = self.value
-        self.set_content_width(36)
-        self.set_content_height(36)
+        self.set_content_width(22)
+        self.set_content_height(22)
         self.set_draw_func(self._draw)
         drag = Gtk.GestureDrag()
         drag.connect("drag-begin", lambda *_: setattr(self, "_v0", self.value))
@@ -681,7 +870,7 @@ class Knob(Gtk.DrawingArea):
         dbl = Gtk.GestureClick()
         dbl.connect("pressed",
                     lambda _g, n, _x, _y:
-                    self._set((self.lo + self.hi) // 2) if n == 2 else None)
+                    self._set(self._reset) if n == 2 else None)
         self.add_controller(dbl)
 
     def set_value_silent(self, v):
@@ -717,45 +906,252 @@ class Knob(Gtk.DrawingArea):
         up = -math.pi / 2
         a = up + (frac * 2 - 1) * self.SWEEP
         cr.set_line_width(3)
-        cr.set_source_rgb(0.05, 0.06, 0.075)          # track ring
+        cr.set_source_rgb(0.22, 0.24, 0.27)           # track ring (dark groove)
         cr.arc(cx, cy, r, up - self.SWEEP, up + self.SWEEP)
         cr.stroke()
-        cr.set_source_rgb(0.35, 0.55, 0.84)           # deviation arc from centre
+        cr.set_source_rgb(0.18, 0.77, 0.84)           # deviation arc from centre
         if a >= up:
             cr.arc(cx, cy, r, up, a)
         else:
             cr.arc(cx, cy, r, a, up)
         cr.stroke()
-        cr.set_source_rgb(0.15, 0.18, 0.22)           # body
+        body = cairo.RadialGradient(cx - r * 0.3, cy - r * 0.35, 0.5,
+                                    cx, cy, r - 3.5)   # matte graphite cap
+        body.add_color_stop_rgb(0.0, 0.23, 0.24, 0.26)
+        body.add_color_stop_rgb(0.55, 0.16, 0.17, 0.19)
+        body.add_color_stop_rgb(1.0, 0.08, 0.09, 0.10)
+        cr.set_source(body)
         cr.arc(cx, cy, r - 4.5, 0, 2 * math.pi)
         cr.fill()
         cr.set_line_width(1)
-        cr.set_source_rgb(0.29, 0.34, 0.39)
+        cr.set_source_rgb(0.04, 0.05, 0.06)
         cr.arc(cx, cy, r - 4.5, 0, 2 * math.pi)
         cr.stroke()
         cr.set_line_width(2)                          # pointer
-        cr.set_source_rgb(0.79, 0.82, 0.86)
+        cr.set_source_rgb(0.93, 0.95, 0.96)
         cr.move_to(cx + (r - 10) * math.cos(a), cy + (r - 10) * math.sin(a))
         cr.line_to(cx + (r - 4.5) * math.cos(a), cy + (r - 4.5) * math.sin(a))
         cr.stroke()
 
 
-class PatchBay(Gtk.DrawingArea):
-    """A drawn patchbay: source jacks on the left (PCM feeds + each mix bus
-    L/R), output jacks on the right, a virtual cable per *patched* output.
-    Like a normalled hardware bay it starts with no cords: an output sitting
-    at its NORMAL draws no cable — except Main outs, whose normal is the
-    system stereo program (PCM 1/2) and shows as a faint dashed line. Drag a
-    cable between a source and an output to patch; double-click an output
-    jack to unpatch it (back to its normal). ST-linked pairs (bracketed)
-    patch together as L/R."""
+class InsertEQ(Gtk.DrawingArea):
+    """A drawn parametric-EQ curve for the virtual insert popover. Purely
+    local state — there is no hardware DSP kcontrol behind this on any card
+    this driver attaches today (see Panel._card_has_dsp). Click empty space
+    to add a band (up to MAX_BANDS), drag a band to reshape it (frequency
+    and gain together), double-click a band to remove it. Each band is a
+    bell-shaped bump summed into the curve, like a real parametric EQ,
+    rather than straight lines joining the dots."""
 
-    ROW = 30
-    PAD_Y = 34
-    JACK_R = 6.5
-    GUTTER = 130                       # label gutter each side
-    HIT = 16                           # jack grab radius
-    HUES = ((0.35, 0.55, 0.84), (0.94, 0.65, 0.23), (0.54, 0.44, 0.82),
+    RANGE = 12.0            # +/- dB
+    BELL_PX = 50.0          # bell falloff width in pixels
+    MAX_BANDS = 8
+    HIT = 8
+
+    def __init__(self, bands, on_change):
+        super().__init__()
+        # bands: list of [freq_frac (0..1 across the width), gain_db]
+        self.bands = [list(b) for b in bands]
+        self.on_change = on_change
+        self.set_content_width(380)
+        self.set_content_height(220)
+        self.set_draw_func(self._draw)
+        self._drag_i = None
+        self._band0 = None
+        drag = Gtk.GestureDrag()
+        drag.connect("drag-begin", self._begin)
+        drag.connect("drag-update", self._update)
+        self.add_controller(drag)
+        click = Gtk.GestureClick()
+        click.connect("pressed", self._pressed)
+        self.add_controller(click)
+        self.set_tooltip_text("Click empty space: add a band - drag a band: "
+                              "reshape it - double-click a band: remove it")
+
+    def add_band(self, freq_frac=0.5, gain=0.0):
+        if len(self.bands) < self.MAX_BANDS:
+            self.bands.append([freq_frac, gain])
+            self.queue_draw()
+            self.on_change(self.bands)
+
+    def _geom(self, h):
+        top, mid_y = 12, h / 2.0
+        return top, mid_y
+
+    def _hit(self, x, y, w, h):
+        top, mid_y = self._geom(h)
+        for i, (f, g) in enumerate(self.bands):
+            bx, by = f * w, mid_y - (g / self.RANGE) * (mid_y - top)
+            if (x - bx) ** 2 + (y - by) ** 2 <= self.HIT ** 2:
+                return i
+        return None
+
+    def _pressed(self, _g, n, x, y):
+        w, h = self.get_width(), self.get_height()
+        i = self._hit(x, y, w, h)
+        if n == 2:
+            if i is not None and len(self.bands) > 1:
+                del self.bands[i]
+                self.queue_draw()
+                self.on_change(self.bands)
+            return
+        if i is None and len(self.bands) < self.MAX_BANDS:
+            top, mid_y = self._geom(h)
+            freq = max(0.02, min(0.98, x / w))
+            gain = max(-self.RANGE, min(self.RANGE,
+                       -(y - mid_y) / (mid_y - top) * self.RANGE))
+            self.bands.append([freq, gain])
+            self.queue_draw()
+            self.on_change(self.bands)
+
+    def _begin(self, _g, x, y):
+        self._drag_i = self._hit(x, y, self.get_width(), self.get_height())
+        if self._drag_i is not None:
+            self._band0 = tuple(self.bands[self._drag_i])
+
+    def _update(self, _g, dx, dy):
+        if self._drag_i is None:
+            return
+        w, h = self.get_width(), self.get_height()
+        top, mid_y = self._geom(h)
+        f0, g0 = self._band0
+        freq = max(0.02, min(0.98, f0 + dx / w))
+        gain = max(-self.RANGE, min(self.RANGE,
+                   g0 - dy / (mid_y - top) * self.RANGE))
+        self.bands[self._drag_i] = [freq, gain]
+        self.queue_draw()
+        self.on_change(self.bands)
+
+    def _curve_y(self, x, w, top, mid_y):
+        val = 0.0
+        for f, g in self.bands:
+            bx = f * w
+            val += g * math.exp(-((x - bx) ** 2) / (2 * self.BELL_PX ** 2))
+        val = max(-self.RANGE, min(self.RANGE, val))
+        return mid_y - (val / self.RANGE) * (mid_y - top)
+
+    def _draw(self, _area, cr, w, h):
+        cr.set_source_rgb(0.035, 0.04, 0.045)
+        cr.rectangle(0, 0, w, h)
+        cr.fill()
+        top, mid_y = self._geom(h)
+        cr.set_line_width(1)
+        for frac in (-1.0, -0.5, 0.0, 0.5, 1.0):
+            y = mid_y - frac * (mid_y - top)
+            cr.set_source_rgba(0.4, 0.44, 0.48, .35 if frac == 0 else .12)
+            cr.move_to(0, y)
+            cr.line_to(w, y)
+            cr.stroke()
+        step = 3
+        pts = [(x, self._curve_y(x, w, top, mid_y))
+               for x in range(0, w + step, step)]
+        cr.move_to(*pts[0])
+        for x, y in pts[1:]:
+            cr.line_to(x, y)
+        cr.line_to(w, mid_y)
+        cr.line_to(0, mid_y)
+        cr.close_path()
+        cr.set_source_rgba(0.18, 0.77, 0.84, .14)
+        cr.fill()
+        cr.move_to(*pts[0])
+        for x, y in pts[1:]:
+            cr.line_to(x, y)
+        cr.set_line_width(2)
+        cr.set_source_rgb(0.18, 0.77, 0.84)
+        cr.stroke()
+        for f, g in self.bands:
+            bx, by = f * w, mid_y - (g / self.RANGE) * (mid_y - top)
+            cr.set_source_rgba(0.18, 0.77, 0.84, .9)
+            cr.arc(bx, by, 5, 0, 2 * math.pi)
+            cr.fill()
+            cr.set_line_width(1)
+            cr.set_source_rgb(0.04, 0.05, 0.06)
+            cr.arc(bx, by, 5, 0, 2 * math.pi)
+            cr.stroke()
+
+
+class DynamicsCurve(Gtk.DrawingArea):
+    """A drawn compressor transfer curve for the virtual insert popover -
+    same honesty caveat as InsertEQ (see Panel._card_has_dsp): local state
+    only, nothing to send it to. Drag the knee horizontally along the
+    unity diagonal to set the threshold; ratio lives in a slider next to
+    it since dragging both at once on one point is fiddly."""
+
+    RANGE = 40.0        # dB shown on each axis (0 at top-right)
+
+    def __init__(self, dyn, on_change):
+        super().__init__()
+        self.dyn = dict(dyn)        # {"threshold": dB<=0, "ratio": >=1}
+        self.on_change = on_change
+        self.set_content_width(380)
+        self.set_content_height(150)
+        self.set_draw_func(self._draw)
+        self._th0 = None
+        drag = Gtk.GestureDrag()
+        drag.connect("drag-begin", self._begin)
+        drag.connect("drag-update", self._update)
+        self.add_controller(drag)
+        self.set_tooltip_text("Drag the knee to set the threshold")
+
+    def _pt(self, db):
+        frac = (db + self.RANGE) / self.RANGE
+        return frac, 1.0 - frac            # (x_frac, y_frac)
+
+    def _begin(self, _g, _x, _y):
+        self._th0 = self.dyn["threshold"]
+
+    def _update(self, _g, dx, _dy):
+        if self._th0 is None:
+            return
+        th = max(-self.RANGE, min(0.0, self._th0 + dx / self.get_width() * self.RANGE))
+        self.dyn["threshold"] = th
+        self.queue_draw()
+        self.on_change(dict(self.dyn))
+
+    def _draw(self, _area, cr, w, h):
+        cr.set_source_rgb(0.035, 0.04, 0.045)
+        cr.rectangle(0, 0, w, h)
+        cr.fill()
+        cr.set_line_width(1)
+        cr.set_source_rgba(0.4, 0.44, 0.48, .16)
+        for i in range(1, 4):
+            cr.move_to(0, h * i / 4); cr.line_to(w, h * i / 4); cr.stroke()
+            cr.move_to(w * i / 4, 0); cr.line_to(w * i / 4, h); cr.stroke()
+        cr.set_source_rgba(0.4, 0.44, 0.48, .3)
+        cr.move_to(0, h); cr.line_to(w, 0); cr.stroke()   # unity (ghost)
+        th, ratio = self.dyn["threshold"], self.dyn["ratio"]
+        txf, tyf = self._pt(th)
+        tx, ty = txf * w, tyf * h
+        out_at_0 = th + (0.0 - th) / ratio
+        oxf, oyf = self._pt(out_at_0)
+        cr.set_line_width(2)
+        cr.set_source_rgb(0.94, 0.65, 0.23)
+        cr.move_to(0, h)
+        cr.line_to(tx, ty)
+        cr.line_to(w, oyf * h)
+        cr.stroke()
+        cr.set_source_rgba(0.94, 0.65, 0.23, .9)
+        cr.arc(tx, ty, 5, 0, 2 * math.pi)
+        cr.fill()
+
+
+class PatchBay(Gtk.DrawingArea):
+    """A drawn patchbay: source jacks along the top (PCM feeds + each mix
+    bus L/R), output jacks along the bottom, a virtual cable per *patched*
+    output. Like a normalled hardware bay it starts with no cords: an
+    output sitting at its NORMAL draws no cable — except Main outs, whose
+    normal is the system stereo program (PCM 1/2) and shows as a faint
+    dashed line. Drag a cable between a source and an output to patch;
+    double-click an output jack to unpatch it (back to its normal).
+    ST-linked pairs (bracketed) patch together as L/R."""
+
+    COL = 40
+    PAD_X = 22
+    JACK_R = 4.5
+    GUTTER = 30                        # top/bottom margin for header + label
+    ROW_GAP = 110                      # vertical distance, source row to output row
+    HIT = 11                           # jack grab radius
+    HUES = ((0.18, 0.77, 0.84), (0.94, 0.65, 0.23), (0.66, 0.55, 0.94),
             (0.34, 0.79, 0.42), (0.90, 0.33, 0.29), (0.36, 0.76, 0.78))
     PCM_RGB = (0.47, 0.52, 0.57)
 
@@ -774,11 +1170,16 @@ class PatchBay(Gtk.DrawingArea):
         self._drag_a = None            # drag start point
         self._drag_xy = None           # current pointer
         self._hover = None             # jack under the pointer
-        rows = max(len(sources), len(outs))
-        self.set_content_height(2 * self.PAD_Y + rows * self.ROW)
-        self.set_content_width(2 * self.GUTTER + 320)
+        cols = max(len(sources), len(outs), 1)
+        self.set_content_width(2 * self.PAD_X + cols * self.COL)
+        self.set_content_height(2 * self.GUTTER + self.ROW_GAP)
         self.set_hexpand(True)
-        self.set_vexpand(True)
+        # not vexpand: the bay is two fixed rows now (source top, output
+        # bottom), not one row per channel, so it must not stretch to fill
+        # whatever leftover height the scrolled window has - that would
+        # silently override GUTTER/ROW_GAP and re-space the rows apart
+        self.set_vexpand(False)
+        self.set_valign(Gtk.Align.START)
         self.set_draw_func(self._draw)
         drag = Gtk.GestureDrag()
         drag.connect("drag-begin", self._begin)
@@ -797,12 +1198,11 @@ class PatchBay(Gtk.DrawingArea):
 
     # geometry ---------------------------------------------------------------
     def _src_xy(self, i):
-        return (self.GUTTER,
-                self.PAD_Y + i * self.ROW + self.ROW / 2)
+        return (self.PAD_X + i * self.COL + self.COL / 2, self.GUTTER)
 
     def _out_xy(self, j):
-        return (self.get_width() - self.GUTTER,
-                self.PAD_Y + j * self.ROW + self.ROW / 2)
+        return (self.PAD_X + j * self.COL + self.COL / 2,
+                self.get_height() - self.GUTTER)
 
     def _jack_at(self, x, y):
         for i, (sid, _l) in enumerate(self.sources):
@@ -893,9 +1293,12 @@ class PatchBay(Gtk.DrawingArea):
 
     # drawing ----------------------------------------------------------------
     def _cable(self, cr, x1, y1, x2, y2, rgb, alpha, width, dashed=False):
-        sag = 16 + abs(y2 - y1) * 0.08
-        c1 = (x1 + (x2 - x1) * 0.35, y1 + sag)
-        c2 = (x2 - (x2 - x1) * 0.35, y2 + sag)
+        # rows run top/bottom now, so the cable bows sideways between them
+        # (like a real patch cord looping between two horizontal rows)
+        # instead of sagging downward between two side-by-side columns
+        sag = 16 + abs(x2 - x1) * 0.08
+        c1 = (x1 + sag, y1 + (y2 - y1) * 0.35)
+        c2 = (x2 - sag, y2 - (y2 - y1) * 0.35)
         if dashed:
             cr.set_dash((5, 4))
         cr.set_line_width(width + 2)
@@ -922,33 +1325,36 @@ class PatchBay(Gtk.DrawingArea):
         cr.arc(x, y, self.JACK_R - 2.5, 0, 2 * math.pi)
         cr.fill()
 
-    def _text(self, cr, x, y, s, dim, align_right=False, bright=False):
+    def _text(self, cr, x, y, s, dim, align="left", bright=False):
         cr.select_font_face("monospace")
-        cr.set_font_size(10)
-        if align_right:
-            x -= cr.text_extents(s).width
-        cr.set_source_rgba(*((0.84, 0.87, 0.89) if bright
-                             else (0.55, 0.60, 0.65)), dim)
+        cr.set_font_size(8)
+        tw = cr.text_extents(s).width
+        if align == "right":
+            x -= tw
+        elif align == "center":
+            x -= tw / 2
+        cr.set_source_rgba(*((0.89, 0.92, 0.94) if bright
+                             else (0.48, 0.52, 0.56)), dim)
         cr.move_to(x, y + 3.5)
         cr.show_text(s)
 
     def _draw(self, _area, cr, w, h):
         dim = 1.0 if self.is_sensitive() else 0.35
-        cr.set_source_rgba(0.09, 0.106, 0.125, dim)   # bay panel
+        cr.set_source_rgba(0.09, 0.10, 0.11, dim)     # bay panel (dark graphite)
         cr.rectangle(0, 0, w, h)
         cr.fill()
-        self._text(cr, self.GUTTER - 8, 16, "SOURCES", dim, align_right=True)
-        self._text(cr, w - self.GUTTER + 8, 16, "OUTPUTS", dim)
-        # ST brackets between linked output jacks (partner sits just below)
+        self._text(cr, 6, 14, "SOURCES", dim)
+        self._text(cr, 6, h - 8, "OUTPUTS", dim)
+        # ST brackets between linked output jacks (partner sits right next to it)
         for j, nn in enumerate(self.outs):
             if (j + 1 < len(self.outs)
                     and self.pair_of.get(nn) == self.outs[j + 1]):
-                x, y1 = self._out_xy(j)
-                _x, y2 = self._out_xy(j + 1)
+                x1, y = self._out_xy(j)
+                x2, _y = self._out_xy(j + 1)
                 cr.set_line_width(1.5)
-                cr.set_source_rgba(0.55, 0.60, 0.65, 0.7 * dim)
-                cr.move_to(x + 12, y1)
-                cr.curve_to(x + 20, y1, x + 20, y2, x + 12, y2)
+                cr.set_source_rgba(0.48, 0.52, 0.56, 0.7 * dim)
+                cr.move_to(x1, y + 9)
+                cr.curve_to(x1, y + 15, x2, y + 15, x2, y + 9)
                 cr.stroke()
         # cables — an output at its normal draws none (identity) or a faint
         # dashed "normal" line (Main outs <- system program); a real cord
@@ -994,14 +1400,15 @@ class PatchBay(Gtk.DrawingArea):
             x, y = self._src_xy(i)
             self._jack(cr, x, y, self._rgb(sid), dim,
                        lit=target == ("src", sid) or hov == ("src", sid))
-            self._text(cr, x - 14, y, label, dim, align_right=True)
+            self._text(cr, x, y - 13, label, dim, align="center")
         for j, nn in enumerate(self.outs):
             x, y = self._out_xy(j)
             sid = self.get_conn(nn)
             rgb = self._rgb(sid) if sid else self.PCM_RGB
             self._jack(cr, x, y, rgb, dim,
                        lit=target == ("out", nn) or hov == ("out", nn))
-            self._text(cr, x + 14, y, self.out_label(nn), dim, bright=True)
+            self._text(cr, x, y + 16, self.out_label(nn), dim,
+                       align="center", bright=True)
 
 
 class Panel(Gtk.ApplicationWindow):
@@ -1036,9 +1443,10 @@ class Panel(Gtk.ApplicationWindow):
         self._demo_fam = 1                  # demo card's current rate family
         self._nb = None
         self._help_win = None
+        self._dsp = False                   # attached card has a hardware DSP insert engine
+        self._inserts = {}                  # "in:<tok>"/"out:<tok>" -> {"on":bool,"bands":[..]}
         self.demo = demo_controls() if DEMO else None
         self.names = _load_json(NAMES_FILE, {})
-        self.scenes = _load_json(SCENES_FILE, {})
         self.writer = CtlWriter(self._on_write_error)
 
         header = Gtk.HeaderBar()
@@ -1086,49 +1494,6 @@ class Panel(Gtk.ApplicationWindow):
         self.clock_lbl.add_css_class("clock")
         header.pack_end(self.clock_lbl)
 
-        sc_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-        self.scene_set = Gtk.ToggleButton(label="SET")
-        self.scene_set.add_css_class("scene")
-        self.scene_set.add_css_class("set")
-        self.scene_set.set_tooltip_text("Arm, then press A or B to store the current mix")
-        sc_box.append(self.scene_set)
-        for slot in ("A", "B"):
-            b = Gtk.Button(label=slot)
-            b.add_css_class("scene")
-            b.set_tooltip_text(f"Recall scene {slot} (SET then {slot} stores it)")
-            b.connect("clicked", self._on_scene, slot)
-            sc_box.append(b)
-        header.pack_end(sc_box)
-
-        # talkback / listenback — shown only when the card exposes them
-        self.tb_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-        self.tb_btns = {}
-        for cap, cls, key, tip in (
-                ("TALK", "talk", "Talkback Switch",
-                 "Talkback — route the talkback input into the mixes; "
-                 "hold to talk momentarily, a quick click latches "
-                 "(atten level lives in Clock & format)"),
-                ("LISTEN", "listen", "Listenback Switch",
-                 "Listenback — route the listenback input into the mixes; "
-                 "hold for momentary, a quick click latches")):
-            b = Gtk.ToggleButton(label=cap)
-            b.add_css_class("scene")
-            b.add_css_class(cls)
-            b.set_tooltip_text(tip)
-            b.connect("toggled", self._on_toggle, key)
-            # push-to-talk, like the console button it mimics: engage on
-            # *press*; released after a beat = momentary (drops back off),
-            # a quick click latches instead
-            hold = Gtk.GestureClick()
-            hold.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-            hold.connect("pressed", self._tb_press, b)
-            hold.connect("released", self._tb_release, b)
-            b.add_controller(hold)
-            self.tb_btns[key] = b
-            self.tb_box.append(b)
-        self.tb_box.set_visible(False)
-        header.pack_end(self.tb_box)
-
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         outer.add_css_class("console")
         self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, vexpand=True)
@@ -1146,6 +1511,33 @@ class Panel(Gtk.ApplicationWindow):
     # -- data ---------------------------------------------------------------
     def current_dev(self):
         return self.cards[self.card_dd.get_selected()][0]
+
+    def _card_has_dsp(self):
+        """Only the PCIe-424 (HD Express) carries a hardware DSP insert
+        engine; classic PCI-324/PCI-424 don't, and this driver doesn't
+        attach a PCIe-424 yet (firmware upload isn't implemented - see
+        motu424_probe() in motu424_main.c), so this is honestly always
+        False against real hardware today. It sniffs /proc/asound/cards
+        for the card's model string so the insert UI switches itself on
+        the day that support lands, with no new kcontrol needed."""
+        dev = self.current_dev()
+        try:
+            with open("/proc/asound/cards") as f:
+                lines = f.readlines()
+        except OSError:
+            return False
+        for line in lines:
+            m = re.match(r"\s*(\d+)\s+\[.*?\]:\s*(.*)", line)
+            if not m:
+                continue
+            if dev and dev != f"hw:{m.group(1)}":
+                continue
+            desc = m.group(2)
+            if "motu" not in desc.lower():
+                continue
+            if "424" in desc and "324" not in desc:
+                return True
+        return False
 
     def reload(self):
         cur_tab = None                          # keep the active tab across rebuilds
@@ -1186,18 +1578,7 @@ class Panel(Gtk.ApplicationWindow):
         self._byname = {c["name"]: c for c in controls}
         model = build_model(controls)
         self._slots = model["slots"]
-        for key, btn in self.tb_btns.items():
-            c = self._byname.get(key)
-            if not c:
-                continue
-            self._syncing = True
-            try:
-                btn.set_active(c["value"].split(",")[0].strip() == "on")
-            finally:
-                self._syncing = False
-            self._register(key, lambda v, b=btn:
-                           b.set_active(v.split(",")[0].strip() == "on"))
-        self.tb_box.set_visible(any(k in self._byname for k in self.tb_btns))
+        self._dsp = DEMO or self._card_has_dsp()
         self._update_clock_label()
 
         nb = Gtk.Notebook(scrollable=True)
@@ -1228,11 +1609,8 @@ class Panel(Gtk.ApplicationWindow):
                     if tok_parts(tok)[2] % 2 == 0 and p in d:
                         pairs[tok] = p
                         pairs[p] = tok
-            for kk in sorted(model["buses"]):
-                nb.append_page(self._bus_page(kk, model),
-                               Gtk.Label(label=f"Mix {kk:02d}"))
             if model["inputs"]:
-                nb.append_page(self._inputs_page(model["inputs"]),
+                nb.append_page(self._inputs_page(model["inputs"], model),
                                Gtk.Label(label="Inputs"))
             if model["outputs"]:
                 nb.append_page(self._outputs_page(model["outputs"]),
@@ -1279,9 +1657,9 @@ class Panel(Gtk.ApplicationWindow):
     def _grouped_row(self, chans, strip_fn):
         """A horizontal run of channel strips, split per (slot, bank) with a
         header naming the attached interface when the card exposes banks."""
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
-                      margin_top=8, margin_bottom=8, margin_start=8,
-                      margin_end=8)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0,
+                      margin_top=4, margin_bottom=0, margin_start=4,
+                      margin_end=4, vexpand=True)
         cur, grp_row = None, None
         for tok in sorted(chans, key=tok_sort):
             g = tok_parts(tok)[:2]
@@ -1290,7 +1668,7 @@ class Panel(Gtk.ApplicationWindow):
                     row.append(Gtk.Separator(
                         orientation=Gtk.Orientation.VERTICAL))
                 cur = g
-                grp = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                grp = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
                 slot, bank = g
                 if slot or bank:
                     bits = [x for x in (slot, self._slots.get(slot),
@@ -1299,36 +1677,38 @@ class Panel(Gtk.ApplicationWindow):
                                     margin_start=6)
                     hdr.add_css_class("bankhdr")
                     grp.append(hdr)
+                # this row of strips claims the group's whole leftover
+                # height (the strips themselves fill it - see _strip_box)
                 grp_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
-                                  spacing=2)
+                                  spacing=0, vexpand=True)
                 grp.append(grp_row)
                 row.append(grp)
             grp_row.append(strip_fn(tok))
         return row
 
-    def _bus_page(self, kk, model):
+    def _inputs_page(self, inputs, model):
+        """The console's single mix: input strips (trim/pad/phase/stereo +
+        send level/pan/mute/solo/gang) with the mix MASTER strip pinned on
+        the right, outside the scroll area."""
+        buses = model["buses"]
+        kk = min(buses) if buses else None
+        sends = buses[kk].get("sends", {}) if kk is not None else {}
         page = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
-        sc.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        sends = model["buses"][kk].get("sends", {})
+        sc.set_policy(Gtk.PolicyType.ALWAYS, Gtk.PolicyType.NEVER)
+        sc.set_overlay_scrolling(False)
         sc.set_child(self._grouped_row(
-            sends, lambda tok: self._send_strip(kk, tok, sends[tok])))
+            inputs, lambda tok: self._input_strip(tok, inputs[tok],
+                                                  sends.get(tok), kk)))
         page.append(sc)
-        page.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
-        master = self._master_strip(kk, model["buses"][kk],
-                                    sorted(model["buses"]))
-        master.set_margin_top(8)
-        master.set_margin_bottom(8)
-        master.set_margin_end(8)
-        page.append(master)
+        if kk is not None:
+            page.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+            master = self._master_strip(kk, buses[kk], [kk])
+            master.set_margin_top(4)
+            master.set_margin_bottom(0)
+            master.set_margin_end(4)
+            page.append(master)
         return page
-
-    def _inputs_page(self, inputs):
-        sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
-        sc.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        sc.set_child(self._grouped_row(
-            inputs, lambda tok: self._input_strip(tok, inputs[tok])))
-        return sc
 
     def _clock_page(self, ctrls, slots=None):
         sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
@@ -1412,34 +1792,6 @@ class Panel(Gtk.ApplicationWindow):
         self._apply(name, item)
 
     # -- strips -------------------------------------------------------------
-    def _send_strip(self, kk, nn, send):
-        box = self._strip_box(tok_cap(nn), master=False)
-        vol = send.get("vol")
-        row = self._fader_row(vol, default=self._unity(vol),
-                              on_change=lambda v, user, kk=kk, nn=nn:
-                              self._fan_send(kk, nn, v, user))
-        box.append(row)
-        pan = send.get("pan")
-        if pan:
-            box.append(self._pan(pan))
-        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4,
-                       halign=Gtk.Align.CENTER)
-        if send.get("mute"):
-            btns.append(self._toggle(send["mute"], "M", "m"))
-        if send.get("solo"):
-            btn = self._toggle(send["solo"], "S", "s", solo=True)
-            btns.append(btn)
-        g = Gtk.ToggleButton(label="G")
-        g.add_css_class("tbtn")
-        g.add_css_class("g")
-        g.set_tooltip_text("Gang — ganged strips in this mix move together, "
-                           "keeping their relative offsets")
-        g.connect("toggled", self._on_gang, kk, nn)
-        btns.append(g)
-        box.append(btns)
-        box.append(self._name_label(nn))
-        return box
-
     def _master_strip(self, kk, bus, all_buses):
         box = self._strip_box(f"MIX {kk:02d}", master=True)
         mv = bus.get("master")
@@ -1448,46 +1800,172 @@ class Panel(Gtk.ApplicationWindow):
             btn = self._toggle(bus["mute"], "MUTE", "m")
             btn.set_halign(Gtk.Align.CENTER)
             box.append(btn)
-        ops = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3,
-                      halign=Gtk.Align.CENTER)
-        others = [t for t in all_buses if t != kk]
-        if others:
-            mb = Gtk.MenuButton(label="CPY")
-            mb.add_css_class("tbtn")
-            mb.set_tooltip_text("Copy this mix's sends to another mix")
-            pop = Gtk.Popover()
-            pb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            for t in others:
-                b = Gtk.Button(label=f"→ Mix {t:02d}")
-                b.connect("clicked", self._on_copy_mix, kk, t, pop)
-                pb.append(b)
-            pop.set_child(pb)
-            mb.set_popover(pop)
-            ops.append(mb)
         rst = Gtk.Button(label="RST")
         rst.add_css_class("tbtn")
+        rst.set_halign(Gtk.Align.CENTER)
         rst.set_tooltip_text("Reset this mix: sends to unity, pans centred, "
                              "mutes and solos off")
         rst.connect("clicked", lambda *_, kk=kk: self._reset_mix(kk))
-        ops.append(rst)
-        box.append(ops)
+        box.append(rst)
         sub = Gtk.Label(label="MASTER")
         sub.add_css_class("sub")
         box.append(sub)
         return box
 
-    def _input_strip(self, nn, inp):
+    def _mute_btn(self, c):
+        """One full-width MUTE per strip (matches the master's), instead of
+        a small "M" buried among other toggles."""
+        btn = self._toggle(c, "MUTE", "m")
+        btn.set_hexpand(True)
+        btn.set_halign(Gtk.Align.FILL)
+        return btn
+
+    def _dyn_row(self, label, lo, hi, val, fmt, on_change):
+        """One labeled horizontal slider row (RATIO/ATTACK/RELEASE)."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        lbl = Gtk.Label(label=label, xalign=0)
+        lbl.add_css_class("sub")
+        lbl.set_size_request(52, -1)
+        row.append(lbl)
+        sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, lo, hi,
+                                      (hi - lo) / 200)
+        sc.set_hexpand(True)
+        sc.set_draw_value(False)
+        sc.set_value(val)
+        row.append(sc)
+        vlbl = Gtk.Label(label=fmt(val))
+        vlbl.add_css_class("sub")
+        vlbl.set_size_request(50, -1)
+        row.append(vlbl)
+        sc.connect("value-changed", lambda s: (vlbl.set_text(fmt(s.get_value())),
+                                               on_change(s.get_value())))
+        return row
+
+    def _insert_slot(self, key, label):
+        """A per-strip virtual DSP insert — an FX button that pops open a
+        local EQ/Dynamics preview (EQ: click empty space to add a band,
+        drag to reshape, double-click to remove; Dynamics: drag the knee
+        for threshold, sliders for ratio/attack/release). Only shown when
+        self._dsp is set (see _card_has_dsp): no card this driver attaches
+        today actually has a hardware insert engine, so everything here
+        lives in self._inserts and is never sent anywhere - it previews
+        what a PCIe-424's real DSP insert would look like in this console,
+        once that lands."""
+        state = self._inserts.setdefault(key, {
+            "on": False, "bands": [[0.18, 0.0], [0.5, 0.0], [0.82, 0.0]],
+            "dyn": {"threshold": -18.0, "ratio": 4.0, "attack": 10.0,
+                    "release": 200.0}})
+        btn = Gtk.MenuButton(label="FX")
+        btn.add_css_class("tbtn")
+        btn.add_css_class("fx")
+        if state["on"]:
+            btn.add_css_class("on")
+        btn.set_tooltip_text("Virtual insert (preview) — no hardware DSP "
+                             "engine on this card yet")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+                      margin_top=12, margin_bottom=12, margin_start=12,
+                      margin_end=12)
+        title = Gtk.Label(label=f"INSERT — {label}", xalign=0)
+        title.add_css_class("cap")
+        box.append(title)
+
+        mode_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        eq_mode = Gtk.ToggleButton(label="EQ")
+        eq_mode.add_css_class("tbtn")
+        dyn_mode = Gtk.ToggleButton(label="DYN")
+        dyn_mode.add_css_class("tbtn")
+        dyn_mode.set_group(eq_mode)
+        eq_mode.set_active(True)
+        mode_row.append(eq_mode)
+        mode_row.append(dyn_mode)
+        box.append(mode_row)
+
+        eq_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        eq_head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        eq_hdr = Gtk.Label(label="EQUALIZER", xalign=0, hexpand=True)
+        eq_hdr.add_css_class("sub")
+        eq_head.append(eq_hdr)
+        add_b = Gtk.Button(label="+ Band")
+        add_b.add_css_class("tbtn")
+        eq_head.append(add_b)
+        eq_col.append(eq_head)
+        eq = InsertEQ(state["bands"],
+                     lambda bands, s=state: s.__setitem__("bands", bands))
+        add_b.connect("clicked", lambda *_: eq.add_band())
+        eq_col.append(eq)
+        box.append(eq_col)
+
+        dyn_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        dyn_hdr = Gtk.Label(label="DYNAMICS", xalign=0)
+        dyn_hdr.add_css_class("sub")
+        dyn_col.append(dyn_hdr)
+        dyn_state = state["dyn"]
+        dcurve = DynamicsCurve(dyn_state,
+                               lambda d, s=state: s["dyn"].update(d))
+        dyn_col.append(dcurve)
+        dyn_col.append(self._dyn_row(
+            "RATIO", 1.0, 20.0, dyn_state["ratio"], lambda v: f"{v:.1f}:1",
+            lambda v, s=state, c=dcurve: (s["dyn"].__setitem__("ratio", v),
+                                          c.queue_draw())))
+        dyn_col.append(self._dyn_row(
+            "ATTACK", 0.1, 100.0, dyn_state["attack"], lambda v: f"{v:.1f} ms",
+            lambda v, s=state: s["dyn"].__setitem__("attack", v)))
+        dyn_col.append(self._dyn_row(
+            "RELEASE", 10.0, 1000.0, dyn_state["release"], lambda v: f"{v:.0f} ms",
+            lambda v, s=state: s["dyn"].__setitem__("release", v)))
+        dyn_col.set_visible(False)
+        box.append(dyn_col)
+
+        def switch_mode(*_):
+            eq_col.set_visible(eq_mode.get_active())
+            dyn_col.set_visible(dyn_mode.get_active())
+        eq_mode.connect("toggled", switch_mode)
+        dyn_mode.connect("toggled", switch_mode)
+
+        onoff = Gtk.ToggleButton(label="ENGAGED")
+        onoff.add_css_class("tbtn")
+        onoff.add_css_class("fx")
+        onoff.set_hexpand(True)
+        onoff.set_halign(Gtk.Align.FILL)
+        onoff.set_active(state["on"])
+        def toggled(b, s=state, fx=btn):
+            s["on"] = b.get_active()
+            (fx.add_css_class if s["on"] else fx.remove_css_class)("on")
+        onoff.connect("toggled", toggled)
+        box.append(onoff)
+        note = Gtk.Label(
+            label="Preview only — no card this driver attaches has a "
+                 "hardware DSP insert engine yet.",
+            xalign=0, wrap=True)
+        note.add_css_class("sub")
+        box.append(note)
+
+        pop = Gtk.Popover()
+        pop.set_child(box)
+        btn.set_popover(pop)
+        return btn
+
+    def _input_strip(self, nn, inp, send, kk):
+        """One strip, one fader: a compact trim pot + analog conditioning
+        (pad/phase/stereo) sit above the single send fader (level into the
+        console's one mix, meter, pan, MUTE/solo/gang) — the console has
+        just one mix, so there is no separate per-bus tab to hold it. MUTE
+        is the mix send mute — the one that matters day to day."""
         box = self._strip_box(tok_cap(nn), master=False)
         trim = inp.get("trim")
-        box.append(self._fader_row(trim, meter=False, default=trim["min"] if trim else 0,
-                                   fmt=lambda v: f"+{v} dB" if v > 0 else f"{v} dB"))
-        sub = Gtk.Label(label="TRIM", xalign=0.5)
-        sub.add_css_class("sub")
-        box.append(sub)
-        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3,
+        if trim:
+            box.append(self._trim_knob(trim))
+        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
                        halign=Gtk.Align.CENTER)
+        even = tok_parts(nn)[2] % 2 == 0
         for key, cap, cls in (("pad", "PAD", "p"), ("phase", "Ø", "p"),
-                              ("stereo", "ST", "link"), ("mute", "M", "m")):
+                              ("stereo", "ST", "link")):
+            # the Stereo Switch pairs NN with NN+1 — only the first (even)
+            # channel of a pair can meaningfully set it (see the pairing
+            # pass in reload()), so odd channels don't show it
+            if key == "stereo" and not even:
+                continue
             if inp.get(key):
                 b = self._toggle(inp[key], cap, cls)
                 if key == "stereo":
@@ -1497,6 +1975,32 @@ class Panel(Gtk.ApplicationWindow):
                               if not self._syncing else None)
                 btns.append(b)
         box.append(btns)
+        if send:
+            vol = send.get("vol")
+            row = self._fader_row(vol, default=self._unity(vol),
+                                  on_change=lambda v, user, kk=kk, nn=nn:
+                                  self._fan_send(kk, nn, v, user))
+            box.append(row)
+            pan = send.get("pan")
+            if pan:
+                box.append(self._pan(pan))
+            if send.get("mute"):
+                box.append(self._mute_btn(send["mute"]))
+            sgbtns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
+                             halign=Gtk.Align.CENTER)
+            if send.get("solo"):
+                btn = self._toggle(send["solo"], "S", "s", solo=True)
+                sgbtns.append(btn)
+            g = Gtk.ToggleButton(label="G")
+            g.add_css_class("tbtn")
+            g.add_css_class("g")
+            g.set_tooltip_text("Gang — ganged strips move together, "
+                               "keeping their relative offsets")
+            g.connect("toggled", self._on_gang, kk, nn)
+            sgbtns.append(g)
+            if self._dsp:
+                sgbtns.append(self._insert_slot(f"in:{nn}", tok_cap(nn)))
+            box.append(sgbtns)
         box.append(self._name_label(nn))
         return box
 
@@ -1522,22 +2026,30 @@ class Panel(Gtk.ApplicationWindow):
         box.append(self._fader_row(vol, default=self._unity(vol),
                                    on_change=lambda v, user, nn=nn:
                                    self._fan_out(nn, v, user)))
-        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3,
-                       halign=Gtk.Align.CENTER)
         if out.get("mute"):
-            btns.append(self._toggle(out["mute"], "M", "m"))
-        if out.get("stereo"):
+            box.append(self._mute_btn(out["mute"]))
+        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2,
+                       halign=Gtk.Align.CENTER)
+        # the Stereo Switch pairs NN with NN+1 — only the first (even)
+        # channel of a pair can meaningfully set it (see the pairing pass
+        # in reload()), so odd channels don't show it
+        if out.get("stereo") and tok_parts(nn)[2] % 2 == 0:
             b = self._toggle(out["stereo"], "ST", "link")
             b.set_tooltip_text("Stereo pair — links this pair's volume faders; "
                                "on the patchbay the pair patches as one (L/R)")
             b.connect("toggled", lambda *_: GLib.idle_add(self.reload)
                       if not self._syncing else None)
             btns.append(b)
+        if self._dsp:
+            btns.append(self._insert_slot(f"out:{nn}", tok_cap(nn, out=True)))
         box.append(btns)
         src = out.get("src")
         if src:
             lbl = Gtk.Label(label="")
             lbl.add_css_class("sub")
+            lbl.set_wrap(True)
+            lbl.set_justify(Gtk.Justification.CENTER)
+            lbl.set_max_width_chars(9)
             def show(_v=None, l=lbl, name=src["name"],
                      normal=tok_normal_val(nn)):
                 pb = self._byname.get("Patchbay Switch")
@@ -1558,7 +2070,8 @@ class Panel(Gtk.ApplicationWindow):
 
     def _outputs_page(self, outputs):
         sc = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
-        sc.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        sc.set_policy(Gtk.PolicyType.ALWAYS, Gtk.PolicyType.NEVER)
+        sc.set_overlay_scrolling(False)
         sc.set_child(self._grouped_row(
             outputs, lambda tok: self._output_strip(tok, outputs[tok])))
         return sc
@@ -1573,12 +2086,20 @@ class Panel(Gtk.ApplicationWindow):
                         margin_end=16)
         outer.add_css_class("patch")
 
-        outs = [t for t in sorted(outputs, key=tok_sort)
-                if outputs[t].get("src")]
-        # PCM channel MM = the direct feed of output #MM in enumeration order
-        pcm_of = {t: j for j, t in enumerate(outs)}
-        items = (outputs[outs[0]]["src"]["items"] or []) if outs else []
-        sources = [(("pcm", j), f"PCM {j + 1}") for j in range(len(outs))]
+        all_outs = [t for t in sorted(outputs, key=tok_sort)
+                   if outputs[t].get("src")]
+        # PCM channel MM = the direct feed of output #MM in enumeration
+        # order - this numbering has to stay keyed on *every* output
+        # (Main included) since it mirrors the driver's own Source enum;
+        # only the jacks the bay draws/lets you patch (below) drop Main
+        pcm_of = {t: j for j, t in enumerate(all_outs)}
+        # Main is normalled to the system's stereo program and stays that
+        # way - it's not a patchable destination, so it never appears as
+        # an output jack in the bay (see the last exchange: "le main ne
+        # doit pas sortir les in et out autre")
+        outs = [t for t in all_outs if tok_parts(t)[1] != "Main"]
+        items = (outputs[all_outs[0]]["src"]["items"] or []) if all_outs else []
+        sources = [(("pcm", j), f"PCM {j + 1}") for j in range(len(all_outs))]
         for it in items:
             m = re.match(r"^Mix (\d+) ([LR])$", it)
             if m:
@@ -1600,7 +2121,7 @@ class Panel(Gtk.ApplicationWindow):
         def normal_of(tok):
             v = tok_normal_val(tok)
             m = re.match(r"^PCM (\d+)$", v)
-            if m and int(m.group(1)) < len(outs):
+            if m and int(m.group(1)) < len(all_outs):
                 return ("pcm", int(m.group(1)))
             return ("pcm", pcm_of[tok])
 
@@ -1612,8 +2133,8 @@ class Panel(Gtk.ApplicationWindow):
                        normal_of)
         for nn in outs:
             name = outputs[nn]["src"]["name"]
-            # _sync keeps Source in snapshots/scenes and follows external
-            # changes; _obs redraws on local cable drags too
+            # _sync keeps Source in snapshots and follows external changes;
+            # _obs redraws on local cable drags too
             self._register(name, lambda _v, b=bay: b.queue_draw())
             self._observe(name, lambda _v, b=bay: b.queue_draw())
 
@@ -1659,10 +2180,12 @@ class Panel(Gtk.ApplicationWindow):
         outer.append(head)
         note = Gtk.Label(label="Optional — nothing is patched out of the box; "
                                "every output sits at its normal, like a bay "
-                               "with no cords: its own direct PCM feed, except "
-                               "Main outs which are normalled to the system "
-                               "stereo program (PCM 1-2, the dashed line) so "
-                               "desktop sound reaches the monitors. Drag a "
+                               "with no cords: its own direct PCM feed. Main "
+                               "outs aren't in this bay at all - they're "
+                               "hard-normalled to the system stereo program "
+                               "(PCM 1-2, see the Outputs tab) so desktop "
+                               "sound always reaches the monitors, and never "
+                               "carry another input/output's feed. Drag a "
                                "virtual cable between a source jack and an "
                                "output jack to patch; double-click an output "
                                "jack to unpatch (back to its normal). "
@@ -1722,7 +2245,7 @@ class Panel(Gtk.ApplicationWindow):
         return lbl
 
     def _strip_box(self, caption, master):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
                       halign=Gtk.Align.CENTER)
         box.add_css_class("strip")
         if master:
@@ -1743,10 +2266,11 @@ class Panel(Gtk.ApplicationWindow):
 
     def _fader_row(self, c, meter=True, fmt=None, default=None, on_change=None):
         fmt = fmt or str
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5,
-                      halign=Gtk.Align.CENTER)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3,
+                      halign=Gtk.Align.CENTER, vexpand=True)
         if meter:
             m = Meter()
+            m.add_css_class("meter")
             self.meters.append([m, len(self.meters) * 0.7])
             row.append(m)
         lo = c["min"] if c and c["min"] is not None else 0
@@ -1757,7 +2281,8 @@ class Panel(Gtk.ApplicationWindow):
         f.add_css_class("fader")
         f.set_inverted(True)
         f.set_draw_value(False)
-        f.set_size_request(-1, 168)
+        f.set_size_request(-1, 80)
+        f.set_vexpand(True)
         if default is not None and lo < default < hi:
             f.add_mark(default, Gtk.PositionType.LEFT, None)
         val = Gtk.EditableLabel()
@@ -1789,8 +2314,8 @@ class Panel(Gtk.ApplicationWindow):
             m = _OUT.match(c["name"])
             if m and m.group(2) == "Volume":
                 self._out_scales[m.group(1)] = f
-        wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3,
-                       halign=Gtk.Align.CENTER)
+        wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                       halign=Gtk.Align.CENTER, vexpand=True)
         row.append(f)
         wrap.append(row)
         wrap.append(val)
@@ -1842,6 +2367,48 @@ class Panel(Gtk.ApplicationWindow):
         self._register(name,
                        lambda v, k=knob:
                        (k.set_value_silent(self._as_int(v, centre)), show(k.value)))
+        box.append(knob)
+        box.append(lbl)
+        return box
+
+    def _trim_knob(self, c):
+        """Compact trim pot — same weight as the pan knob, so a channel
+        strip carries exactly one full-size fader (the send level below)
+        instead of two."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1,
+                      halign=Gtk.Align.CENTER)
+        name = c["name"]
+        lo = c["min"] if c["min"] is not None else 0
+        hi = c["max"] if c["max"] is not None else 60
+        val = self._as_int(c["value"], lo)
+        fmt = lambda v: f"+{v} dB" if v > 0 else f"{v} dB"
+        lbl = Gtk.EditableLabel(text=fmt(val))
+        lbl.add_css_class("sub")
+        lbl.set_halign(Gtk.Align.CENTER)
+        lbl.set_tooltip_text("Click to type an exact value")
+        def changed(v):
+            lbl.set_text(fmt(v))
+            self._touch(name)
+            self._apply(name, str(v))
+        knob = Knob(lo, hi, val, changed, reset=lo)
+        knob.set_halign(Gtk.Align.CENTER)
+        knob.set_tooltip_text(f"{name} — drag up/down (Ctrl: fine), "
+                              "scroll, double-click: reset to 0")
+        def typed(_l, _p):
+            if lbl.get_editing():
+                return
+            t = lbl.get_text().strip()
+            m = re.match(r"^[+-]?\d+$", t.replace(" dB", ""))
+            v = int(m.group(0)) if m else None
+            if v is not None and v != knob.value:
+                knob._set(max(lo, min(hi, v)))
+            else:
+                lbl.set_text(fmt(knob.value))
+        lbl.connect("notify::editing", typed)
+        self._register(name,
+                       lambda v, k=knob:
+                       (k.set_value_silent(self._as_int(v, lo)),
+                        lbl.set_text(fmt(k.value))))
         box.append(knob)
         box.append(lbl)
         return box
@@ -2126,43 +2693,7 @@ class Panel(Gtk.ApplicationWindow):
         self._show_status(f"undid last mix change ({n} controls, "
                           f"{len(self._undo_stack)} more)")
 
-    # -- scenes / mix operations ---------------------------------------------
-    def _on_scene(self, _btn, slot):
-        if self.scene_set.get_active():
-            self.scene_set.set_active(False)
-            if not self._byname:
-                self._show_status("nothing to store", err=True)
-                return
-            self.scenes[slot] = self._snapshot()
-            try:
-                _save_json(SCENES_FILE, self.scenes)
-            except OSError as e:
-                self._show_status(f"cannot save scenes: {e}", err=True)
-                return
-            self._show_status(
-                f"scene {slot} stored ({len(self.scenes[slot])} controls)")
-            return
-        snap = self.scenes.get(slot)
-        if not snap:
-            self._show_status(
-                f"scene {slot} is empty — press SET then {slot} to store it",
-                err=True)
-            return
-        n = self._apply_snapshot(snap)
-        self._show_status(f"scene {slot} recalled ({n} controls)")
-
-    def _on_copy_mix(self, _btn, src, dst, pop):
-        pop.popdown()
-        payload = {}
-        for name, c in self._byname.items():
-            m = _SND.match(name)
-            if not m or int(m.group(1)) != src:
-                continue
-            payload[f"Mix {dst:02d} Input {m.group(2)} {m.group(3)}"] = c["value"]
-        n = self._apply_snapshot(payload)
-        self._show_status(f"Mix {src:02d} sends copied to Mix {dst:02d} "
-                          f"({n} controls)")
-
+    # -- mix operations -------------------------------------------------------
     def _reset_mix(self, kk):
         payload = {}
         for name, c in self._byname.items():
@@ -2317,14 +2848,13 @@ class Panel(Gtk.ApplicationWindow):
         ("click a value readout", "type an exact number (pan: L20, C, R35)"),
         ("click a meter", "clear its clip lamp"),
         ("click a channel name", "rename it (saved, shared across tabs)"),
-        ("M / S / G buttons", "mute, solo, gang (ganged strips move together)"),
+        ("MUTE / S / G buttons", "mute, solo, gang (ganged strips move together)"),
         ("ST on an input / output", "stereo pair — links the pair's faders"),
+        ("FX on a strip", "virtual DSP insert (preview) — only shown when "
+                          "the card reports a hardware insert engine"),
         ("SOLO (header)", "lit while any solo is on; click clears them all"),
-        ("SET then A or B", "store a scene; A / B alone recalls it"),
-        ("TALK / LISTEN (header)", "talkback / listenback into the mixes — "
-                                   "hold to talk momentarily, a quick click "
-                                   "latches"),
-        ("CPY / RST (master strip)", "copy sends to another mix / reset the mix"),
+        ("RST (master strip)", "reset the mix: sends to unity, pans centred, "
+                               "mutes/solos off"),
         ("Patchbay tab", "optional, no cords by default (outputs sit at "
                          "their normals; Main outs carry the system stereo, "
                          "dashed); drag virtual cables to patch, double-click "
@@ -2467,19 +2997,6 @@ class Panel(Gtk.ApplicationWindow):
             return
         self._touch(name)
         self._apply(name, "on" if btn.get_active() else "off")
-
-    TB_HOLD_S = 0.4      # held longer than this = momentary push-to-talk
-
-    def _tb_press(self, g, _n, _x, _y, btn):
-        g.set_state(Gtk.EventSequenceState.CLAIMED)    # we own the click
-        btn._tb_t0 = time.monotonic()
-        btn.set_active(not btn.get_active())           # engage on press
-
-    def _tb_release(self, _g, _n, _x, _y, btn):
-        # still on after a long press: it was push-to-talk — let go = stop
-        if (btn.get_active()
-                and time.monotonic() - getattr(btn, "_tb_t0", 0) > self.TB_HOLD_S):
-            btn.set_active(False)
 
     def _on_switch(self, _sw, state, name):
         if not self._syncing:

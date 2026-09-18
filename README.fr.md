@@ -168,6 +168,28 @@ MOTU la console n'a rien à afficher — prévisualisez-la avec `--demo` ; sur d
 vrai matériel elle se remplit automatiquement dès que le pilote enregistre ses
 contrôles.
 
+##### Captures d'écran
+
+`--demo` sur le rig synthétique 24I/O + 1224, un onglet à la fois :
+
+**Inputs** — tranches de canaux, défilées du slot A (24I/O, analogique) au
+slot B (1224, AES/EBU), avec le master du mix épinglé à droite :
+
+<img src="docs/screenshots/inputs-1-slot-a.png" width="49%"> <img src="docs/screenshots/inputs-2-slot-b.png" width="49%">
+
+**Outputs** — tranches de sortie mono, défilées sur les sorties analogiques du 24I/O :
+
+<img src="docs/screenshots/outputs-1.png" width="49%"> <img src="docs/screenshots/outputs-2.png" width="49%">
+
+**Patchbay** — sans cordon par défaut ; chaque jack reste à son normal :
+
+![Onglet Patchbay](docs/screenshots/patchbay.png)
+
+**Clock & format** et **Diagnostics** (ce dernier fonctionne sans carte ni
+pilote chargé — c'est un rapport réel de la machine où ces captures ont été prises) :
+
+<img src="docs/screenshots/clock-format.png" width="49%"> <img src="docs/screenshots/diagnostics.png" width="49%">
+
 ## Rétro-ingénierie
 
 Le pilote implémente déjà le modèle matériel rétro-conçu ; ce qu'une vraie carte
