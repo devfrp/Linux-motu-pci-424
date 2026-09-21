@@ -68,6 +68,17 @@
 #define MOTU424_WINA_LEN	0x00800000u	/* 8 MB */
 #define MOTU424_WINB_LEN	0x00400000u	/* 4 MB */
 
+/*
+ * Window A also exposes the TMS320C6412's EEPROM controller (SPRS219J:
+ * EEADD/EEDAT/EECTL at card addr 0x01c20000/4/8 -> window-A offset
+ * 0x420000/4/8). That EEPROM (Atmel 93C66) holds the card's PCI identity;
+ * nothing in this driver has a legitimate reason to write there, so
+ * motu424_wr32() denies every write in this range on its own (see
+ * motu424_hw.c) rather than relying on callers to avoid it.
+ */
+#define MOTU424_WINA_EEPROM_START	0x420000u
+#define MOTU424_WINA_EEPROM_END		0x420008u
+
 /* --------------------------------------------------------------------------
  * I/O-port BAR - CONFIRMED (a few dwords of bridge/GPIO control)
  * --------------------------------------------------------------------------

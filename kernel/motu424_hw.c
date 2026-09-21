@@ -70,8 +70,35 @@ static inline u32 motu424_rd32(struct motu424 *chip, u32 card_addr)
 	return ioread32(motu424_addr(chip, card_addr));
 }
 
+/*
+ * Deny-list: refuse any write that lands on the window-A EEPROM controller
+ * range (MOTU424_WINA_EEPROM_START/_END in motu424.h) instead of letting it
+ * silently reach the card - a misdirected write there could reprogram or
+ * erase the card's PCI identity EEPROM. Checked on card_addr directly (not
+ * the resolved BAR pointer) so the aliasing fallback in motu424_addr() for
+ * single-MMIO-BAR cards is covered the same way.
+ */
+static bool motu424_wina_write_denied(struct motu424 *chip, u32 card_addr)
+{
+	u32 off;
+
+	if ((card_addr & MOTU424_WINA_TAG_MASK) != MOTU424_WINA_TAG)
+		return false;
+
+	off = card_addr & MOTU424_WINA_MASK;
+	if (off < MOTU424_WINA_EEPROM_START || off > MOTU424_WINA_EEPROM_END)
+		return false;
+
+	dev_err(&chip->pci->dev,
+		"refusing write to window-A offset 0x%06x: DSP EEPROM controller range (0x%06x-0x%06x), would risk the card's PCI identity\n",
+		off, MOTU424_WINA_EEPROM_START, MOTU424_WINA_EEPROM_END);
+	return true;
+}
+
 static inline void motu424_wr32(struct motu424 *chip, u32 card_addr, u32 val)
 {
+	if (motu424_wina_write_denied(chip, card_addr))
+		return;
 	iowrite32(val, motu424_addr(chip, card_addr));
 }
 
