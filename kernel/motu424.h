@@ -80,20 +80,34 @@
 #define MOTU424_WINA_EEPROM_END		0x420008u
 
 /* --------------------------------------------------------------------------
- * I/O-port BAR - CONFIRMED (a few dwords of bridge/GPIO control)
- * --------------------------------------------------------------------------
- * +0x0 R : status - bit 1 = IRQ pending (ISR 0x2bae0)
- * +0x0 W : control - value 4 (bit 2) = IRQ/stream enable (0x298f3)
- * +0x4 W : strobe / commit (write 1; 0x29906, 0x2c3dc)
- * +0x8 W : init value at bring-up (0x2b6c8; observed 0)
- * Start sequence (method 0x298e0): WRITE(+0x0, 4) then WRITE(+0x4, 1).
+ * I/O-port BAR = TMS320C6412 Host Port Interface (HPI) registers, per the
+ * public TI docs (SPRU581C sec. "Host Port Interface", SPRS219J):
+ *
+ *   +0x0  HSR  (Host Status Register)          - bit 2 INTAM masks PINTA#
+ *         when SET; the host must clear it (write 0) to unmask/enable the
+ *         card's interrupt to the host. Bit 1 mirrors PINTA# pending.
+ *   +0x4  HDCR (Host-to-DSP Control Register)  - bit 0 WARMRESET resets the
+ *         DSP core; bit 1 DSPINT pulses to release a reset core to execute
+ *         from address 0 (only meaningful once code has been loaded there).
+ *   +0x8  DSPP (DSP Page Register)             - selects the active window
+ *         page (reused below as the aperture page-select, see
+ *         MOTU424_APERTURE_PAGE_SHIFT).
+ *
+ * The vendor routine at 0x298e0 (WRITE_PORT(+0x0, 4) then WRITE_PORT(+0x4,
+ * 1)) sets INTAM and asserts WARMRESET: per the TI docs that is a stop/reset
+ * sequence, not a start one, so it is used as such here. Enabling is the
+ * inverse: clear INTAM (write 0 to HSR) to unmask PINTA#. Booting the DSP
+ * core itself (DSPP + code load + DSPINT) needs firmware upload, which is a
+ * separate, not-yet-implemented piece of work (see docs/fpga-upload.md);
+ * until then the driver only ever toggles the IRQ mask.
  */
-#define MOTU424_PORT_STATUS	0x0
+#define MOTU424_PORT_HSR	0x0
 #define MOTU424_PORT_IRQ_PENDING	BIT(1)
-#define MOTU424_PORT_CTRL	0x0
-#define MOTU424_PORT_CTRL_ENABLE	BIT(2)
-#define MOTU424_PORT_STROBE	0x4
-#define MOTU424_PORT_INIT	0x8
+#define MOTU424_PORT_HSR_INTAM	BIT(2)	/* 1 = mask PINTA#, 0 = unmask */
+#define MOTU424_PORT_HDCR	0x4
+#define MOTU424_PORT_HDCR_WARMRESET	BIT(0)
+#define MOTU424_PORT_HDCR_DSPINT	BIT(1)
+#define MOTU424_PORT_DSPP	0x8
 
 /* --------------------------------------------------------------------------
  * Bank register file - INFERRED (window-B card addresses)

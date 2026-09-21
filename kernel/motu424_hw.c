@@ -180,7 +180,7 @@ int motu424_hw_init(struct motu424 *chip)
 		 * Vendor bring-up writes an init value (observed 0) to the
 		 * port bridge. TODO: verify on hardware.
 		 */
-		iowrite32(0, chip->port + MOTU424_PORT_INIT);
+		iowrite32(0, chip->port + MOTU424_PORT_DSPP);
 	}
 
 	/*
@@ -218,7 +218,7 @@ void motu424_hw_shutdown(struct motu424 *chip)
 	if (chip->audio_base)
 		motu424_awr(chip, MOTU424_AREG_ENABLE, 0);
 	if (chip->port)
-		iowrite32(0, chip->port + MOTU424_PORT_CTRL);
+		iowrite32(MOTU424_PORT_HSR_INTAM, chip->port + MOTU424_PORT_HSR);
 	spin_unlock_irqrestore(&chip->lock, flags);
 }
 
@@ -300,7 +300,7 @@ static void motu424_push_period(struct motu424 *chip, struct motu424_stream *s,
 	 */
 	if (chip->port)
 		iowrite32(aperture >> MOTU424_APERTURE_PAGE_SHIFT,
-			  chip->port + MOTU424_PORT_INIT);
+			  chip->port + MOTU424_PORT_DSPP);
 
 	while (bytes) {
 		unsigned int chunk = min(bytes, MOTU424_RING_BYTES - ring_off);
@@ -351,9 +351,10 @@ int motu424_hw_stream_prepare(struct motu424 *chip,
 }
 
 /*
- * Start a stream. Vendor sequence (method 0x298e0 + slot-1 enable):
- * prefill the aperture, write 1 to base+0x54, then kick the port bridge
- * with WRITE(+0x0, 4) and WRITE(+0x4, 1). Called from the atomic trigger.
+ * Start a stream: prefill the aperture, write 1 to base+0x54 (slot-1
+ * enable), then unmask the card's interrupt to the host by clearing HSR bit
+ * 2 (INTAM) - see the HPI register comment in motu424.h. Called from the
+ * atomic trigger.
  *
  * @fresh is true only for a genuine TRIGGER_START (from prepared state); it is
  * false for pause-release/resume, where the ring bookkeeping must be preserved
@@ -372,7 +373,7 @@ void motu424_hw_stream_start(struct motu424 *chip, bool playback, bool fresh)
 	 * "first" decision has to happen under the lock too, or a concurrent
 	 * trigger of the other direction's substream (ALSA does not serialize
 	 * .trigger across unlinked playback/capture substreams) can race this
-	 * read and double-fire the ENABLE/STROBE kick sequence below.
+	 * read and double-fire the ENABLE/unmask sequence below.
 	 */
 	first = !chip->playback.running && !chip->capture.running;
 
@@ -387,7 +388,7 @@ void motu424_hw_stream_start(struct motu424 *chip, bool playback, bool fresh)
 	if (chip->port)
 		iowrite32(chip->aperture[playback ? 0 : 1] >>
 			  MOTU424_APERTURE_PAGE_SHIFT,
-			  chip->port + MOTU424_PORT_INIT);
+			  chip->port + MOTU424_PORT_DSPP);
 
 	/* Double-buffer: keep two periods ahead of the card (fresh start only). */
 	if (playback && fresh) {
@@ -398,16 +399,21 @@ void motu424_hw_stream_start(struct motu424 *chip, bool playback, bool fresh)
 	s->running = true;
 	if (first) {
 		motu424_awr(chip, MOTU424_AREG_ENABLE, 1);
-		if (chip->port) {
-			iowrite32(MOTU424_PORT_CTRL_ENABLE,
-				  chip->port + MOTU424_PORT_CTRL);
-			iowrite32(1, chip->port + MOTU424_PORT_STROBE);
-		}
+		if (chip->port)
+			iowrite32(0, chip->port + MOTU424_PORT_HSR);
 	}
 
 	spin_unlock_irqrestore(&chip->lock, flags);
 }
 
+/*
+ * Stop a stream: this is the inverse of motu424_hw_stream_start() - mask the
+ * card's interrupt to the host by setting HSR bit 2 (INTAM). This is also
+ * what the vendor's misidentified "start" routine (0x298e0) actually did
+ * before warm-resetting the DSP core; the WARMRESET half is intentionally
+ * not replayed here since resetting the DSP is unrelated to pausing a PCM
+ * stream and would affect the other, still-running direction.
+ */
 void motu424_hw_stream_stop(struct motu424 *chip, bool playback)
 {
 	struct motu424_stream *s = playback ? &chip->playback : &chip->capture;
@@ -418,13 +424,9 @@ void motu424_hw_stream_stop(struct motu424 *chip, bool playback)
 	if (!chip->playback.running && !chip->capture.running) {
 		if (chip->audio_base)
 			motu424_awr(chip, MOTU424_AREG_ENABLE, 0);
-		/*
-		 * TODO: verify - the vendor's stop sequence is not yet
-		 * recovered; dropping the port enable bit is the inverse of
-		 * the start sequence.
-		 */
 		if (chip->port)
-			iowrite32(0, chip->port + MOTU424_PORT_CTRL);
+			iowrite32(MOTU424_PORT_HSR_INTAM,
+				  chip->port + MOTU424_PORT_HSR);
 	}
 	spin_unlock_irqrestore(&chip->lock, flags);
 }
@@ -498,7 +500,7 @@ u32 motu424_hw_irq_ack(struct motu424 *chip)
 	if (!chip->port || !chip->win_b)
 		return 0;
 
-	if (!(ioread32(chip->port + MOTU424_PORT_STATUS) &
+	if (!(ioread32(chip->port + MOTU424_PORT_HSR) &
 	      MOTU424_PORT_IRQ_PENDING))
 		return 0;	/* not ours (shared line) */
 
