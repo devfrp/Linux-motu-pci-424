@@ -35,7 +35,8 @@
  *     construction.
  *   - Refuses to run if a kernel driver is bound, if PCIBOOT/EEREAD do not
  *     read as expected, or if the firmware files do not match their sha256.
- *   - Reads are unrestricted.
+ *   - Window-B reads are confined to DSP RAM 0..0x3ffff (the rest of page 0
+ *     is reserved on the C6412); port and GPIO reads are unrestricted.
  *
  * Build: make tools   (no dependencies beyond libc)
  * Run:   sudo ./tools/motu424-bringup                 # dry run
@@ -118,6 +119,7 @@ static void SHA256(const uint8_t *msg, size_t len, unsigned char out[32])
 #define WA_GPEN   0x300000u     /* card 0x01b00000 */
 #define WA_GPDIR  0x300004u
 #define WA_GPVAL  0x300008u
+#define WA_GP_MASK 0xe0u        /* GP5 DATA0, GP6 nCONFIG, GP7 DCLK */
 #define RAM_LEN   0x40000u      /* [table+0x1c]: C6412 internal L2 RAM */
 #define MAILBOX   0x3fffcu      /* [table+0x30] & 0x3fffff, with DSPP = 0 */
 
@@ -167,6 +169,10 @@ static void wina_write(uint32_t off, uint32_t val)
 {
 	if (off != WA_GPEN && off != WA_GPDIR && off != WA_GPVAL)
 		die("REFUSED window-A write 0x%06x (only GPIO 0x300000/4/8 allowed)", off);
+	/* only GP5..GP7 (DATA0, nCONFIG, DCLK) may be enabled or driven */
+	if ((off == WA_GPVAL && (val & ~WA_GP_MASK)) ||
+	    (off != WA_GPVAL && val != 0xe0 && val != 0xc0))
+		die("REFUSED window-A write 0x%06x <- 0x%x (value not on allow-list)", off, val);
 	n_writes++;
 	if (dry) return;
 	win_a[off / 4] = val;
@@ -182,7 +188,19 @@ static void winb_write(uint32_t off, uint32_t val)
 }
 
 static uint32_t wina_read(uint32_t off) { return win_a[off / 4]; }
-static uint32_t winb_read(uint32_t off) { return win_b[off / 4]; }
+static uint32_t winb_read(uint32_t off)
+{
+	/* 0x40000..0x3fffff is reserved on the C6412: never read it over PCI */
+	if (off >= RAM_LEN || (off & 3))
+		die("REFUSED window-B read 0x%06x (only DSP RAM 0..0x3ffff)", off);
+	return win_b[off / 4];
+}
+
+/* [off, off+len) lies inside DSP internal RAM and is dword-aligned */
+static bool in_ram(uint32_t off, uint32_t len)
+{
+	return !(off & 3) && off < RAM_LEN && len <= RAM_LEN - off;
+}
 
 /* ---------- helpers ---------- */
 
@@ -199,8 +217,9 @@ static void hexdump_b(uint32_t off, unsigned len)
 static uint8_t *load_fw(const char *path, size_t want, const char *sha_hex)
 {
 	FILE *f = fopen(path, "rb");
-	if (!f) die("cannot open %s (run: python3 tools/re/extract-firmware.py)", path);
+	if (!f) die("cannot open %s (run from the repository root, after: python3 tools/re/extract-firmware.py)", path);
 	uint8_t *buf = malloc(want + 4);
+	if (!buf) die("out of memory");
 	size_t n = fread(buf, 1, want + 1, f);
 	fclose(f);
 	if (n != want) die("%s: expected %zu bytes, got %zu", path, want, n);
@@ -223,11 +242,20 @@ static bool confirm(const char *what)
 	return !strcmp(line, "yes\n");
 }
 
+static double now_s(void)
+{
+	static struct timespec t0;
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	if (!t0.tv_sec && !t0.tv_nsec) t0 = t;
+	return (t.tv_sec - t0.tv_sec) + (t.tv_nsec - t0.tv_nsec) / 1e9;
+}
+
 static void show_ports(const char *tag)
 {
 	uint32_t hsr = port_read(PORT_HSR), hdcr = port_read(PORT_HDCR), dspp = port_read(PORT_DSPP);
-	printf("  [%s] HSR=0x%02x (EEREAD=%u CFGERR=%u INTAM=%u INTAVAL=%u) HDCR=0x%02x (PCIBOOT=%u) DSPP=0x%x\n",
-	       tag, hsr, !!(hsr & HSR_EEREAD), !!(hsr & HSR_CFGERR), !!(hsr & HSR_INTAM),
+	printf("  [%8.3f s %s] HSR=0x%02x (EEREAD=%u CFGERR=%u INTAM=%u INTAVAL=%u) HDCR=0x%02x (PCIBOOT=%u) DSPP=0x%x\n",
+	       now_s(), tag, hsr, !!(hsr & HSR_EEREAD), !!(hsr & HSR_CFGERR), !!(hsr & HSR_INTAM),
 	       !!(hsr & HSR_INTAVAL), hdcr, !!(hdcr & HDCR_PCIBOOT), dspp);
 }
 
@@ -245,7 +273,7 @@ static void phase2_fpga(const uint8_t *img)
 {
 	printf("\nP2  FPGA image through GPIO: %u bytes x 24 writes + start/finish = %u window-A writes\n",
 	       FW_FPGA_LEN, FW_FPGA_LEN * 24 + 4 + 2001);
-	printf("    GPEN<-0xe0 GPDIR<-0xe0 GPVAL<-0 (1us) GPVAL<-0x40; per bit: v=0x40|(b?0x20:0): v, v|0x80, v;\n"
+	printf("    GPEN<-0xe0 GPDIR<-0xe0 GPVAL<-0 (100us) GPVAL<-0x40 (5ms); per bit: v=0x40|(b?0x20:0): v, v|0x80, v;\n"
 	       "    then 1000 x (0xc0,0x40); GPDIR<-0xc0\n");
 	if (!dry) printf("  [before] GPEN=0x%x GPDIR=0x%x GPVAL=0x%x\n",
 			 wina_read(WA_GPEN), wina_read(WA_GPDIR), wina_read(WA_GPVAL));
@@ -253,8 +281,9 @@ static void phase2_fpga(const uint8_t *img)
 	wina_write(WA_GPEN, 0xe0);
 	wina_write(WA_GPDIR, 0xe0);
 	wina_write(WA_GPVAL, 0x00);
-	if (!dry) udelay(1);
+	if (!dry) udelay(100);		/* nCONFIG low; Altera minimum is a few us */
 	wina_write(WA_GPVAL, 0x40);
+	if (!dry) udelay(5000);		/* nCONFIG high -> nSTATUS release before the first DCLK */
 	for (unsigned i = 0; i < FW_FPGA_LEN; i++) {
 		uint8_t b = img[i];
 		for (unsigned bit = 0; bit < 8; bit++) {
@@ -269,6 +298,7 @@ static void phase2_fpga(const uint8_t *img)
 		wina_write(WA_GPVAL, 0x40);
 	}
 	wina_write(WA_GPDIR, 0xc0);
+	if (!dry) show_ports("after FPGA");
 	if (!dry) printf("  [after]  GPEN=0x%x GPDIR=0x%x GPVAL=0x%x (GP5 now an input; its level is bit 5)\n",
 			 wina_read(WA_GPEN), wina_read(WA_GPDIR), wina_read(WA_GPVAL));
 }
@@ -303,6 +333,7 @@ static void phase3_program(const uint8_t *prog)
 		exit(3);
 	}
 	printf("  window B now decodes addresses: writes stick. Head:\n"); hexdump_b(0, 32);
+	show_ports("after program load");
 }
 
 static uint32_t phase4_release(void)
@@ -313,6 +344,9 @@ static uint32_t phase4_release(void)
 	if (!confirm(unmask ? "2 port writes + 1 window-B write" : "1 port write + 1 window-B write")) exit(2);
 	if (unmask) port_write(PORT_HSR, 0);
 	winb_write(MAILBOX, 0);
+	/* read back: flushes the posted write through the bridge before DSPINT */
+	if (!dry && winb_read(MAILBOX) != 0)
+		die("mailbox did not clear (0x%08x); not releasing the CPU", winb_read(MAILBOX));
 	port_write(PORT_HDCR, HDCR_DSPINT);
 	if (dry) return 0;
 	uint32_t v = 0;
@@ -340,8 +374,8 @@ static void phase5_inspect(uint32_t ab)
 {
 	printf("\nP5  read-only inspection of the published block\n");
 	if (dry) { printf("  [dry run] would read audio_base+0/4/8/0x14/0x18 and dump 0x140 bytes\n"); return; }
-	if ((ab & 0xffc00000u) != 0 || (ab & 3)) {
-		printf("  audio_base 0x%08x is outside page 0 (or unaligned); not reading it blind (DSPP would have to change).\n", ab);
+	if (!in_ram(ab, 0x140)) {
+		printf("  audio_base 0x%08x (+0x140) is outside DSP RAM 0..0x3ffff (or unaligned); not reading it blind.\n", ab);
 		return;
 	}
 	printf("  mix_base = 0x%08x   (+0)\n", winb_read(ab + 0));
@@ -351,7 +385,8 @@ static void phase5_inspect(uint32_t ab)
 	printf("  +0x18    = 0x%08x\n", winb_read(ab + 0x18));
 	printf("  block dump:\n"); hexdump_b(ab, 0x140);
 	uint32_t mb = winb_read(ab);
-	if ((mb & 0xffc00000u) == 0 && !(mb & 3)) { printf("  mix block (45 dwords):\n"); hexdump_b(mb, 0xb4); }
+	if (in_ram(mb, 0xb4)) { printf("  mix block (45 dwords):\n"); hexdump_b(mb, 0xb4); }
+	else printf("  mix_base 0x%08x (+0xb4) is outside DSP RAM (or unaligned); not dumped.\n", mb);
 	printf("  mailbox again: 0x%08x; RAM head:\n", winb_read(MAILBOX)); hexdump_b(0, 32);
 }
 
