@@ -37,6 +37,8 @@ Installs on any distro (deps + DKMS module + tools). Details and options under
 | `kernel/motu424_hw.c` | **Hardware abstraction — the only file with real register semantics** |
 | `kernel/motu424_pcm.c` | ALSA PCM callbacks (playback + capture) |
 | `tools/motu424-probe.c` | Userspace BAR enumerator/dumper (windowed model) for reverse engineering |
+| `tools/motu424-portregs.py` | Read-only decode of the three I/O-port registers (HSR/HDCR/DSPP, TI SPRU581C) |
+| `tools/motu424-bringup.c` | **Bring-up replay** (dry-run by default): FPGA load via DSP GPIO, DSP program load, DSPINT, mailbox poll |
 | `tools/motu424-ctl.c` | **CueMix-style management CLI** (clock/format + monitor mixer) over alsa-lib |
 | `tools/motu424-gui` | **GTK4 mixing console** in the CueMix FX style (a front-end over `motu424-ctl`) |
 | `tools/re/` | Static-RE helpers (`vtable-scan.py`, capstone `xref.py`, `extract-firmware.py`) |
