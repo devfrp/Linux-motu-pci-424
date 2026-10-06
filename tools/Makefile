@@ -6,7 +6,7 @@ CFLAGS  ?= -O2 -Wall -Wextra
 # without the ALSA dev package still builds the probe tool.
 ALSA_OK := $(shell pkg-config --exists alsa && echo yes)
 
-TOOLS := motu424-probe
+TOOLS := motu424-probe motu424-bringup
 ifeq ($(ALSA_OK),yes)
 TOOLS += motu424-ctl
 endif
@@ -20,8 +20,11 @@ endif
 motu424-probe: motu424-probe.c
 	$(CC) $(CFLAGS) -o $@ $<
 
+motu424-bringup: motu424-bringup.c
+	$(CC) $(CFLAGS) -o $@ $<
+
 motu424-ctl: motu424-ctl.c
 	$(CC) $(CFLAGS) -o $@ $< $(shell pkg-config --cflags --libs alsa)
 
 clean:
-	rm -f motu424-probe motu424-ctl
+	rm -f motu424-probe motu424-ctl motu424-bringup
