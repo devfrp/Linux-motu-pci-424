@@ -1,72 +1,175 @@
-# FPGA upload (Phase 2)
+# FPGA and DSP firmware upload (Phase 2)
 
-Whether the card needs an Altera FPGA bitstream (`altera424b.rbf`) pushed from
-the host was the central question of this phase. Static RE of `MOTUAW.sys`
-settled it for the classic card (**verdict below: no host upload**). This note
-records what that RE did and did **not** establish. VAs use image base `0x10000`.
+Whether the classic card needs firmware pushed from the host was the central
+question of this phase. The answer, now **confirmed on a real PCI-424
+(`137a:0004`) on 2026-10-07** (issue #2): **yes, two images, at every device
+start.** The vendor driver carries both images inside its own `.data` section
+and the host uploads them before the card does anything useful.
 
-## Confirmed facts
+| Image | Goes to | How |
+|---|---|---|
+| 37,177-byte serial container (AppleSingle wrapper around an Altera-style `.rbf`) | the FPGA | bit-banged through the DSP's GPIO pins |
+| 28,272-byte TMS320C64x program | DSP internal RAM, address 0 | written through window B |
 
-- The filename strings are present in `MOTUAW.sys`:
-  - `A/Repositories/Drivers/MOTUPCIAudioDriver/Resources/altera424b.rbf`
-    at VA `0x3fe43`
-  - `altera424b.rbf` at VA `0x3fe94`
-- The bitstream is **not embedded** in `MOTUAW.sys` and **not read from disk by
-  it**: there is no `ZwCreateFile`/`ZwReadFile`/`ZwOpenFile` in the driver's
-  import table. The path string has **no code xref** (no `push 0x3fe94` etc.),
-  consistent with it being a build-time resource path, not a runtime open.
-- The card has an I/O-port bridge (dev-ext `+0x80`) whose bits look like a
-  config/status interface: read `+0x0` bit 1 = ready/pending; write `+0x4`←1 =
-  strobe; write `+0x8` = value (see `register-map.md`).
+The earlier verdict in this file ("the classic card self-configures from
+flash, no host upload") was wrong. The section "What the earlier analysis got
+wrong" explains why each inference failed, so the same mistakes are not
+repeated. VAs below are for the **32-bit** `MOTUAW.sys` (image base `0x10000`);
+the 64-bit build carries identical image bytes at different offsets.
 
-## What this means for how the bitstream actually reaches the card
+## Hardware model (recap)
 
-Because the audio `.sys` neither embeds nor opens the `.rbf`, the byte source
-must come from **outside** it. The most likely vendor paths (unconfirmed):
+The card's PCI interface is the PCI port of a **TI TMS320C6412** DSP in PCI
+boot mode (board identification, issue #2, 2026-09-20; TI SPRS219J/SPRU581C):
 
-1. A user-mode installer/service reads `altera424b.rbf` and pushes it to the
-   driver via an `IRP_MJ_DEVICE_CONTROL` (IOCTL); the driver then streams the
-   bytes to the card — plausibly via `WRITE_PORT_ULONG` strobes (`+0x4`/`+0x8`)
-   in passive-serial style, or a bulk `WRITE_REGISTER_BUFFER_ULONG` into a
-   config window. The IOCTL dispatch was not traced to a byte-feeding loop with
-   objdump alone.
-2. `MotuBus.sys` or a coinstaller performs the load before `MOTUAW.sys` attaches.
+- I/O BAR (16 bytes): `+0` HSR, `+4` HDCR, `+8` DSPP.
+- Window A (BAR1, 8 MB): DSP register space at `0x01800000`. The GPIO block
+  is at window-A offsets `0x300000/4/8` = GPEN / GPDIR / GPVAL (card address
+  `0x01b00000`).
+- Window B (BAR0, 4 MB): a page of DSP memory selected by DSPP; with
+  DSPP = 0 it is the 256 KB internal RAM, `0..0x3ffff`.
 
-No byte-feeding loop tied to the port strobes was positively identified, so the
-**exact handshake (nCONFIG/nSTATUS/CONF_DONE, bit order, clocking) is OPEN.**
+The FPGA (144-pin TQFP, part number under the MOTU sticker) has **no
+configuration PROM** on the board, which is why it must be loaded by the host
+after every power-up.
 
-## Plan for the Linux driver (Phase 4.2)
+## The embedded images (CONFIRMED, static)
 
-- Ship/load the bitstream via `request_firmware("altera424b.rbf")` +
-  `MODULE_FIRMWARE("altera424b.rbf")`; fail loudly in `dmesg` if absent. The
-  user supplies the file (extracted from the vendor installer) — do **not**
-  redistribute it; flag the licensing question.
-- Altera passive-serial is **LSB-first** per config byte; if the bridge turns
-  out to be passive-serial, feed `.rbf` bytes LSB-first while pulsing the
-  `+0x4`/`+0x8` strobes and polling `+0x0` bit 1 for CONF_DONE. Treat this as a
-  hypothesis to verify on a card (Phase 6.2 register diffing).
-- `HDExpress_FullImageRun.bin` (PCIe `DEV_0005`) is a different, larger image
-  (likely FPGA + DSP) and needs its own upload path.
+All images live in `.data` of `MOTUAW.sys`; both driver builds carry the same
+bytes. The `DEV_0004` path (shared with `DEV_0005`) uploads the first two; the
+`DEV_0003` (PCI-324) path uploads the other three.
+
+| Image | x86 VA | Length | sha256 (first 16) |
+|---|---|---|---|
+| PCI-424 serial container (FPGA) | `0x36dd0` | `0x9139` = 37,177 | `34e62cf5a75f53a4` |
+| PCI-424 program → RAM 0 | `0x3ff10` | `0x6e70` = 28,272 | `3a23bc97e49154e5` |
+| PCI-324 EP1K30 bitstream | `0x46e40` | `0xe74f` = 59,215 | `267b343dfc537d11` |
+| PCI-324 program → RAM 0 | `0x58c10` | `0x9340` = 37,696 | `1eae8bad11249f94` |
+| PCI-324 data → `0x80000000` | `0x55590` | `0x3680` = 13,952 | `02b75d8d65e0a192` |
+
+`tools/re/extract-firmware.py` cuts all of them out of a user-supplied
+`MOTUAW.sys`, verifies the hashes, and writes them to `vendor/firmware/`
+(git-ignored). The image bytes are MOTU's and are **never committed or
+redistributed**.
+
+The 0004 serial image is an **AppleSingle container** (magic `00051600`,
+three entries): data fork at `+0x3e`, 36,617 bytes, which is the Altera-style
+`.rbf` (starts with 16 × `ff` then `6a d6 ff 40 00` ×3, ends in `ff` padding);
+a 466-byte resource fork (`ckid` "Projector Data"); Finder info type `TEXT`,
+creator `CWIE`. This is `altera424b.rbf` as it left the Mac build machine,
+wrapper included. The driver clocks out the **whole container**, header and
+resource fork too; the FPGA presumably ignores the leading non-preamble bytes
+and locks on the `.rbf` sync pattern. The data fork is 292,936 bits, which
+matches no uncompressed Altera part size, so it is probably a compressed
+bitstream. The 324's image is 473,720 bits = exactly an **ACEX EP1K30**.
+
+## The upload sequence (vendor `fn 0x2c150`, `DEV_0004` path)
+
+Replayed byte for byte by `tools/motu424-bringup` and run once on hardware;
+each step lists what the card did. `port` = I/O BAR, `A` = window A, `B` =
+window B.
+
+1. **WARMRESET.** `HDCR ← 1`. Hardware: HSR reads `0x14` (PCIBOOT=1,
+   EEREAD=1) before and after.
+2. **FPGA image through GPIO** (`fn 0x29420` → serial helper
+   `0x251e0/0x25170/0x25230`):
+   - start: `GPEN ← 0xe0`, `GPDIR ← 0xe0`, `GPVAL ← 0x00`, then `GPVAL ← 0x40`.
+   - per byte, **LSB first**, per bit: `v = 0x40 | (bit ? 0x20 : 0)`;
+     `GPVAL ← v`, `GPVAL ← v | 0x80`, `GPVAL ← v` (one DCLK pulse with data
+     stable).
+   - finish: 1000 × (`GPVAL ← 0xc0`, `GPVAL ← 0x40`) trailing clocks, then
+     `GPDIR ← 0xc0`.
+   - Pin map: **GP5 = DATA0, GP6 = nCONFIG, GP7 = DCLK.** No nSTATUS or
+     CONF_DONE read-back on this path (the vendor `status` method is a no-op).
+   - Hardware: 894k MMIO writes, about 8.5 s through a PCIe-to-PCI bridge.
+     GPIO rest state before any write `GPEN=0xf9 GPDIR=0x00 GPVAL=0xf8`;
+     after the load `0xe0/0xc0/0x40` (GP5 back to an input, reading low).
+     The vendor stalls 1 µs with nCONFIG low; the tool stretches that to
+     100 µs and waits 5 ms before the first DCLK.
+3. **Program into DSP RAM.** `DSPP ← 0`; zero-fill `B[0..0x3ffff]`; write the
+   28,272-byte program at `B[0]` as `(len>>2)+1` = 7,069 dwords (the vendor's
+   bounce buffer is zeroed, so the extra dword is 0). Hardware: read-back
+   0/7069 dwords differ and the cleared tail is all zero. **Window B only
+   decodes after step 2**; before the FPGA is configured every window-B offset
+   returns one repeated 1 KB pattern.
+4. **Release the DSP and wait for the mailbox.** `HSR ← 0` (unmask PINTA#),
+   `B[0x3fffc] ← 0` (the last dword of internal RAM is the mailbox),
+   `HDCR ← 2` (DSPINT), then poll `B[0x3fffc]` with 5 µs stalls until it is
+   non-zero. The value is **`audio_base`**. On timeout the vendor writes
+   `HDCR ← 1` and fails device start. Hardware: `audio_base = 0x6fac` on the
+   first poll after DSPINT; HSR stayed `0x14`, so starting the DSP raises no
+   interrupt and the unmask is not needed just to get the mailbox.
+5. **Read the published block.** `mix_base = B[audio_base+0]`, then `+4`,
+   `+8`, `+0x14`, `+0x18` into the device extension (`register-map.md`,
+   `vendor-driver-map.md`). Hardware: `0x8290, 0x87a0, 0x7988, 0x8348,
+   0x7240`, with `+0x14 = mix_base + 0xb8` (right after the 45-dword mixer
+   block). Decoding the rest of this block is the current RE target.
+
+The vendor's later steps (zeroing the mixer block, rate/buffer registers,
+`audio_base+0x50 ← 1`, `A+0x8 ← 0x10914221`) are stream initialisation, not
+upload, and were deliberately not replayed.
+
+For the **PCI-324** (`DEV_0003`, vtable `0x30ca8`) the same job uses the
+"bank" registers instead of GPIO: `0xc0024` carries DATA0 (bit 5), nCONFIG
+(bit 3) and a CONF_DONE read-back (bit 6); `0x100024` bit 0 is DCLK. Then the
+37,696-byte program goes to RAM 0 and the 13,952-byte data image to
+`0x80000000`. Static only; nobody has run it.
+
+## What the earlier analysis got wrong (superseded)
+
+The previous verdict rested on three negatives, all of which were real
+observations with the wrong explanation:
+
+1. **"No file I/O, so the `.rbf` is not read at runtime."** True, and
+   irrelevant: the images are compiled into `.data`. The `.rbf` path string
+   is the AppleSingle container's provenance, not a build artefact.
+2. **"No port-strobe byte-feeding loop, so no passive-serial load."** The
+   I/O ports are HSR/HDCR/DSPP and never carry data. The serial load is
+   MMIO bit-banging on window A, which an `objdump` grep for `WRITE_PORT`
+   could not find.
+3. **"No `WRITE_REGISTER_BUFFER_ULONG` large enough for a bitstream."** The
+   FPGA image is not block-written at all (it is clocked out a bit at a
+   time), and the 28 KB program write at `fn 0x29500` was misread as a PCM
+   push. `fn 0x29420` is the FPGA loader, not the audio path.
+
+The IOCTL analysis below is still correct as far as it goes: there is indeed
+no firmware IOCTL, because the driver needs none.
+
+## Plan for the Linux driver (Phase 4.2, reopened)
+
+- Load both images with `request_firmware()` and declare them with
+  `MODULE_FIRMWARE()`; fail device start loudly in `dmesg` if either is
+  missing or its hash is wrong. Suggested names match the extractor's:
+  `pci424-serial-container.bin` and `pci424-program.bin`.
+- The user extracts the files from their own installer with
+  `tools/re/extract-firmware.py`. The images are MOTU's; they are **not**
+  shipped with the driver and not committed to this repository.
+- Replay steps 1–5 in `motu424_hw_init()`, then take `audio_base`,
+  `mix_base` and the rest from the published block; the `audio_base=` /
+  `mix_base=` module parameters become unnecessary.
+- Re-run the upload on resume from suspend: the FPGA has no PROM and loses
+  its configuration when the card loses power.
+- `DEV_0005` (PCIe-424) uses the same code path as `DEV_0004` in the vendor
+  driver, which also carries the ID string of a TI XIO2000 PCIe-to-PCI
+  bridge, so a PCIe-424 is most likely a PCI-424 behind that bridge. Static
+  inference only, not yet checked on a `0005` card.
 
 ## Phase 2.3 — installer contents (CONFIRMED, no card)
 
 Extracted `MOTU Audio Installer 4.0.6.6814/SetupAudio.exe.exe` (39 MB Wix/MSI
-bundle). It wraps two MSI packages as PE resources `.rsrc/RCDATA/MSI00` (17.6 MB,
-64-bit) and `MSI01` (21.5 MB, 32-bit). Firmware lives in embedded LZX cabs:
+bundle). It wraps two MSI packages as PE resources `.rsrc/RCDATA/MSI00`
+(32-bit, Template `Intel;1033`) and `MSI01` (64-bit). Firmware in the
+embedded LZX cabs:
 
 - `PCIFirmware.cab` → **`HDExpress_FullImageRun.bin` only** (1218120 bytes,
   identical sha256 to `vendor/HDExpress_FullImageRun.bin`).
 - `Virtex.cab`, `Media1.cab`, `PlugIns*.cab`, `VideoRes.cab`, `Redist.cab`
   contain **no** `.rbf`/bitstream/`.bin` firmware.
 
-**Negative result — `altera424b.rbf` is NOT in this installer** (both MSIs, all
-cabs, and the raw tree grep for "altera" are empty). So the classic PCI-324/424
-Altera bitstream must be sourced elsewhere (an older PCI-only driver release), or
-— more likely — the classic card configures its FPGA from **onboard EEPROM/flash
-at power-on** and the `.rbf` path in `MOTUAW.sys` is a legacy/build artefact
-(consistent with the driver having no runtime file-open for it). Only the PCIe
-**HD Express** needs a host-pushed image. *Treat "classic card needs no runtime
-FPGA upload" as the leading hypothesis to confirm on a card (Phase 6.2).*
+`altera424b.rbf` is absent from the installer **because it is inside
+`MOTUAW.sys`** (see the image table above). The earlier reading of this
+negative result ("so the classic card must self-configure") was the wrong
+inference.
 
 ## HD Express image format — `HDExpress_FullImageRun.bin` (CONFIRMED, no card)
 
@@ -94,11 +197,11 @@ descriptor at `dataOff+size`:
 | 3 | `0x6` | `0x36a7c` | `0xf29a0` | **Xilinx Virtex FPGA bitstream** — sync word `0xAA995566` at file `0x36888`, preceded by the `0xFFFF…AA99` preamble; raw config data, no `.bit` ASCII header |
 | 4 | `0x7` | `0x129438` | `0x210` | trailer config record (mirrors #2) |
 
-So the PCIe HD Express (`DEV_0005`) is an **ARM SoC + Xilinx Virtex FPGA** — a
-different architecture from the classic PCI-324/424's Altera passive-serial FPGA.
-This matches the installer shipping a `Virtex.cab` (Xilinx) rather than an Altera
-bitstream. The ARM firmware presumably drives the FPGA load internally, so on the
-PCIe card the host just DMAs this whole blob to the ARM and lets it self-boot.
+So the HD Express is an **ARM SoC + Xilinx Virtex FPGA**, a different
+architecture from the PCI-424's C6412 + Altera-style FPGA. Given that
+`MOTUAW.sys` handles `DEV_0005` on the `DEV_0004` path with the same two
+embedded images, this blob most likely belongs to MOTU's HD Express **video**
+product rather than to any AudioWire card, and is out of scope here.
 
 ## IOCTL interface — fully mapped (CONFIRMED, no card)
 
@@ -123,57 +226,34 @@ So the device exposes exactly **four IOCTLs** (function codes `0x801..0x804`):
 | `0x803` | `0x241cb` | control op — virtual method on the stream object. |
 | `0x804` | `0x24216` | install a completion **callback** (`0x238c0`) into the caller's struct. |
 
-**There is no dedicated "load firmware" IOCTL.** MOTUAW.sys offers only this small
-generic streaming interface: submit buffers (0x801), start/stop (0x802), control
-(0x803), register a callback (0x804). Combined with the earlier negatives (no file
-I/O; only 3 port accesses — init/IRQ, *not* a passive-serial feed loop), the
-picture is now consistent and firm:
+There is no "load firmware" IOCTL, and none is needed: the images are in the
+driver and the upload happens inside `IRP_MN_START_DEVICE`, before any IOCTL
+can arrive.
 
-> The **FPGA bitstream is pushed from user mode as ordinary submitted data**
-> through the `0x801` buffer channel (queued into the vector, then written to a
-> card window by the stream worker) — or via a user-mapped aperture. The driver
-> does not "know" it is firmware; it writes bytes to a card address. This is why
-> there is neither a file open nor a bit-banging port loop anywhere in the driver.
-
-## Where the bulk card-writes actually go (CONFIRMED) — and the firmware verdict
+## Where the bulk card-writes actually go (CONFIRMED)
 
 All six `WRITE_REGISTER_BUFFER_ULONG` destinations were pinned by reading the
 address computation just before each call:
 
 | Site(s) | Destination card address | Payload |
 |---|---|---|
-| `0x29560` (`fn 0x29420`) | `base_B + (cardAddr & 0x3fffff)`, dynamic head | **audio PCM** into the window-B aperture |
+| `0x29560` (`fn 0x29500`, called from bring-up step 3) | `B + 0`, DSPP = 0 | the **28,272-byte DSP program** (7,069 dwords) |
 | `0x2a22d` / `0x2a291` (`fn 0x2a190`) | `[dev+0x98] + idx*4 + 0x24`, ping-pong `[+0x90]/[+0x94]` | per-**channel/bank** block |
-| `0x2c540` / `0x29ad5` / `0x29a04` | **`[dev+0x9c]`**, staged from the inline buffer `[dev+0x110]` (~45 dwords), flushed by a dirty range `[dev+0x1c4]..[dev+0x1c8]` | **CueMix mixer coefficients** |
+| `0x2c540` / `0x29ad5` / `0x29a04` | **`[dev+0x9c]`** = `mix_base`, staged from the inline buffer `[dev+0x110]` (45 dwords), flushed by a dirty range `[dev+0x1c4]..[dev+0x1c8]` | **CueMix mixer coefficients** |
 
-`[dev+0x9c]` is, like `+0x98` (audio base) and `+0x88` (ack), a **card-reported
-address**: at init (`fn 0x2c360`) the driver `READ_REGISTER`s a location near the
-audio base and stores the returned card address in `+0x9c` (`0x2c427`). None of
-these writes moves anything close to a 340 KB bitstream — the largest is ~45
-dwords, and its incremental dirty-range flush is the fingerprint of a **mixer**,
-not a one-shot FPGA config.
+The first row was previously labelled "audio PCM into the window-B aperture";
+that was the misreading behind the old verdict.
 
-**Verdict — the classic PCI-324/424 is NOT host-FPGA-uploaded.** Every strand of
-evidence now agrees: no file I/O, no firmware IOCTL (only the four streaming
-IOCTLs 0x801-0x804), no passive-serial port loop, no large-buffer config write,
-and the `.rbf` string has no code xref. The parallel-PCI card's Altera FPGA
-therefore **self-configures from onboard flash/EEPROM at power-on**; the `.rbf`
-path in `MOTUAW.sys` is a build/legacy artefact. Only the PCIe **HD Express**
-(separate ARM+Xilinx image, `HDExpress_FullImageRun.bin`) takes a host upload.
+## To close this phase
 
-**Consequence for the Linux driver:** Phase 4.2 (`request_firmware("altera424b.rbf")`)
-is very likely **unnecessary for the classic card** — plan for no bitstream upload,
-and verify on hardware that the card enumerates and streams with no firmware push.
-Keep a `request_firmware()` path only for the PCIe HD Express variant.
-
-## To close this phase (needs more than objdump)
-
-- For the **classic PCI-324/424**: obtain `altera424b.rbf` from an older PCI-era
-  driver release (this 4.0.6 installer is PCIe-centric), OR confirm on a card
-  that the classic FPGA self-configures from flash (no host upload needed).
-- Trace the IOCTL dispatch table in `MOTUAW.sys` (or use a real disassembler
-  with xrefs — Ghidra/rizin, Phase 0.1) to find the routine that consumes the
-  firmware buffer and drives the port strobes.
-- For the **PCIe** path: decode how `HDExpress_FullImageRun.bin` is pushed
-  (whole-blob to the ARM boot loader vs. section-by-section); the container
-  format above is now known, the transport is not.
+- **Classic PCI-424 (`DEV_0004`): closed.** Images located, extracted and
+  hash-verified; sequence recovered statically and reproduced on hardware
+  with the card unharmed (Windows regression check passed afterwards).
+- **PCI-324 (`DEV_0003`)**: sequence recovered statically (bank registers,
+  EP1K30 image, two RAM images); needs a card.
+- **PCIe-424 (`DEV_0005`)**: expected to be the `0004` sequence behind a
+  XIO2000 bridge; needs a card (one exists in issue #1).
+- Driver side: `request_firmware()` + the sequence in `motu424_hw_init()`
+  (Phase 4.2).
+- Curiosity, not a blocker: the format/compression of the 0004 `.rbf` data
+  fork, which would identify the FPGA part. The sticker has not been lifted.
