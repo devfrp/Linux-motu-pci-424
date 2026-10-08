@@ -246,6 +246,15 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
   at runtime via virtual dispatch — the one value still missing. Get it either by
   dumping `[A+0x30]` from the live vendor driver on a card, or by tracing its
   writer with deeper `rz-ghidra` type recovery over the slot-`0x44` call sites.
+  **Update 2026-10-08 (issue #2, first real-hardware run of
+  `tools/motu424-bringup` on a `137a:0004` card):** `[A+0x30]` is the last
+  dword of the C6412's internal RAM, the mailbox `0x3fffc`. After the host
+  load (FPGA through GPIO, program into RAM at 0) and DSPINT, the DSP
+  published `audio_base = 0x6fac` on the first poll; `audio_base+0` is
+  `mix_base` (`0x8290`). The handshake is therefore reproducible and the
+  driver can auto-discover `audio_base`/`mix_base`, but only after doing the
+  full host load itself (the 6.4 "no `MODULE_FIRMWARE`" verdict is wrong for
+  the classic card).
 - [ ] **6.2 Register diffing** with `tools/motu424-probe` (driver unbound): dump
   idle vs. streaming to confirm the `dmaPoint`/status offsets from phase 3.
 - [ ] **6.3 Soak & edge cases**: all rates, both directions simultaneously,

@@ -115,8 +115,8 @@ pinned by at least one concrete access is listed:
 | `+0x8c` | u32 | 0/1 double-buffer bank index: clock-relock `0x2b7f0` toggles `[+0x8c] = 1 - [+0x8c]` then reads `audio_base+0xc + idx*4` (selects `+0xc`/`+0x10`). Zero-init by ctor. (Only `0x2b7f0` inspected — a mirror-write elsewhere isn't ruled out.) | ctor `0x2b6da`, toggle `0x2b7f0` |
 | `+0x90` | u32 | zero-init; written through `audio_base+0x90` mirror | ctor `0x2b6e0` |
 | `+0x94` | u32 | zero-init | ctor `0x2b6e6` |
-| `+0x98` | u32 | audio register block base (runtime card address, read from `[A+0x30]`) | init `0x2c395`; must be non-zero or init fails |
-| `+0x9c` | u32 | CueMix mixer coefficient base (runtime card address; read from `audio_base+0x4`) | init `0x2c427` |
+| `+0x98` | u32 | audio register block base (runtime card address, read from `[A+0x30]` = the DSP-RAM mailbox `0x3fffc` on the 0004 card, CONFIRMED on hardware, issue #2) | init `0x2c395`; must be non-zero or init fails |
+| `+0x9c` | u32 | CueMix mixer coefficient base (runtime card address; read from `audio_base+0`; CONFIRMED on hardware, issue #2) | init `0x2c427` |
 | `+0xa0` | u32 | audio_base+0x4 mirror (read-back at init) | init `0x2c45d` |
 | `+0xa4` | u32 | audio_base+0x8 mirror (read-back at init) | init `0x2c493` |
 | `+0xa8` | u32 | audio_base+0x14 mirror (read-back at init) | init `0x2c4c9` |

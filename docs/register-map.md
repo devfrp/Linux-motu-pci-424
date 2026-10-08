@@ -74,8 +74,9 @@ base and go through the same window dispatch:
 
 | Reg (base+off) | Dir | Method VA | Meaning (recovered) |
 |---|---|---|---|
-| `base+0x4` | R | init `0x2c425` | read at init; mirror gets stored in devext `+0x9c` (mix base) |
-| `base+0x8` | R | init `0x2c45b` | read at init; mirror gets stored in devext `+0xa0` (purpose UNKNOWN) |
+| `base+0x0` | R | init `0x2c425` | read at init; mirror gets stored in devext `+0x9c` (**mix base** — CONFIRMED on hardware, issue #2: `audio_base+0` = `0x8290`, a 45-dword block; `+0x14` = mix base `+0xb8`) |
+| `base+0x4` | R | init `0x2c45b` | read at init; mirror gets stored in devext `+0xa0` (purpose UNKNOWN) |
+| `base+0x8` | R | init `0x2c491` | read at init; mirror gets stored in devext `+0xa4` (purpose UNKNOWN) |
 | `base+0x14` | R | init `0x2c4c7` | read at init; mirror gets stored in devext `+0xa8` (purpose UNKNOWN) |
 | `base+0x18` | R | init `0x2c4fd` | read at init; mirror gets stored in devext `+0xac` (purpose UNKNOWN) |
 | `base+0x34` | W | init `0x2c615` | initial register value from `[A+0x34]` (written via `audio_base+0x8`'s sibling during bring-up) — purpose OPEN |
