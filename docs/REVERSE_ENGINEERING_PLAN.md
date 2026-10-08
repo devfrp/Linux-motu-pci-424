@@ -27,11 +27,14 @@ Recorded in `kernel/motu424.h` and the README; see also the RE memory notes.
   and `WRITE_REGISTER_BUFFER_ULONG`.
 - **Transport — CONFIRMED shape**: PIO into a card aperture (window B) with a HW
   `dmaPoint` + SW `readHead/writeHead/len` ring. **Not** a host bus-master ring.
-- **FPGA — CONFIRMED, two architectures**: classic PCI-324/424 = Altera
-  passive-serial FPGA (`altera424b.rbf`, *not* in the 4.0.6 installer — may
-  self-configure from flash). PCIe HD Express (`DEV_0005`) = ARM SoC + Xilinx
-  Virtex, shipped as `HDExpress_FullImageRun.bin` (container format decoded in
-  `docs/fpga-upload.md`).
+- **Firmware — CONFIRMED on hardware (2026-10-07, issue #2)**: the classic
+  PCI-424 is **host-loaded at every device start**: a 37,177-byte serial FPGA
+  image through the C6412's GPIO, then a 28,272-byte C64x program into DSP
+  RAM at 0. Both images are embedded in `MOTUAW.sys` (extract with
+  `tools/re/extract-firmware.py`; never redistributed). The PCI-324 path has
+  its own images. `HDExpress_FullImageRun.bin` (ARM SoC + Xilinx Virtex) is
+  most likely the HD Express video product's, not an AudioWire card's. See
+  `docs/fpga-upload.md`.
 
 Everything below turns these shapes into exact, implementable semantics.
 
@@ -111,32 +114,27 @@ Everything below turns these shapes into exact, implementable semantics.
 
 The single biggest unknown that gates *any* audio.
 
-- [~] **2.1 Locate the upload routine.** Find the code that references the
-  `altera424b.rbf` string (file off `0x2e877`) and follow it to the byte-feeding
-  loop. Determine transport: passive-serial via the I/O-port strobes, or a
-  bulk `WRITE_REGISTER_BUFFER_ULONG` into a config window.
-  **[LARGELY DONE]** `docs/fpga-upload.md`: `MOTUAW.sys` has no file-I/O and no
-  xref to the `.rbf` string — bytes arrive from user mode via IOCTL, now fully
-  mapped. `DriverEntry@0x63000` sets `MajorFunction[DEVICE_CONTROL]=0x21d40`;
-  dispatcher `0x242b0` computes `func=((code>>2)&0xfff)-0x800` and switches
-  (`0x241b0`, 4 entries) over **four IOCTLs 0x801-0x804**: submit-buffer / start-
-  stop / control / register-callback. **No dedicated firmware opcode** — the
-  bitstream is pushed through the generic `0x801` buffer channel. The port
-  `+0x4`/`+0x8` strobes are IRQ/enable, **not** a passive-serial feed. Remaining:
-  the card address the submitted bytes land at (the vector consumer / stream
-  worker → `WRITE_REGISTER_BUFFER`).
-- [ ] **2.2 Decode the handshake.** nCONFIG assert, poll nSTATUS/CONF_DONE,
-  bit/byte order (Altera passive-serial is LSB-first), post-config init clocks.
-  *Deliverable:* `docs/fpga-upload.md` pseudocode. **[OPEN]** — needs the
-  installer's real `.rbf` + a real disassembler (Ghidra/rizin) or a card.
+- [x] **2.1 Locate the upload routine.** **[DONE, confirmed on hardware]**
+  Bring-up `fn 0x2c150` calls `fn 0x29420` (FPGA image, VA `0x36dd0`, bit-banged
+  through GPIO at window-A `0x300000/4/8`) and `fn 0x29500` (program, VA
+  `0x3ff10`, `WRITE_REGISTER_BUFFER_ULONG` into window B at card address 0).
+  The IOCTL map (`DriverEntry@0x63000`, dispatcher `0x242b0`, four IOCTLs
+  `0x801-0x804`) still stands, but the earlier conclusion that firmware bytes
+  arrive from user mode through it was wrong: the images are in `.data`. See
+  `docs/fpga-upload.md`.
+- [x] **2.2 Decode the handshake.** **[DONE, confirmed on hardware
+  2026-10-07]** GP6 = nCONFIG (low, then high), GP5 = DATA0 LSB-first, GP7 =
+  DCLK pulsed once per bit, 1000 trailing clocks, no CONF_DONE read-back on
+  the `0004` path (the `0003` path reads it on `0xc0024` bit 6). Sequence in
+  `docs/fpga-upload.md`; executable replay in `tools/motu424-bringup`.
 - [x] **2.3 Source the bitstream.** **[DONE for statics]** — see
   `docs/fpga-upload.md`. Extracted `SetupAudio.exe.exe` (Wix/MSI → embedded cabs).
   `altera424b.rbf` is **not present anywhere** in the 4.0.6 installer; the only
   PCI firmware is `HDExpress_FullImageRun.bin` (PCIe `DEV_0005`), now fully
   characterised as a 24-byte-header container = **ARM firmware + Xilinx Virtex
-  bitstream + config records**, sum32 payload checksum verified. Open: obtain
-  `altera424b.rbf` from an older PCI-era release, or confirm the classic card
-  self-configures from flash (leading hypothesis).
+  bitstream + config records**, sum32 payload checksum verified. Resolved:
+  `altera424b.rbf` is embedded in `MOTUAW.sys` as the data fork of an
+  AppleSingle container; `tools/re/extract-firmware.py` cuts it out.
 
 ## Phase 3 — Audio transport, clock & IRQ semantics (no card)
 
@@ -193,10 +191,13 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
   `motu424_rd32/wr32`); `main.c` maps all BARs generically,
   `motu424_assign_windows()` picks A/B/port by BAR type+size. Bulk aperture
   writes use `memcpy_toio` (the vendor's `WRITE_REGISTER_BUFFER_ULONG`).
-- [x] **4.2 Firmware upload.** **[CLOSED - NOT NEEDED]** RE verdict
-  (docs/fpga-upload.md): the classic card self-configures its FPGA from flash;
-  no `request_firmware()`. Only the PCIe HD Express would need an upload path
-  (out of scope until that variant is targeted).
+- [ ] **4.2 Firmware upload.** **[REOPENED — REQUIRED]** The classic card is
+  host-loaded (`docs/fpga-upload.md`, confirmed on hardware 2026-10-07):
+  `request_firmware()` for the two user-extracted images
+  (`pci424-serial-container.bin`, `pci424-program.bin`, never shipped), the
+  five-step upload in `motu424_hw_init()`, then `audio_base`/`mix_base` from
+  the mailbox and the published block instead of module params. Re-upload on
+  resume (the FPGA has no PROM).
 - [x] **4.3 Transport rewrite.** **[DONE, no card]** `dma_addr` assumption
   removed; host buffer is `SNDRV_DMA_TYPE_VMALLOC`, periods are copied into the
   window-B aperture ring with software heads (`motu424_push_period()`), pointer
@@ -260,9 +261,11 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
 - [ ] **6.3 Soak & edge cases**: all rates, both directions simultaneously,
   start/stop churn, unplug/replug of the breakout, module reload.
 - [~] **6.4 Cleanup for upstream** — **[PARTIAL, no card]**: `checkpatch --strict`
-  clean on all four source files; SPDX GPL headers on every file; no
-  `MODULE_FIRMWARE()` (verdict: classic card needs no host firmware); clean-room
-  + provenance statement written (`CLEANROOM.md`); `Documentation/sound/motu424.rst`
+  clean on all four source files; SPDX GPL headers on every file;
+  `MODULE_FIRMWARE()` for the two user-extracted images once 4.2 lands (the
+  earlier "no host firmware" verdict was wrong, see `docs/fpga-upload.md`);
+  clean-room + provenance statement written (`CLEANROOM.md`);
+  `Documentation/sound/motu424.rst`
   written (architecture, bring-up/module-param flow, current status/limitations).
   Remaining (card/upstream): the eventual patch submission itself.
 
@@ -283,11 +286,9 @@ enumeration = descriptor deserialization, not a static table — see above and
   manager, `+0x298` DMA common-buffer wrapper — are identified (`rz-ghidra`).
   The audio bring-up handshake that discovers `audio_base`/`mix_base` is also
   recovered (`fn 0x2c150`, see 6.1). Nothing statically tractable remains.
-  Phase 2.2 (FPGA handshake
-  bit/byte order) is **moot for the classic card**: the RE verdict is that the
-  classic PCI-324/424 self-configures its Altera FPGA from onboard flash and
-  the driver uploads nothing (`fpga-upload.md`); only the PCIe HD Express takes
-  a host image, and that image is already dissected.
+  Phase 2.2 (FPGA handshake) closed the other way: the classic card is
+  **host-loaded at every start**, the full sequence is in `fpga-upload.md`,
+  and it was reproduced on hardware in issue #2.
 - **A card** — blocks: Phase 1.3 (bridge chip identity via readback), 3.5
   empirical confirmation of the channel counts, and all of Phases 5–6 (kcontrol
   registration, real playback/capture, soak testing). Phase 3.2 (`dmaPoint`)
