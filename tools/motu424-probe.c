@@ -194,8 +194,9 @@ static void dump_target(const char *dir, const struct bar bars[PCI_NUM_BARS],
 	volatile uint32_t *p;
 	size_t got;
 
-	p = map_bar(dir, idx, bars[idx].size, page, (len + 0xfff) & ~0xfffUL,
-		    &got);
+	/* map whole pages covering [off, off+len), not just len rounded up */
+	p = map_bar(dir, idx, bars[idx].size, page,
+		    ((off - page) + len + 0xfff) & ~0xfffUL, &got);
 	if (!p)
 		return;
 	/*
