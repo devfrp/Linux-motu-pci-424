@@ -8,16 +8,14 @@
 A from-scratch Linux ALSA driver for the **MOTU PCI-324 / PCI-424** audio card
 and its AudioWire breakout interfaces (2408, 24I/O, 828, HD192, 896HD, …).
 
-> **Status: driver implements the reverse-engineered hardware model; awaiting
-> a real card.** The PCI / IRQ / ALSA machinery is real and complete, and the
-> hardware layer now encodes the model recovered from the vendor Windows driver
-> (windowed card-address space, I/O-port bridge, PIO-aperture transport, real
-> IRQ ack protocol — see [Reverse engineering](#reverse-engineering)). Two
-> things still gate audio: the **card-reported runtime addresses** (audio
-> base / IRQ ack — injectable via `motu424.audio_base=`/`ack_addr=` module
-> parameters once dumped from a card) and the aperture ring base (placeholder,
-> `TODO: verify`). The module loads and registers an ALSA card; streaming is
-> refused until those values are known.
+> **Status: the card boots under Linux; audio has not played yet.** The
+> PCI / IRQ / ALSA machinery is complete. On a real PCI-424 the driver's load
+> sequence (FPGA image through the DSP's GPIO, DSP program, mailbox) has been
+> run with `tools/motu424-bringup`, and the driver now does the same when it binds
+> with `request_firmware()` (see [Firmware](#firmware)). Audio is DSP
+> bus-master DMA from a host ring; the stream path is written but untested,
+> and stays off until the ring's frame size is known (`motu424.frame_bytes=`).
+> Playback only, 48 kHz only, PCI-424 (`137a:0004`) only for now.
 
 ## Quick start
 
@@ -35,13 +33,13 @@ Installs on any distro (deps + DKMS module + tools). Details and options under
 | `kernel/motu424.h` | Shared defs + the **RE'd hardware model** (single source of truth) |
 | `kernel/motu424_main.c` | PCI attach/detach, resource + IRQ management, interrupt handler |
 | `kernel/motu424_hw.c` | **Hardware abstraction — the only file with real register semantics** |
-| `kernel/motu424_pcm.c` | ALSA PCM callbacks (playback + capture) |
+| `kernel/motu424_pcm.c` | ALSA PCM callbacks (playback; capture once the ring layout is known) |
 | `tools/motu424-probe.c` | Userspace BAR enumerator/dumper (windowed model) for reverse engineering |
 | `tools/motu424-portregs.py` | Read-only decode of the three I/O-port registers (HSR/HDCR/DSPP, TI SPRU581C) |
 | `tools/motu424-bringup.c` | **Bring-up replay** (dry-run by default): FPGA load via DSP GPIO, DSP program load, DSPINT, mailbox poll |
 | `tools/motu424-ctl.c` | **CueMix-style management CLI** (clock/format + monitor mixer) over alsa-lib |
 | `tools/motu424-gui` | **GTK4 mixing console** in the CueMix FX style (a front-end over `motu424-ctl`) |
-| `tools/re/` | Static-RE helpers (`vtable-scan.py`, capstone `xref.py`, `extract-firmware.py`) |
+| `tools/re/` | Static-RE helpers (`vtable-scan.py`, capstone `xref.py`, `extract-firmware.py`, C64x `dis-c64x.py`) |
 | `get.sh` | **`curl \| sh` bootstrap** — fetch sources + run the installer |
 | `install.sh` | **Cross-distro installer** (deps + DKMS + tools) |
 | `ARCHITECTURE.md` | Design notes: the 3-layer split + hardware-confinement rule |
@@ -184,75 +182,47 @@ driver loaded — this is a real report from the machine these were taken on):
 
 <img src="docs/screenshots/clock-format.png" width="49%"> <img src="docs/screenshots/diagnostics.png" width="49%">
 
+## Firmware
+
+The PCI-424's FPGA has no configuration PROM, so the host loads it, and the
+DSP program, every time the driver binds (as the Windows driver does). Both
+images belong to MOTU and are **not** shipped here. Extract them from your own
+copy of the vendor driver and install them:
+
+```sh
+python3 tools/re/extract-firmware.py path/to/MOTUAW.sys   # 32-bit driver; writes vendor/firmware/ (git-ignored)
+sudo install -Dm644 vendor/firmware/pci424-serial-container.bin \
+    /lib/firmware/motu424/pci424-serial-container.bin
+sudo install -Dm644 vendor/firmware/pci424-program.bin \
+    /lib/firmware/motu424/pci424-program.bin
+```
+
+The driver checks both by length and SHA-256 and refuses to probe if either is
+missing or different. The load took about 15 s from userspace on the test card (894k GPIO writes), then
+`dmesg` shows `DSP running: audio_base=0x6fac ...`.
+
 ## Reverse engineering
 
-The driver already implements the RE'd hardware model; what a real card must
-supply are the **card-reported runtime addresses** (audio base, IRQ ack, the two
-aperture bases) and a few values still marked `TODO: verify`. Bring-up flow:
+The hardware model comes from the vendor Windows driver `MOTUAW.sys` (static
+RE with `objdump`, `tools/re/vtable-scan.py`, `tools/re/xref.py`), from the
+card's own DSP program (`tools/re/dis-c64x.py`), and from runs on a real
+PCI-424 in issue #2:
 
-1. **Identify the card.** `lspci -nn | grep -i 137a` (0x137A = Mark of the Unicorn).
-2. **Enumerate + classify the BARs** with the driver *unbound*:
-   ```sh
-   sudo ./tools/motu424-probe                       # tags window A / B / port
-   sudo ./tools/motu424-probe 0000:01:00.0 0xc0000 0x400   # window-B dump @off,len
-   ```
-   It reads the known window-B bank ctrl/status regs and takes a targeted dump
-   for **diffing** idle vs. streaming (under the vendor OS) to locate the audio
-   base / ack / aperture card addresses.
-3. **Inject those addresses** and load the driver:
-   ```sh
-   sudo insmod kernel/motu424.ko \
-       audio_base=0x… ack_addr=0x… play_aperture=0x… cap_aperture=0x…
-   ```
-   Without them the card registers but streaming is refused (`-ENXIO`) — this is
-   deliberate, so the driver never pokes unknown addresses.
-4. **Trace the event format** (channel count per sample-rate family, 24-bit
-   packing, endianness) and the exact `base+0x64` rate dword.
-5. Fold confirmed values into `motu424.h` / `motu424_hw.c` (drop the params).
-
-Most of the protocol was **already** recovered statically from the vendor driver
-(no card needed) — the confirmed facts below; the remaining gaps are what steps
-1–5 close on real hardware.
-
-### Findings from vendor driver RE (static, no card)
-
-Established by disassembling the vendor Windows driver `MOTUAW.sys`, using
-`objdump`, `tools/re/vtable-scan.py` (resolves C++ vtable slots) and
-`tools/re/xref.py` (capstone-based cross-references — callers, function bodies,
-virtual-dispatch sites). These **supersede the hypothesised register map** in
-`motu424.h`:
-
-- **Two MMIO windows, not a small register file.** The card exposes a windowed
-  ~24-bit "card address" space. A 32-bit address is routed by
-  `(addr & 0xff800000) == 0x01800000`: if true → window A `(addr & 0x7fffff)`
-  (8 MB), else → window B `(addr & 0x3fffff)` (4 MB). Per-bank ctrl/status regs
-  at `0xC0024` / `0x100024` (bank+`0x24`, stride `0x40000`), reachable via
-  window A at `0x18C0000` / `0x1900000`. (`0xAC44` is **not** an address — it is
-  44100 decimal; all six rates appear as Hz constants `0xAC44`..`0x2EE00` in the
-  divisor math.)
-- **A small I/O-port BAR** (`READ/WRITE_PORT_ULONG`) holds bridge/GPIO control:
-  read `+0x0` (bit 1 = IRQ pending), write `+0x0`←4 (IRQ/stream enable), write
-  `+0x4`←1 (strobe/commit). A PLX-style local-bus bridge in front of the FPGA.
-- **IRQ path — confirmed** (ISR = vtable `0x30cc0` slot `0x28` = `0x2bae0`):
-  pending = port BAR `+0x0` bit 1; **ack = write `0x10`** to the card address in
-  device-ext `+0x88`; "period elapsed" fires when a per-IRQ accumulator crosses
-  `0x800`, then a DPC is queued.
-- **Audio register block — confirmed** (base = a card address in device-ext
-  `+0x98`): `base+0x54`←1 stream enable, `base+0x60` period increment
-  (`0x10 << 2*family`), `base+0x64` rate/clock parameter, `base+0x128/12c/130`
-  position counters (read then zeroed each period).
-- **Audio transport is PIO into a card aperture, not host bus-master DMA.** The
-  push helper (`fn 0x29420`) copies host buffers into window B via
-  `WRITE_REGISTER_BUFFER_ULONG` (a `'MOTU'`-tagged 64 KB bounce buffer) and
-  tracks a hardware `dmaPoint` + software `readHead`/`writeHead`/`len`.
-- **FPGA firmware.** Two architectures: the classic PCI-324/424 uses an Altera
-  passive-serial FPGA (`altera424b.rbf`, **not** present in the 4.0.6 vendor
-  installer — likely self-configured from onboard flash); the PCIe **HD Express**
-  uses an ARM SoC + Xilinx Virtex, shipped as `HDExpress_FullImageRun.bin` (a
-  24-byte-header container, checksum-verified). Verdict of the full RE
-  ([`docs/fpga-upload.md`](docs/fpga-upload.md)): the classic card needs **no
-  host firmware upload** (no `request_firmware()`); only the PCIe HD Express
-  variant takes a host image.
+- **The board** is a TI **TMS320C6412 DSP** in PCI boot mode plus an FPGA with
+  no PROM. The I/O BAR is the DSP's Host Port Interface (HSR/HDCR/DSPP); the
+  8 MB BAR (window A) is the DSP's peripheral registers, the 4 MB one
+  (window B) its memory, with internal RAM at `0..0x3ffff`.
+- **Bring-up** (vendor `fn 0x2c150`, run on hardware): WARMRESET, the FPGA
+  image clocked out through the DSP's GPIO, the 28,272-byte C64x program
+  written into internal RAM, DSPINT, then the program publishes `audio_base`
+  in the mailbox at `0x3fffc` (`0x6fac`).
+- **The audio block** at `audio_base` is the DSP program's global data:
+  `mix_base` at `+0`, the host ring address at `+0x5c`, the DSP's position at
+  `+0x2c`, start/stop at `+0x54`/`+0xf4`, frames per interrupt at `+0x60`.
+- **Transport is DSP bus-master DMA.** The host hands the DSP a coherent ring
+  (512 KB on Windows); the DSP fetches audio from it and raises an interrupt
+  every 64 frames. IRQ pending = HSR bit 1; ack = `0x10` (INTRST) to the DSP's
+  RSTSRC register.
 - **CueMix control set** decoded from the shipped `CueMixFX-PCI-424.touchosc`
   (MOTU's CueMix OSC API): an input×mix-bus monitor matrix + per-input analog
   conditioning + clock/format. Drives `tools/motu424-ctl` — see
@@ -264,12 +234,9 @@ Detailed, evidence-tagged write-ups live in `docs/`:
 [`cuemix-control-map.md`](docs/cuemix-control-map.md),
 [`vendor-driver-map.md`](docs/vendor-driver-map.md).
 
-Still open (need the card, or deeper `rz-ghidra` work on the two embedded
-sub-objects): the clock-source select register/bits and the `base+0x64`
-parameter encoding, the runtime numeric values of the audio base / ack
-addresses. The classic-card FPGA upload handshake is settled — the RE verdict
-([`docs/fpga-upload.md`](docs/fpga-upload.md)) is that it self-configures from
-onboard flash and needs no host upload.
+Still open: the frame layout on the host ring (bytes per frame, sample
+format, channel order), where capture lands on the host side, rate changes
+(the vendor relock sequence), and the PCI-324 / PCIe-424 load paths.
 
 The full phased roadmap from here to a 100% working driver lives in
 [`docs/REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md).

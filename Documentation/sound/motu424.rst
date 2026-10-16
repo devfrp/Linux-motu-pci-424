@@ -25,11 +25,12 @@ Provenance
 
 No vendor programming documentation exists for this hardware. The register
 map, transport protocol and IRQ semantics implemented here were recovered
-by static reverse engineering of the vendor Windows driver for
-interoperability purposes; see ``CLEANROOM.md`` and ``docs/register-map.md``,
-``docs/transport.md``, ``docs/vendor-driver-map.md`` in the driver's source
-tree for the full evidence trail behind every register access in
-``motu424_hw.c``.
+by static reverse engineering of the vendor Windows driver and of the
+card's DSP program, and checked on a real card, for interoperability
+purposes; see ``CLEANROOM.md`` and ``docs/register-map.md``,
+``docs/transport.md``, ``docs/fpga-upload.md`` and
+``docs/vendor-driver-map.md`` in the driver's source tree for the full
+evidence trail behind every register access in ``motu424_hw.c``.
 
 Architecture
 ============
@@ -42,75 +43,77 @@ offset directly.
 Access model
 ------------
 
-The card exposes a windowed ~24-bit card-address space over two MMIO BARs
-(window A, 8 MiB; window B, 4 MiB) plus a small I/O-port bridge BAR, rather
-than a flat register file. ``motu424_assign_windows()`` classifies the
-probed BARs by type and size at load time; a single-MMIO-BAR card routes
-everything through window B.
-
-Transport
----------
-
-Audio is **not** host bus-mastered. The host pushes each period into a
-card-side PIO aperture in window B (``memcpy_toio()``) using plain
-``vmalloc`` host buffers (``SNDRV_DMA_TYPE_VMALLOC``); there is no DMA mask
-and no scatter-gather setup. This matches the vendor driver, whose PnP
-resource-list parser never processes a ``CmResourceTypeDma`` descriptor on
-this path.
-
-Interrupts
-----------
-
-IRQ pending is port-BAR offset ``0x0`` bit 1; acknowledgement is a write of
-``0x10`` to a card-reported ack address. Period-elapsed accounting is a
-per-IRQ sample accumulator compared against the configured period size.
+The card's PCI interface is the PCI port of a TI TMS320C6412 DSP in PCI
+boot mode. The I/O BAR holds the DSP's Host Port Interface registers (HSR,
+HDCR, DSPP); the 8 MiB MMIO BAR (window A) is the DSP peripheral register
+space and the 4 MiB one (window B) the DSP memory page selected by DSPP.
+``motu424_assign_windows()`` classifies the BARs by type and size. Every
+write goes through an allow-list: DSP internal RAM in window B, and only
+EMIF CECTL0, the GPIO registers and RSTSRC in window A, so the DSP EEPROM
+controller that holds the card's PCI identity cannot be written.
 
 Firmware
 --------
 
-The classic PCI-324/424 self-configures its Altera FPGA from onboard flash
-at power-on; the driver uploads no firmware and declares none via
-``MODULE_FIRMWARE()``. The PCIe HD Express variant (``DEV_0005``) uses a
-different ARM+Xilinx image and host-side upload for that variant is not yet
-implemented (out of scope until that card revision is targeted).
+The board's FPGA has no configuration PROM, so the host loads it on every
+start, as the vendor driver does. ``motu424_hw_init()`` warm-resets the
+DSP, clocks the FPGA image out through the DSP's GPIO, writes the DSP
+program into internal RAM and checks it, releases the CPU (DSPINT) and
+reads the audio block address the program publishes in its mailbox.
 
-Bring-up and module parameters
-===============================
+Both images belong to MOTU and are not distributed with the driver. Users
+extract them from their own copy of the vendor driver with
+``tools/re/extract-firmware.py`` and install them as::
 
-The card-reported runtime addresses for the audio register block, IRQ ack
-register, CueMix coefficient region and the two streaming apertures are read
-by the vendor driver from the card at init time and cannot be predicted
-statically. Until they are supplied, this driver maps BARs and services
-interrupts but refuses to start a stream (``-ENXIO``). Obtain them with
-``tools/motu424-probe`` (run with the driver unbound from the device) and
-pass them as module parameters:
+   /lib/firmware/motu424/pci424-serial-container.bin
+   /lib/firmware/motu424/pci424-program.bin
+
+Their lengths and SHA-256 are checked before anything reaches the card;
+probe fails if either is missing or different.
+
+Transport
+---------
+
+The DSP is the PCI bus master. The ALSA buffer is a 512 KiB coherent host
+ring (``SNDRV_DMA_TYPE_DEV``, 32-bit DMA mask) whose bus address the driver
+hands to the DSP; the DSP fetches audio from it and reports the bus address
+it has reached, which ``.pointer`` turns into a frame offset.
+
+Interrupts
+----------
+
+The DSP raises PINTA# every 64 frames (at 1x). IRQ pending is HSR bit 1;
+the driver acknowledges it by writing INTRST (``0x10``) to the DSP's RSTSRC
+register and calls ``snd_pcm_period_elapsed()``.
+
+Module parameters
+=================
 
 .. code-block:: text
 
-   audio_base=<hex>      Card address of the audio register block
-   ack_addr=<hex>        Card address of the IRQ ack register
-   mix_base=<hex>        Card address of the CueMix coefficient region
-   play_aperture=<hex>   Card address of the playback aperture
-   cap_aperture=<hex>    Card address of the capture aperture
+   frame_bytes=<n>   Bytes per frame on the host ring. Not confirmed yet;
+                     0 (the default) keeps streaming disabled.
 
 Current status and limitations
 ===============================
 
-- Playback/capture at the base 1x rates (44.1/48 kHz) is implemented against
-  the recovered register model but has not been exercised against real
-  hardware (no card on the development machine); everything above is
-  therefore unverified in practice, not just in the "TODO: verify" sense
-  used for a handful of still-uncertain bit-level details in the header.
+- The firmware load matches the sequence run on a real PCI-424 with
+  ``tools/motu424-bringup``. The stream path (start, stop, interrupt,
+  pointer) follows the vendor driver and the DSP program but has not run on
+  a card yet.
+- Only the PCI-424 (``0x0004``) is supported. The PCI-324 loads its FPGA
+  through different registers, and the PCIe-424 has not been checked on a
+  card.
+- Playback only, 48 kHz only, and the frame layout on the ring is unknown:
+  samples are exposed as ``frame_bytes / 4`` raw ``S32_LE`` words. Capture
+  and rate changes (the vendor relock sequence) are not implemented.
 - No mixer (CueMix) kcontrols are registered yet; a companion userspace tool
   (``tools/motu424-ctl``, ``tools/motu424-gui``) implements the control
   surface against the planned kcontrol names in
-  ``docs/cuemix-control-map.md``, ready to light up once the driver side is
-  wired.
-- AudioWire breakout interface enumeration (channel/bus counts per attached
-  interface) is not implemented; the driver currently assumes the
-  fixed-frame channel counts documented in ``motu424.h``.
-- No suspend/resume firmware re-upload path (not needed for the classic
-  card's self-configuring FPGA; unimplemented for HD Express).
+  ``docs/cuemix-control-map.md``.
+- AudioWire breakout interface enumeration is not implemented.
+- No suspend/resume: the FPGA loses its configuration with power, so resume
+  will need to repeat the full load.
 
 This note will be extended (and relocated if submitted upstream) once the
 driver has been validated against real hardware.

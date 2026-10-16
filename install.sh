@@ -252,8 +252,12 @@ Next steps:
                         re-run with --gui to install those)
   • Remove everything:  ./install.sh --uninstall
 
-Firmware note: reverse-engineering indicates the classic PCI-324/424 self-
-configures its FPGA from onboard flash, so NO host firmware upload is expected -
-nothing to install (see docs/fpga-upload.md). The PCIe HD Express variant uses a
-separate on-board ARM+Xilinx image and is out of scope for this driver.
+Firmware: the PCI-424 needs two MOTU images the driver loads at every start.
+They are not shipped. Extract them from your own MOTUAW.sys and install them:
+    python3 tools/re/extract-firmware.py path/to/MOTUAW.sys
+    sudo install -Dm644 vendor/firmware/pci424-serial-container.bin \\
+        /lib/firmware/motu424/pci424-serial-container.bin
+    sudo install -Dm644 vendor/firmware/pci424-program.bin \\
+        /lib/firmware/motu424/pci424-program.bin
+Then reload the module (see README "Firmware" and docs/fpga-upload.md).
 EOF

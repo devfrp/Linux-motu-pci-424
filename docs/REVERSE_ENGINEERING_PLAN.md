@@ -25,8 +25,11 @@ Recorded in `kernel/motu424.h` and the README; see also the RE memory notes.
 - **Access model — CONFIRMED** (`MOTUAW.sys`): windowed ~24-bit card-address
   space over two MMIO regions + a small I/O-port BAR; `READ/WRITE_REGISTER_ULONG`
   and `WRITE_REGISTER_BUFFER_ULONG`.
-- **Transport — CONFIRMED shape**: PIO into a card aperture (window B) with a HW
-  `dmaPoint` + SW `readHead/writeHead/len` ring. **Not** a host bus-master ring.
+- **Transport — CONFIRMED shape (2026-10-15, issue #2)**: **DSP bus-master DMA**
+  from a coherent host ring (bus address → `audio_base+0x5c`, size code →
+  `+0x8c`); the DSP reports the bus address it has reached at `+0x2c`. The
+  earlier "PIO into a window-B aperture" reading was wrong (see
+  `docs/transport.md`). Frame layout on the ring still OPEN.
 - **Firmware — CONFIRMED on hardware (2026-10-07, issue #2)**: the classic
   PCI-424 is **host-loaded at every device start**: a 37,177-byte serial FPGA
   image through the C6412's GPIO, then a 28,272-byte C64x program into DSP
@@ -71,7 +74,8 @@ Everything below turns these shapes into exact, implementable semantics.
   `'MOTU'`-tagged `MmMapIoSpace` windows, 4 MB/8 MB, and the address decode);
   `+0x298` (vtable `0x30720`) is a **DMA common-buffer wrapper** (`IoGetDmaAdapter`
   + `AllocateCommonBuffer`, 0x2800-byte coherent buffer) that is *not* on the
-  audio path and does not overturn the PIO model. See `docs/vendor-driver-map.md`.
+  audio path. (It was taken as evidence for a PIO model; the ring is in fact a
+  separate 512 KB host buffer the DSP masters, `docs/transport.md`.) See `docs/vendor-driver-map.md`.
 - [x] **0.3 Role of each binary.**
   - `MotuBus.sys` — PCI bus/function enumeration & child device creation.
   - `MOTUAW.sys` — the audio function driver (register + DMA + FPGA logic).
@@ -97,10 +101,10 @@ Everything below turns these shapes into exact, implementable semantics.
   (boilerplate);
   Memory resource dispatches on **exact Length** — `0x400000` → window B,
   `0x800000` → window A, both `MmMapIoSpace(..., CacheType=0)` (non-cached).
-  `CmResourceTypeDma` is never handled (default/no-op case) — one more
-  independent confirmation of no host bus-mastering. A separate
-  `IoGetDmaAdapter` setup exists (device-ext `+0x28`) but is never referenced
-  by the PIO audio path. See `docs/vendor-driver-map.md` for the full trace
+  `CmResourceTypeDma` is never handled (default/no-op case). That only means
+  no system-DMA channel: the card is its own bus master (a PCI master needs no
+  DMA resource), and the audio is DSP bus-master DMA (`docs/transport.md`). A
+  separate `IoGetDmaAdapter` setup exists (device-ext `+0x28`). See `docs/vendor-driver-map.md` for the full trace
   and the extended device-extension field map (`+0x28`/`+0x50`/`+0x6c`).
 - [ ] **1.3 I/O-port BAR meaning.** Decode the port block at dev-ext `+0x80`
   (read `+0x0`; write `+0x4`←1, `+0x8`). Likely a PLX/local-bus bridge: identify
@@ -143,15 +147,16 @@ The single biggest unknown that gates *any* audio.
   recover: aperture base/size in window B, frame stride, channel packing
   (24-bit / 3 bytes, endianness), and how `dmaPoint`/`readHead`/`writeHead`/`len`
   advance. *Deliverable:* the ring state machine in `docs/transport.md`.
-  **[PARTIAL]** `docs/transport.md`: PIO push confirmed (≤64 KB bursts, dword
-  units, window-B aperture, 'MOTU'-tagged bounce buffer); ring is SW
-  readHead/writeHead/len over the aperture, `len` power-of-two in dwords.
+  **[PARTIAL — model corrected 2026-10-16]** The ring is a 512 KB host buffer
+  the DSP reads by bus-master DMA (`docs/transport.md`); the PIO-aperture
+  reading was wrong (`0x29560` is the program upload). Still OPEN: bytes per
+  frame, sample format and channel order, and where capture lands.
 - [x] **3.2 `dmaPoint` register.** Find the read that yields the HW play/capture
   position (the ALSA `.pointer` source). *Exit:* its card address + units.
   **[DONE — pinned to `audio_base + 0x2c` (reader `fn 0x2a5c0`, commit `c562c99`)].**
   The reader loads `[devext+0x98]+0x2c` via `READ_REGISTER_ULONG`, subtracts the
-  cached playback aperture base `[devext+0x10]` (`= [A+0x18]`), and returns
-  `>> 2` (dword offset). Units are dwords. The sibling `audio_base + 0x34`
+  cached `[devext+0x10]` — now known to be the host ring's bus address, the
+  value written to `+0x5c` — and returns `>> 2` (dword offset). Units are dwords. The sibling `audio_base + 0x34`
   (reader `fn 0x2a610`) is a second counter whose direction/semantics remain
   OPEN (card-gated).
 - [ ] **3.3 Clock & sample-rate encoding.** Decode the writes that select
@@ -189,30 +194,33 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
 - [x] **4.1 Register accessors.** **[DONE, no card]** Windowed
   `card_addr → (window, masked offset)` dispatch (`motu424_addr()`,
   `motu424_rd32/wr32`); `main.c` maps all BARs generically,
-  `motu424_assign_windows()` picks A/B/port by BAR type+size. Bulk aperture
-  writes use `memcpy_toio` (the vendor's `WRITE_REGISTER_BUFFER_ULONG`).
-- [ ] **4.2 Firmware upload.** **[REOPENED — REQUIRED]** The classic card is
+  `motu424_assign_windows()` picks A/B/port by BAR type+size. Writes go through
+  an allow-list (DSP RAM in window B; CECTL0, GPIO and RSTSRC in window A).
+- [x] **4.2 Firmware upload.** **[DONE 2026-10-16, PCI-424 only; load sequence
+  proven on hardware by `tools/motu424-bringup`, driver version not yet run on
+  a card]** The classic card is
   host-loaded (`docs/fpga-upload.md`, confirmed on hardware 2026-10-07):
   `request_firmware()` for the two user-extracted images
   (`pci424-serial-container.bin`, `pci424-program.bin`, never shipped), the
   five-step upload in `motu424_hw_init()`, then `audio_base`/`mix_base` from
-  the mailbox and the published block instead of module params. Re-upload on
-  resume (the FPGA has no PROM).
-- [x] **4.3 Transport rewrite.** **[DONE, no card]** `dma_addr` assumption
-  removed; host buffer is `SNDRV_DMA_TYPE_VMALLOC`, periods are copied into the
-  window-B aperture ring with software heads (`motu424_push_period()`), pointer
-  advances by the per-IRQ sample increment. **Aperture base addresses are
-  placeholders (TODO: verify)** — the real ring base/len come from the vendor
-  config path (RE in progress) or a card dump.
-- [x] **4.4 Clock/rate.** **[PARTIAL, no card]** family → period increment
-  `0x10<<(2*family)` → `base+0x60` implemented; `base+0x64` param written as
-  `2*family` (single-trace hypothesis, TODO: verify). Clock-source select
-  register still unknown; per-rate channel-count constraint deferred to 5.1.
-- [x] **4.5 IRQ.** **[DONE, no card]** Real path implemented: pending = port
-  BAR +0x0 bit 1, ack = write 0x10 to the card-reported ack address, period
-  accounting via the sample accumulator; devm teardown ordering preserved.
-  The card-reported `audio_base`/`ack_addr` are runtime values — until dumped
-  from a card, streaming is refused and they are injectable via module params.
+  the mailbox and the published block instead of module params. Images are
+  installed under `/lib/firmware/motu424/` and checked by SHA-256. Still to do:
+  re-upload on resume (the FPGA has no PROM), and the PCI-324 load path.
+- [x] **4.3 Transport rewrite.** **[REDONE 2026-10-16, not yet run on a card]**
+  The PIO copy path is gone. The ALSA buffer is the 512 KB coherent host ring
+  (`SNDRV_DMA_TYPE_DEV`, 32-bit mask, bus mastering on); start writes
+  `+0x5c/+0x8c/+0x60/+0x54`, stop clears `+0xf4` and `+0x54` and `.sync_stop`
+  waits for the DSP's `+0xf4` acknowledge; pointer = `(+0x2c - ring) /
+  frame_bytes`. Playback at 48 kHz only; `frame_bytes` is a module parameter
+  (0 = streaming off) until the ring's frame layout is known.
+- [ ] **4.4 Clock/rate.** **[OPEN]** The driver no longer writes rate
+  registers: it streams at the 48 kHz / 1x state the DSP program boots into.
+  Rate changes go through the vendor relock sequence (`0x2b7f0`: `+0x80`,
+  `+0x88/+0x8c/+0x90`, the `+0xf8/+0xfc/+0x100` DSP copy), not implemented.
+- [x] **4.5 IRQ.** **[DONE, not yet run on a card]** pending = HSR bit 1, ack
+  = `0x10` (INTRST) to RSTSRC `0x01c00000`, `snd_pcm_period_elapsed()` on every
+  interrupt (the DSP raises one per `+0x60` frames). Teardown stops the
+  stream and warm-resets the DSP, ending its DMA, before the IRQ and ring go.
 
 ## Phase 5 — ALSA feature completeness (needs card)
 
@@ -292,11 +300,11 @@ enumeration = descriptor deserialization, not a static table — see above and
 - **A card** — blocks: Phase 1.3 (bridge chip identity via readback), 3.5
   empirical confirmation of the channel counts, and all of Phases 5–6 (kcontrol
   registration, real playback/capture, soak testing). Phase 3.2 (`dmaPoint`)
-  is now closed statically (`audio_base + 0x2c`, commit `c562c99`). The driver
-  already refuses to stream until the card-reported runtime addresses are
-  supplied via module params
-  (`audio_base=`/`ack_addr=`/`mix_base=`/`play_aperture=`/`cap_aperture=`),
-  obtainable from `tools/motu424-probe` once a card is attached.
+  is now closed statically (`audio_base + 0x2c`, commit `c562c99`). Since
+  2026-10-16 the driver loads the card itself and discovers `audio_base` /
+  `mix_base` from the mailbox; streaming waits only on the ring's frame size
+  (`frame_bytes=`).
 
-The static surface is now essentially exhausted. The project's critical path
-is **Phase 6.1 empirical bring-up** on real hardware.
+The critical path is now the frame layout on the host ring: a mid-stream dump
+from a card running under Windows, or the first Linux stream once
+`frame_bytes=` is set, then Phase 5 (playback, capture, rates).

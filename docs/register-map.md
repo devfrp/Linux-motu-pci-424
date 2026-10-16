@@ -16,34 +16,30 @@ else                                          // window B
 READ_/WRITE_REGISTER_ULONG(mmio, ...)         // little-endian 32-bit
 ```
 
-The `0x01800000` tag bit selects window A for the **same** underlying bank
-registers: window-B `0x000c0000` and window-A `0x018c0000` differ by exactly
-`0x01800000` and both name bank 0. Window A is used for the 8-dword block write
-(`WriteBlock8`, VA `0x291a0`); window B for ordinary single reads/writes and the
-audio aperture. Interpret window A vs B as two access *paths/timings* to one
-address space, not two disjoint memories.
+Window A is the DSP's **peripheral register space** (card `0x01800000..`:
+EMIF, GPIO, PCI/RSTSRC, EEPROM controller); window B is the **DSP memory page**
+selected by DSPP, with internal RAM at `0..0x3ffff` when DSPP = 0. The rest of
+page 0 is reserved on the C6412 and is never accessed. (An earlier reading of
+A and B as two aliases of one bank space is superseded.)
 
 ## I/O-port BAR (CONFIRMED — dev-ext `+0x80`)
 
 A small port window (`READ_/WRITE_PORT_ULONG`), base stored at dev-ext `+0x80`.
-Likely a PLX-style local-bus bridge fronting the FPGA.
+It is the **TMS320C6412 Host Port Interface** register set (SPRU581C), checked
+on hardware (issue #2):
 
-| Port off | Dir | Evidence VA | Meaning (inferred) |
-|---|---|---|---|
-| `+0x0` | R | `0x2baf0` | status; code does `(val >> 1) & 1` → **bit 1 = ready/pending** poll |
-| `+0x4` | W `1` | `0x2c3dc` | strobe/kick (written `1` after a timeout/elapsed check) |
-| `+0x8` | W | `0x2b6c8` | init write (during bring-up; value from dev-ext `+0x84`, seen `0`) |
+| Port off | Register | Meaning |
+|---|---|---|
+| `+0x0` | HSR | bit 1 INTAVAL = interrupt pending (ISR `0x2baf0`); bit 2 INTAM masks PINTA# when set |
+| `+0x4` | HDCR | bit 0 WARMRESET; bit 1 DSPINT releases the CPU after the program load |
+| `+0x8` | DSPP | window-B page; `0` = DSP internal RAM |
 
-## Bank register file (INFERRED)
+## Bank register file (SUPERSEDED)
 
-Two banks at window-B card addresses `0x000c0000` (bank 0) and `0x00100000`
-(bank 1); stride `0x40000`. Same banks via window A at `0x018c0000` /
-`0x01900000`.
-
-| Card addr | Dir | Evidence VA | Notes |
-|---|---|---|---|
-| `bank+0x24` (`0xc0024`, `0x100024`) | R/W | `0x29305` (`or 0x40` write), `0x29408` (read `>>6`) | per-bank control/status; **bit 6** is a r/w control flag; other bits form a per-bank mask (`rol` loop at `0x29299`) |
-| `bank+0x08 … +0x24` | W | `WriteBlock8` `0x291a0` | 8-dword block programmed as a unit at init (window A) |
+The "banks" at window-B `0x000c0000` / `0x00100000` (`bank+0x24`, bit 6) are
+the **PCI-324** (`DEV_0003`) FPGA-load path (`fpga-upload.md`), not a PCI-424
+register file. On the PCI-424 those window-B offsets fall in reserved C6412
+space and the driver no longer reads them.
 
 ## Sample-rate *values* — NOT addresses (CONFIRMED)
 
@@ -82,12 +78,12 @@ base and go through the same window dispatch:
 | `base+0x34` | W | init `0x2c615` | initial register value from `[A+0x34]` (written via `audio_base+0x8`'s sibling during bring-up) — purpose OPEN |
 | `base+0x50` | W `1` | init `0x2c5ff` | bring-up **enable** at end of the init routine (`0x2c5d3` address) |
 | `base+0x54` | W `1` | `0x29660` (slot 1) | stream/DMA **enable** (writes 1 when arg≠0) |
-| `base+0x5c` | W | `0x29840` | secondary param (writes `[this+0x10]`); purpose OPEN |
-| `base+0x60` | W | `0x295e0` (slot 0) | **period increment** = `0x10 << (2*family)` (×2 if `[+0x1cc]>1`); samples-per-IRQ / block size |
+| `base+0x5c` | W | `0x29840` | **host ring bus address** (writes `[this+0x10]`; `0xd9e20000` on a Windows-configured card) — see `transport.md` |
+| `base+0x60` | W | `0x295e0` (slot 0) | **frames per interrupt** = `0x10 << (2*fam)` (×2 if `[+0x1cc]>1`); `0x80` on the card at 96 kHz, `0x40` at 1x. `fam` here is not the 1x/2x/4x rate family (that would give `0x10` at 1x) |
 | `base+0x64` | W | `0x297f0` (slot 2) | rate/clock **parameter** (caller-supplied dword, no encoding in the setter) |
 | `base+0x80` | W | `0x2a820` (`0x2a8c2`) | **rate/mode register**: `lookup_table[rate_mode] (at 0x30c74)` OR `[+0x1d4]` (high-bit sentinel) OR `(0x10000 or 0xf0000` based on `[+0x1ec]`); also influenced by `+0x1ec` `OR` mask `0xfff10000` |
 | `base+0x88` | W | `0x2a710` (`0x2a7a2`) | **period buffer size** (e.g. `0x80000` default, `0x40000` for rate class 2, scaled for 2x/4x families) |
-| `base+0x8c` | W | `0x2a710` (`0x2a7d7`) | **aperture/buffer length** (computed per rate family: `0x80000`, `0x40000`, or `1 << (rate-8+0xe)` if `[+0x1d0]` bit set, else `0x20000`) |
+| `base+0x8c` | W | `0x2a710` (`0x2a7d7`) | **host ring size code** in bytes (computed per rate family: `0x80000`, `0x40000`, or `1 << (rate-8+0xe)` if `[+0x1d0]` bit set, else `0x20000`); `0x80000` = 512 KB on the Windows-configured card |
 | `base+0x90` | W | `0x2a710` (`0x2a803`) | secondary period value `[ebp-4]` (purpose OPEN; zero-init default) |
 | `base+0x9c` | W | `0x2aab0` (`0x2ab08`) | rate-state write: `([+0x280]+0x32)/100` (the CueMix base mirror's +0x9c is read at init; this writes the audio-block register) — also written by `+0x288` path |
 | `base+0xac` | W | `0x2a820` (`0x2a88c`) | **transport-arm length**: `(rate_mode-4)*25 + 24` (only written when 4 ≤ rate_mode < 8) |
@@ -97,7 +93,47 @@ base and go through the same window dispatch:
 | `base+0x130` | R→W`0` | ISR `0x2bae0` | divisor; read then zeroed |
 
 The **ack register is a separate card address in device-ext `+0x88`** (from the
-same sub-object, field `+0x4`; method `0x2c150`).
+same sub-object, field `+0x4`; method `0x2c150`). On the PCI-424 it is the
+DSP's **RSTSRC** register, card `0x01c00000` (window A `0x400000`): the DSP
+raises PINTA# with RSTSRC bit 3 (INTREQ) and the host's `0x10` is bit 4
+(INTRST), which clears it.
+
+## The audio block is the DSP program's global data (CONFIRMED, issue #2)
+
+From Audiosyncrasy's analysis of the 28,272-byte C64x program (linked at 0,
+little-endian) and a read of a card warm-rebooted from Windows (2026-10-15).
+The program's data page B14 is `0x6e70` and `audio_base = 0x6fac` = B14 +
+`0x13c`, so this block is the firmware's global data. Its init routine writes
+exactly the values the first Linux bring-up read (`mix_base 0x8290`, `+4
+0x87a0`, `+8 0x7988`, `+0x14 0x8348`, `+0x18 0x7240`, `+0x80 0x800f0200`,
+`+0x98 0x05355555`, `+0x108 1`).
+
+State left by Windows (96 kHz, interfaces connected, audio playing), read
+after a warm reboot into Linux. DSP RAM survived it: the mailbox still read
+`0x6fac` and the program text was byte-identical to the extracted image.
+
+| Off | Value | Meaning |
+|---|---|---|
+| `+0x2c` | `0xd9e35000` | DSP position: a host bus address |
+| `+0x5c` | `0xd9e20000` | host ring base (written by the host); `+0x2c` is `0x15000` past it |
+| `+0x60` | `0x80` | frames per interrupt |
+| `+0x64` | `8` | periods per DSP counter wrap |
+| `+0x70` | `0x0044ffbc` | `q<<16 \| -q`, `q = 65536/(480*2)`: multiplier 2 |
+| `+0x80` | `0x8f001200` | rate/mode at 2x; the 2x field is bits 27:24 |
+| `+0x8c` | `0x80000` | ring size code: 512 KB |
+| `+0x98` | `0x05355555` | still 48000: the base rate; the multiplier lives elsewhere |
+| `+0xb0..+0xf0` | as predicted | every formula fits with rate 48000, multiplier 2 |
+| `+0x44/+0x48` | as after the first bring-up | constants, not measured clock counts |
+| `+0xf4` | `1` | DSP stop acknowledge |
+| `+0x128..+0x130` | `0xa4 / 0x2f94 / 0x5b` | live per-period statistics |
+
+Window B also held the two 0x2800-byte buffers at `0x30000/0x32800`, each
+with 0x5b0 bytes of data. Window A's head read EMIF GBLCTL `0x00010ffc`, then
+CECTL1 = CECTL0 = `0x10914221` (32-bit asynchronous CE timing, the "init word"
+the vendor writes to window A `+0x8`).
+
+The DSP forwards `+0x80 >> 8` to an FPGA control register whenever the
+rate/mode word changes. `+0x138/+0x13c` are firmware timing maxima.
 
 ## Rate-mode lookup table (CONFIRMED — rdata at VA `0x30c74`)
 
@@ -130,7 +166,7 @@ keeps the returned card address there — same pattern as `+0x98`/`+0x88`. The
 (`fn 0x29aa0`, site `0x29ad5`), writing only the **dirty range** `[+0x1c4]..[+0x1c8]`
 (classic mixer incremental update). This is the hardware sink for the CueMix
 control set — see `cuemix-control-map.md`. Full destination table for all six
-`WRITE_REGISTER_BUFFER_ULONG` sites (audio aperture / channel-bank / mixer) is in
+`WRITE_REGISTER_BUFFER_ULONG` sites (DSP program / channel-bank / mixer) is in
 `fpga-upload.md`.
 
 ## IRQ path (CONFIRMED — ISR `0x2bae0` = vtable `0x30cc0` slot `0x28`)
@@ -156,21 +192,24 @@ call [[devext+0x38]]+0;                              // queue DPC (period_elapse
 return TRUE;
 ```
 
-So: **IRQ pending = port BAR `+0x0` bit 1; ACK = write `0x10` to the card
-address in device-ext `+0x88`; "period elapsed" fires when a per-IRQ accumulator
-crosses `0x800`, then a DPC is queued.**
+So: **IRQ pending = port BAR `+0x0` bit 1; ACK = write `0x10` to RSTSRC
+(device-ext `+0x88`); the DPC signals period-elapsed on every interrupt, and the
+`0x800` accumulator only paces the read-and-clear of the `+0x128..+0x130`
+statistics.** Position is not read in the ISR; it is computed on demand from
+`base+0x2c` (`transport.md`).
 
-## Port BAR — refined (CONFIRMED)
+## Port BAR writes in the vendor driver (CONFIRMED)
 
-| Port off | Dir | Value | Evidence | Meaning |
-|---|---|---|---|---|
-| `+0x0` | R | — | ISR `0x2baf0` | status; **bit 1 = IRQ pending** |
-| `+0x0` | W | `4` | `0x298f3` | control; **bit 2 = IRQ/stream enable** |
-| `+0x4` | W | `1` | `0x29906`, `0x2c3dc` | **strobe / commit** |
-| `+0x8` | W | var | `0x2b6c8` | init value (bring-up) |
+| Port off | Value | Evidence | Meaning |
+|---|---|---|---|
+| `+0x0` | `4` | `0x298f3` | HSR INTAM: mask PINTA# |
+| `+0x0` | `0` | bring-up step 4 | unmask PINTA# |
+| `+0x4` | `1` | `0x29906`, `0x2c3dc` | HDCR WARMRESET |
+| `+0x4` | `2` | bring-up step 4 | HDCR DSPINT |
+| `+0x8` | `0` | `0x2b6c8` | DSPP = 0 |
 
-Method `0x298e0` is the **start/enable** sequence: `WRITE_PORT(+0x0, 4)` then
-`WRITE_PORT(+0x4, 1)`.
+Method `0x298e0` (`HSR ← 4`, then `HDCR ← 1`) is the **stop/reset** sequence,
+not a start.
 
 ## Rate mapping (PARTIAL)
 
@@ -208,20 +247,18 @@ setter⇄object mapping is not what it appears. Resolving this reliably needs
 proper type recovery (Ghidra) or a card to observe the actual `base+0x64` writes.
 Treat the "`+0x64` = small mode index" reading as a hypothesis, not a fact.
 
-## Port bridge page register (CONFIRMED — arm fn `0x2c150`)
+## DSPP (port `+0x8`)
 
-Port `+0x8` (previously "init value") is the **window-B page/segment select**:
-the arm routine writes `apertureBase >> 22` there before streaming each
-direction (`>>22` = the 4 MB window-B page index). See `transport.md`.
+The window-B page select. The bring-up (`fn 0x2c150`) writes `0` before the
+program load; audio does not go through window B (`transport.md`), so there is
+no per-direction aperture paging.
 
 ## Genuinely open (needs a card or more RE)
 
-- The **numeric** values of the audio base (`devext+0x98`), ack address
-  (`devext+0x88`) and the two aperture bases (audio sub-object `[A+0x18]`
-  playback / `[A+0x28]` capture, with lengths `[A+0x1c]`/`[A+0x2c]`): all read
-  from the card at init, so they are runtime values, not static constants. On a
-  card, dump them via the probe. The *structure* is fixed and known (base+0x54/
-  0x5c/0x60/0x64/0x128/0x12c/0x130, ack=0x10, page=base>>22 to port+0x8).
+- ~~The numeric values of the audio base, ack address and aperture bases.~~
+  Resolved on hardware: `audio_base` comes from the mailbox (`0x6fac` with the
+  current program), the ack is RSTSRC, and there are no apertures (the ring is
+  host memory, `transport.md`).
 - Clock-**source** select register and the `base+0x64` parameter encoding: the
   setter (`0x297f0`, vtable slot 0x8) writes a caller-supplied dword with no
   encoding of its own; the value comes from the `[obj+0x3e]` 11-way enum
