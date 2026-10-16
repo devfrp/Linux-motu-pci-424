@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * motu424_pcm.c - ALSA PCM interface (playback + capture).
+ * motu424_pcm.c - ALSA PCM interface (playback).
  *
  * Standard PCM plumbing: it wires ALSA's callbacks to the hardware layer in
- * motu424_hw.c and imposes the card's fixed-frame constraints. No register
- * offsets appear here.
+ * motu424_hw.c. No register offsets appear here.
+ *
+ * The ALSA buffer is the host ring itself: a coherent buffer the DSP reads
+ * by bus-master DMA, exactly MOTU424_RING_BYTES long. Capture is not exposed
+ * yet: where the DSP writes recorded audio on the host side is still open
+ * (docs/transport.md).
  */
 #include <linux/module.h>
 #include <sound/core.h>
@@ -14,119 +18,102 @@
 #include "motu424.h"
 
 /*
- * The card streams a fixed number of 24-bit channels packed 3 bytes each. We
- * advertise S24_3LE; the hardware layer is responsible for any endianness
- * repacking once the wire format is confirmed.
+ * The frame layout on the ring is not confirmed (docs/transport.md), so the
+ * format is raw 32-bit words, frame_bytes / 4 per frame; the channel count is
+ * pinned in open().
  */
 static const struct snd_pcm_hardware motu424_pcm_hw = {
 	.info = SNDRV_PCM_INFO_MMAP |
 		SNDRV_PCM_INFO_MMAP_VALID |
 		SNDRV_PCM_INFO_INTERLEAVED |
 		SNDRV_PCM_INFO_BLOCK_TRANSFER,
-	.formats = SNDRV_PCM_FMTBIT_S24_3LE,
-	.rates = SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 |
-		 SNDRV_PCM_RATE_88200 | SNDRV_PCM_RATE_96000 |
-		 SNDRV_PCM_RATE_176400 | SNDRV_PCM_RATE_192000,
-	.rate_min = 44100,
-	.rate_max = 192000,
-	.channels_min = MOTU424_MIN_CHANNELS,
-	.channels_max = MOTU424_MAX_CHANNELS,
-	.buffer_bytes_max = MOTU424_MAX_BUFFER_BYTES,
-	.period_bytes_min = MOTU424_MIN_PERIOD_BYTES,
-	.period_bytes_max = MOTU424_MAX_PERIOD_BYTES,
+	.formats = SNDRV_PCM_FMTBIT_S32_LE,
+	.rates = SNDRV_PCM_RATE_48000,
+	.rate_min = MOTU424_RATE,
+	.rate_max = MOTU424_RATE,
+	.buffer_bytes_max = MOTU424_RING_BYTES,
+	.period_bytes_min = 256,
+	.period_bytes_max = MOTU424_RING_BYTES / 2,
 	.periods_min = 2,
 	.periods_max = MOTU424_MAX_PERIODS,
 };
-
-static struct motu424_stream *motu424_substream_stream(struct motu424 *chip,
-						       struct snd_pcm_substream *substream)
-{
-	return MOTU424_STREAM_IS_PLAYBACK(substream) ? &chip->playback
-						     : &chip->capture;
-}
 
 static int motu424_pcm_open(struct snd_pcm_substream *substream)
 {
 	struct motu424 *chip = snd_pcm_substream_chip(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	unsigned int channels = chip->frame_bytes / 4;
+	int err;
+
+	if (!chip->audio_base || !chip->frame_bytes) {
+		dev_warn_once(&chip->pci->dev,
+			      "streaming disabled: the host-ring frame size is not known yet (motu424.frame_bytes=)\n");
+		return -ENXIO;
+	}
 
 	runtime->hw = motu424_pcm_hw;
+	runtime->hw.channels_min = channels;
+	runtime->hw.channels_max = channels;
 
-	/*
-	 * One frame must be a whole number of 3-byte samples across channels;
-	 * keep the period a multiple of the frame so DMA math stays exact.
-	 */
-	snd_pcm_hw_constraint_step(runtime, 0,
-				   SNDRV_PCM_HW_PARAM_PERIOD_BYTES,
-				   MOTU424_BYTES_PER_SAMPLE * MOTU424_MIN_CHANNELS);
+	/* The DSP wraps at the ring size: the buffer must be exactly that. */
+	err = snd_pcm_hw_constraint_minmax(runtime,
+					   SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
+					   MOTU424_RING_BYTES,
+					   MOTU424_RING_BYTES);
+	if (err < 0)
+		return err;
+	err = snd_pcm_hw_constraint_integer(runtime,
+					    SNDRV_PCM_HW_PARAM_PERIODS);
+	if (err < 0)
+		return err;
 
-	motu424_substream_stream(chip, substream)->substream = substream;
+	chip->playback.substream = substream;
 	return 0;
 }
 
 static int motu424_pcm_close(struct snd_pcm_substream *substream)
 {
 	struct motu424 *chip = snd_pcm_substream_chip(substream);
-	struct motu424_stream *s = motu424_substream_stream(chip, substream);
 
-	/*
-	 * Defensive: ALSA normally issues TRIGGER_STOP before close, but an
-	 * aborting client (or an error path in prepare) may close without
-	 * stopping. If `running` were left true, the next stream_start on
-	 * the *other* direction would skip the enable/strobe kick (its `first`
-	 * decision compares `!playback.running && !capture.running`), so the
-	 * card would never be re-armed. Stop also here to be safe.
-	 */
-	motu424_hw_stream_stop(chip, MOTU424_STREAM_IS_PLAYBACK(substream));
-	s->substream = NULL;
+	chip->playback.substream = NULL;
 	return 0;
 }
 
 static int motu424_pcm_prepare(struct snd_pcm_substream *substream)
 {
-	struct motu424 *chip = snd_pcm_substream_chip(substream);
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	int err;
-
-	err = motu424_hw_set_rate(chip, runtime->rate);
-	if (err < 0)
-		return err;
-
-	chip->channels = runtime->channels;
-	return motu424_hw_stream_prepare(chip, substream);
+	/* Start the DSP on silence; ALSA fills the buffer before START. */
+	return snd_pcm_format_set_silence(substream->runtime->format,
+					  substream->runtime->dma_area,
+					  substream->runtime->buffer_size *
+					  substream->runtime->channels);
 }
 
 static int motu424_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 {
 	struct motu424 *chip = snd_pcm_substream_chip(substream);
-	bool playback = MOTU424_STREAM_IS_PLAYBACK(substream);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
-		/* Fresh start from prepared state: prefill the aperture. */
-		motu424_hw_stream_start(chip, playback, true);
-		return 0;
-	case SNDRV_PCM_TRIGGER_RESUME:
-	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		/* Continue mid-stream: keep the ring state, do not re-prefill. */
-		motu424_hw_stream_start(chip, playback, false);
+		motu424_hw_stream_start(chip, substream->runtime->dma_addr);
 		return 0;
 	case SNDRV_PCM_TRIGGER_STOP:
-	case SNDRV_PCM_TRIGGER_SUSPEND:
-	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		motu424_hw_stream_stop(chip, playback);
+		motu424_hw_stream_stop(chip);
 		return 0;
 	default:
 		return -EINVAL;
 	}
 }
 
+static int motu424_pcm_sync_stop(struct snd_pcm_substream *substream)
+{
+	motu424_hw_stream_sync_stop(snd_pcm_substream_chip(substream));
+	return 0;
+}
+
 static snd_pcm_uframes_t motu424_pcm_pointer(struct snd_pcm_substream *substream)
 {
-	struct motu424 *chip = snd_pcm_substream_chip(substream);
-
-	return motu424_hw_stream_pointer(chip,
-					 MOTU424_STREAM_IS_PLAYBACK(substream));
+	return motu424_hw_stream_pointer(snd_pcm_substream_chip(substream),
+					 substream->runtime->dma_addr);
 }
 
 static const struct snd_pcm_ops motu424_pcm_ops = {
@@ -134,6 +121,7 @@ static const struct snd_pcm_ops motu424_pcm_ops = {
 	.close = motu424_pcm_close,
 	.prepare = motu424_pcm_prepare,
 	.trigger = motu424_pcm_trigger,
+	.sync_stop = motu424_pcm_sync_stop,
 	.pointer = motu424_pcm_pointer,
 };
 
@@ -142,7 +130,7 @@ int motu424_pcm_create(struct motu424 *chip)
 	struct snd_pcm *pcm;
 	int err;
 
-	err = snd_pcm_new(chip->card, MOTU424_DRIVER_NAME, 0, 1, 1, &pcm);
+	err = snd_pcm_new(chip->card, MOTU424_DRIVER_NAME, 0, 1, 0, &pcm);
 	if (err < 0)
 		return err;
 
@@ -151,15 +139,11 @@ int motu424_pcm_create(struct motu424 *chip)
 	chip->pcm = pcm;
 
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &motu424_pcm_ops);
-	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &motu424_pcm_ops);
 
-	/*
-	 * Plain host memory: the card never sees a host address - all data
-	 * moves by PIO into the card aperture (see docs/transport.md), so no
-	 * device-visible DMA buffer is needed.
-	 */
-	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_VMALLOC, NULL,
-				       MOTU424_MAX_BUFFER_BYTES,
-				       MOTU424_MAX_BUFFER_BYTES);
+	/* The host ring: coherent, 32-bit addressable, read by the DSP. */
+	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
+				       &chip->pci->dev,
+				       MOTU424_RING_BYTES,
+				       MOTU424_RING_BYTES);
 	return 0;
 }
