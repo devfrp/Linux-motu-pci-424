@@ -6,9 +6,9 @@
  * motu424_hw.c. No register offsets appear here.
  *
  * The ALSA buffer is the host ring itself: a coherent buffer the DSP reads
- * by bus-master DMA, exactly MOTU424_RING_BYTES long. Capture is not exposed
- * yet: where the DSP writes recorded audio on the host side is still open
- * (docs/transport.md).
+ * by bus-master DMA, MOTU424_RING_PERIODS periods of period_bytes each.
+ * Capture is not exposed yet: where the DSP writes recorded audio on the host
+ * side is still open (docs/transport.md).
  */
 #include <linux/module.h>
 #include <sound/core.h>
@@ -33,9 +33,9 @@ static const struct snd_pcm_hardware motu424_pcm_hw = {
 	.rate_max = MOTU424_RATE,
 	.buffer_bytes_max = MOTU424_RING_BYTES,
 	.period_bytes_min = 256,
-	.period_bytes_max = MOTU424_RING_BYTES / 2,
-	.periods_min = 2,
-	.periods_max = MOTU424_MAX_PERIODS,
+	.period_bytes_max = MOTU424_RING_BYTES / MOTU424_RING_PERIODS,
+	.periods_min = MOTU424_RING_PERIODS,
+	.periods_max = MOTU424_RING_PERIODS,
 };
 
 static int motu424_pcm_open(struct snd_pcm_substream *substream)
@@ -55,15 +55,16 @@ static int motu424_pcm_open(struct snd_pcm_substream *substream)
 	runtime->hw.channels_min = channels;
 	runtime->hw.channels_max = channels;
 
-	/* The DSP wraps at the ring size: the buffer must be exactly that. */
+	/*
+	 * The DSP fetches period_bytes per interrupt and wraps after
+	 * MOTU424_RING_PERIODS periods: the buffer must be exactly that.
+	 */
+	runtime->hw.period_bytes_min = chip->period_bytes;
+	runtime->hw.period_bytes_max = chip->period_bytes;
 	err = snd_pcm_hw_constraint_minmax(runtime,
-					   SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
-					   MOTU424_RING_BYTES,
-					   MOTU424_RING_BYTES);
-	if (err < 0)
-		return err;
-	err = snd_pcm_hw_constraint_integer(runtime,
-					    SNDRV_PCM_HW_PARAM_PERIODS);
+					   SNDRV_PCM_HW_PARAM_PERIOD_BYTES,
+					   chip->period_bytes,
+					   chip->period_bytes);
 	if (err < 0)
 		return err;
 

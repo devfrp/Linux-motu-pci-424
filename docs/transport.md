@@ -2,15 +2,17 @@
 
 How samples move between host and card. Rewritten on 2026-10-16 from
 Audiosyncrasy's analysis of the DSP program and a Windows-configured card
-state (issue #2, comment of 2026-10-15). VAs in `MOTUAW.sys` use image base
+state (issue #2, comments of 2026-10-15 and 2026-10-16). VAs in `MOTUAW.sys` use image base
 `0x10000`; DSP addresses are card addresses in DSP internal RAM.
 
 ## It is DSP bus-master DMA, not PIO (CONFIRMED)
 
 The card's PCI interface is the PCI port of its TMS320C6412 DSP, and the DSP
 is the PCI bus master. Playback data is pulled from **host memory** by the DSP
-itself, through its own master port (DSPMA/PCIMA/PCIMC, START = 2,
-prefetchable read), in pieces of a few hundred bytes. The FPGA sits on the
+itself, through its own master port (DSPMA/PCIMA/PCIMC, START = 2, a
+host-to-DSP read; 1 would be a DSP-to-host write), in pieces of a few hundred
+bytes. Every PCIMC write in the program (playback fetch, the `+0x100` copy and
+a third copy) uses START = 2: the firmware never writes host memory. The FPGA sits on the
 DSP's EMIF (not host-visible); the DSP moves audio between it and internal RAM
 with QDMA. The host never writes PCM through a window.
 
@@ -22,19 +24,29 @@ push.
 ## Host ring (CONFIRMED shape)
 
 The host allocates one coherent ring and hands its bus address to the DSP.
-Windows uses **512 KB**; the separate 0x2800-byte common buffer
+Windows allocates **512 KB**; the separate 0x2800-byte common buffer
 (`vendor-driver-map.md`, devext `+0x298`) is not the ring.
+
+The DSP wraps at **`+0x64` periods**, not at the size code. In its period tick
+(`0x2610..0x2674`) it counts periods, and when the count reaches `+0x64` it
+resets the counter and sets both its running pointer and `+0x2c` back to
+`+0x5c`. So the part of the ring in use is `+0x64 × period_bytes`: 8 ×
+`0x3000` = 96 KB on Windows at 96 kHz. `+0x8c` is read only once, at `0x2820`,
+in the rate/mode path with `+0x88`/`+0x90`.
 
 | Audio block off | Dir | Meaning |
 |---|---|---|
 | `+0x5c` | W | host ring **bus address** (vendor writes `[this+0x10]`, `0x29840`) |
-| `+0x8c` | W | ring **size code** in bytes (`0x80000` = 512 KB on Windows) |
-| `+0x60` | W | **frames per interrupt**: `0x40` at 1x, `0x80` at 2x/4x |
+| `+0x8c` | W | ring **size code** in bytes (`0x80000` = 512 KB on Windows); rate/mode path only |
+| `+0x60` | W | **frames per interrupt** (`0x80` at 96 kHz on Windows); host bookkeeping, the DSP loads it once in the tick and does not appear to use it |
+| `+0x64` | W | **periods per ring wrap** (`8` on Windows; `fn 0x13c30` uses `4`). `0` after bring-up, which makes the DSP replay the first period |
+| `+0x58/+0x68/+0x6c` | W | fetch geometry from the vendor configure path `0x29930(a, b, c)`: `+0x68 ← a`, `+0x6c ← b`, `+0x58 ← c`, then the 24-dword channel map at `[+0x14]`. Windows: `a = 0xe`, `b = 0x10`, `c = 0`. The DSP's per-pass fetch is `0x30 × +0x68` bytes |
 | `+0x54` | W | `1` = start, `0` = stop |
 | `+0xf4` | R/W | stop acknowledge: host writes `0` before stopping, the DSP sets it non-zero once stopped |
 | `+0x2c` | R | **position**: the host bus address the DSP has reached |
 
-Start: `+0x5c ← ring`, `+0x8c ← size`, `+0x60 ← frames`, `+0x54 ← 1`.
+Start: `+0x58/+0x68/+0x6c` (and the channel map), `+0x5c ← ring`, `+0x8c ←
+size`, `+0x60 ← frames`, `+0x64 ← periods`, `+0x54 ← 1`.
 Stop: `+0xf4 ← 0`, `+0x54 ← 0`, then poll `+0xf4 != 0`.
 
 ## Position (CONFIRMED — reader `fn 0x2a5c0`)
@@ -55,7 +67,7 @@ checks the same dword offset against the ring length.
 
 ## Interrupts (CONFIRMED)
 
-Once per `+0x60` frames the DSP stores its position to `+0x2c`, then sets
+Once per period the DSP stores its position to `+0x2c`, then sets
 RSTSRC bit 3 (INTREQ), which raises PINTA#. The host:
 
 1. tests HSR bit 1 (port BAR `+0x0`);
@@ -81,8 +93,11 @@ has passed (`vendor-driver-map.md`, devext `+0x1f0`).
 
 ## The Linux driver
 
-`kernel/motu424_hw.c` follows this model: the ALSA buffer is the ring
-(`SNDRV_DMA_TYPE_DEV`, 512 KB, 32-bit DMA mask), the trigger runs the start
+`kernel/motu424_hw.c` follows this model: the ring is a `SNDRV_DMA_TYPE_DEV`
+allocation of 512 KB (32-bit DMA mask), and the ALSA buffer is the first
+`8 × period_bytes` of it (`+0x64 = 8`, `period_bytes` a module parameter,
+`0x3000` by default). It writes `+0x58 = 0`, `+0x68 = 0xe`, `+0x6c = 0x10`
+and leaves the channel map zero for a first test. The trigger runs the start
 and stop sequences above, `.sync_stop` waits for `+0xf4`, the IRQ handler
 acks INTRST and calls `snd_pcm_period_elapsed()`, and `.pointer` returns
 `(+0x2c - ring) / frame_bytes`.
@@ -92,12 +107,16 @@ Rate changes go through the relock sequence, which is not implemented.
 
 ## Open
 
-- **Bytes per frame on the ring.** The DSP side hints at 48 bytes (12
-  dwords), not conclusively. The driver keeps it as the `frame_bytes` module
-  parameter and refuses to stream while it is 0. A 512 KB ring is not a whole
-  number of 48-byte frames, so either the size code is not the exact wrap
-  point or the frame is not 48 bytes; a mid-stream dump of the ring should
-  settle it.
+- **Bytes per frame on the ring.** `0x3000` bytes per period at `+0x60 =
+  0x80` gives **96 bytes** (24 dwords, one 24-channel frame of 32-bit
+  samples), inferred from one dump at 2x. The 48-byte figure came from the
+  DSP's `0x30`-granular transfer loop, a sub-unit. The driver keeps it as the
+  `frame_bytes` module parameter (try 96) and refuses to stream while it is 0;
+  it must divide `period_bytes`.
+- **Period bytes at 1x.** Set by the DSP's transfer loop, not by `+0x60`.
+  `0x3000` at 96 kHz; maybe `0x1800` at 48 kHz. `+0x2c` against the ring in a
+  first Linux stream settles both this and the frame size.
+- **Channel map** at `[+0x14]` (24 dwords): not written yet.
 - **Sample format and channel order** inside a frame. The driver exposes
   `frame_bytes / 4` raw 32-bit words (`S32_LE`) until that is known.
 - **Capture.** Audio is DMA both ways, but where the DSP writes recorded
