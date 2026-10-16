@@ -91,8 +91,12 @@ Module parameters
 
 .. code-block:: text
 
-   frame_bytes=<n>   Bytes per frame on the host ring. Not confirmed yet;
-                     0 (the default) keeps streaming disabled.
+   frame_bytes=<n>   Bytes per frame on the host ring. Not confirmed yet
+                     (96 is the value to try); 0 (the default) keeps
+                     streaming disabled. Must divide period_bytes.
+   period_bytes=<n>  Bytes the DSP fetches per interrupt. 0x3000 (the
+                     default) was seen at 96 kHz; not confirmed at 48 kHz.
+                     The ALSA buffer is 8 periods.
 
 Current status and limitations
 ===============================

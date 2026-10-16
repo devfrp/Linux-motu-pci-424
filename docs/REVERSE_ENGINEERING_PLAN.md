@@ -207,9 +207,10 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
   installed under `/lib/firmware/motu424/` and checked by SHA-256. Still to do:
   re-upload on resume (the FPGA has no PROM), and the PCI-324 load path.
 - [x] **4.3 Transport rewrite.** **[REDONE 2026-10-16, not yet run on a card]**
-  The PIO copy path is gone. The ALSA buffer is the 512 KB coherent host ring
-  (`SNDRV_DMA_TYPE_DEV`, 32-bit mask, bus mastering on); start writes
-  `+0x5c/+0x8c/+0x60/+0x54`, stop clears `+0xf4` and `+0x54` and `.sync_stop`
+  The PIO copy path is gone. The host ring is a 512 KB coherent allocation
+  (`SNDRV_DMA_TYPE_DEV`, 32-bit mask, bus mastering on) and the ALSA buffer is
+  its first 8 periods, since the DSP wraps after `+0x64` periods; start writes
+  `+0x58/+0x68/+0x6c`, `+0x5c/+0x8c/+0x60`, `+0x64 = 8`, then `+0x54`; stop clears `+0xf4` and `+0x54` and `.sync_stop`
   waits for the DSP's `+0xf4` acknowledge; pointer = `(+0x2c - ring) /
   frame_bytes`. Playback at 48 kHz only; `frame_bytes` is a module parameter
   (0 = streaming off) until the ring's frame layout is known.

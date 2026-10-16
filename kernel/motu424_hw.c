@@ -15,8 +15,9 @@
  *    FPGA image out through the DSP's GPIO, writes the DSP program into
  *    internal RAM, releases the CPU and reads audio_base from a mailbox;
  *  - audio is DSP bus-master DMA: the host hands the DSP a coherent ring,
- *    the DSP raises one interrupt per IRQ_FRAMES frames (ack: RSTSRC INTRST)
- *    and reports its position as a host bus address at audio_base+0x2c.
+ *    the DSP raises one interrupt per period (ack: RSTSRC INTRST), wraps
+ *    after RING_PERIODS periods and reports its position as a host bus
+ *    address at audio_base+0x2c.
  *
  * Only the PCI-424 (137a:0004) load path is implemented and tested.
  */
@@ -34,7 +35,12 @@
 static unsigned int frame_bytes;
 module_param(frame_bytes, uint, 0444);
 MODULE_PARM_DESC(frame_bytes,
-		 "Host-ring bytes per frame (unconfirmed, see docs/transport.md); 0 = streaming disabled");
+		 "Host-ring bytes per frame (unconfirmed, 96 suggested, see docs/transport.md); 0 = streaming disabled");
+
+static unsigned int period_bytes = MOTU424_PERIOD_BYTES;
+module_param(period_bytes, uint, 0444);
+MODULE_PARM_DESC(period_bytes,
+		 "Host-ring bytes the DSP fetches per interrupt (0x3000 seen at 96 kHz; unconfirmed at 48 kHz)");
 
 MODULE_FIRMWARE(MOTU424_FW_FPGA);
 MODULE_FIRMWARE(MOTU424_FW_PROG);
@@ -367,10 +373,13 @@ int motu424_hw_init(struct motu424 *chip)
 	motu424_dsp_init(chip);
 
 	chip->frame_bytes = frame_bytes;
-	if (chip->frame_bytes && (chip->frame_bytes % 4 ||
-				  MOTU424_RING_BYTES % chip->frame_bytes)) {
-		dev_warn(dev, "frame_bytes=%u must be a multiple of 4 dividing 0x%x; streaming disabled\n",
-			 chip->frame_bytes, MOTU424_RING_BYTES);
+	chip->period_bytes = period_bytes;
+	if (chip->frame_bytes && (chip->frame_bytes % 4 || !chip->period_bytes ||
+				  chip->period_bytes % chip->frame_bytes ||
+				  chip->period_bytes > MOTU424_RING_BYTES / MOTU424_RING_PERIODS)) {
+		dev_warn(dev, "frame_bytes=%u must be a multiple of 4 dividing period_bytes=0x%x (at most 0x%x); streaming disabled\n",
+			 chip->frame_bytes, chip->period_bytes,
+			 MOTU424_RING_BYTES / MOTU424_RING_PERIODS);
 		chip->frame_bytes = 0;
 	}
 	dev_info(dev, "DSP running: audio_base=0x%x mix_base=0x%x%s\n",
@@ -408,18 +417,23 @@ void motu424_hw_shutdown(struct motu424 *chip)
 }
 
 /*
- * Start playback from the host ring at bus address @ring (MOTU424_RING_BYTES
- * long): ring base, size code, frames per interrupt, then enable; clear any
- * stale interrupt request and unmask PINTA#. Called from the atomic trigger.
+ * Start playback from the host ring at bus address @ring: the fetch geometry
+ * the vendor's configure path writes (0x29930), ring base, size code, frames
+ * per interrupt and periods per wrap, then enable; clear any stale interrupt
+ * request and unmask PINTA#. Called from the atomic trigger.
  */
 void motu424_hw_stream_start(struct motu424 *chip, dma_addr_t ring)
 {
 	unsigned long flags;
 
 	spin_lock_irqsave(&chip->lock, flags);
+	motu424_awr(chip, MOTU424_AREG_CFG_C, MOTU424_CFG_C);
+	motu424_awr(chip, MOTU424_AREG_XFER_A, MOTU424_XFER_A);
+	motu424_awr(chip, MOTU424_AREG_XFER_B, MOTU424_XFER_B);
 	motu424_awr(chip, MOTU424_AREG_RING_BASE, lower_32_bits(ring));
 	motu424_awr(chip, MOTU424_AREG_RING_SIZE, MOTU424_RING_BYTES);
 	motu424_awr(chip, MOTU424_AREG_IRQ_FRAMES, MOTU424_IRQ_FRAMES_1X);
+	motu424_awr(chip, MOTU424_AREG_RING_PERIODS, MOTU424_RING_PERIODS);
 	motu424_awr(chip, MOTU424_AREG_ENABLE, 1);
 	motu424_wr32(chip, MOTU424_PCI_RSTSRC, MOTU424_RSTSRC_INTRST);
 	motu424_port_wr(chip, MOTU424_PORT_HSR, 0);
@@ -464,13 +478,14 @@ int motu424_hw_stream_sync_stop(struct motu424 *chip)
 
 /*
  * Position: the DSP stores the host bus address it has reached at
- * audio_base+0x2c (the vendor computes (value - ring) >> 2, in dwords).
+ * audio_base+0x2c (the vendor computes (value - ring) >> 2, in dwords) and
+ * resets it to the ring base every RING_PERIODS periods.
  */
 snd_pcm_uframes_t motu424_hw_stream_pointer(struct motu424 *chip, dma_addr_t ring)
 {
 	u32 off = motu424_ard(chip, MOTU424_AREG_DMAPOINT) - lower_32_bits(ring);
 
-	if (off >= MOTU424_RING_BYTES)
+	if (off >= MOTU424_RING_PERIODS * chip->period_bytes)
 		return 0;
 	return off / chip->frame_bytes;
 }
