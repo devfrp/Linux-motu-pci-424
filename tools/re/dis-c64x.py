@@ -21,14 +21,15 @@ import capstone as cs
 # prologue push).  Re-derive the operands from the raw word per the C64x CPU ISA
 # (SPRU732) load/store formats: bit 3 = 1 selects the 15-bit-offset form whose base
 # is B14 (y=0) or B15 (y=1); otherwise base/offset registers are on the .D1 (A, y=0)
-# or .D2 (B, y=1) side; the data register side is the s bit (bit 2) in both forms.
+# or .D2 (B, y=1) side; the data register side is the s bit (bit 1) in both forms,
+# and bit 2 is set in both (bits 3:2 = 01 or 11).
 _MODES = {0: "*-{b}[{o}]", 1: "*+{b}[{o}]", 4: "*-{b}[{r}]", 5: "*+{b}[{r}]",
           8: "*--{b}[{o}]", 9: "*++{b}[{o}]", 10: "*{b}--[{o}]", 11: "*{b}++[{o}]",
           12: "*--{b}[{r}]", 13: "*++{b}[{r}]", 14: "*{b}--[{r}]", 15: "*{b}++[{r}]"}
 
 def ldst_operands(word, mnemonic, cap_ops):
     """Return corrected 'src, mem' / 'mem, dst' text for a load/store word."""
-    s = (word >> 2) & 1
+    s = (word >> 1) & 1
     y = (word >> 7) & 1
     sd = (word >> 23) & 31
     side = "b" if s else "a"
@@ -63,7 +64,7 @@ for i in md.disasm(data, a.base):
         prev_p = 0
         continue
     ops = i.op_str
-    if i.mnemonic.lower()[:2] in ("ld", "st") and (word & 2):
+    if i.mnemonic.lower()[:2] in ("ld", "st") and (word & 4):
         ops = ldst_operands(word, i.mnemonic, ops)
     # Capstone omits the predicate: creg (bits 31-29) 1..6 = B0 B1 B2 A1 A2 A0, z (bit 28) = negate.
     creg, z = word >> 29, (word >> 28) & 1
@@ -101,24 +102,28 @@ def routine_of(addr):
         else: hi = mid - 1
     return starts[lo]
 
+def access_size(mn):
+    sz = mn.lower()[2:].lstrip("n").rstrip("u")         # ldw -> w, ldnw -> w, ldhu -> h
+    return {"b": 1, "h": 2, "w": 4, "dw": 8}.get(sz, 4)
+
 pat = re.compile(r"\*\+?b14\[(0x[0-9a-f]+|\d+)\]", re.I)
 fields = collections.defaultdict(list)
 for addr, word, par, mn, ops in lines:
     m = pat.search(ops)
     if not m:
         continue
-    n = int(m.group(1), 0)
+    # the offset is scaled by the access size: B/BU x1, H/HU x2, W x4, DW x8
+    byte = int(m.group(1), 0) * access_size(mn)
     kind = "ST" if mn.lower().startswith("st") else "LD" if mn.lower().startswith("ld") else mn
-    fields[n].append((addr, kind, mn, ops, routine_of(addr)))
+    fields[byte].append((addr, kind, mn, ops, routine_of(addr)))
 
 print(f"# data page B14 = 0x{a.dp:x}, audio_base = 0x{a.ab:x} (= B14 + 0x{a.ab - a.dp:x})")
 print(f"# {len(starts)} routines by the b-b3 heuristic")
-for n in sorted(fields):
-    byte = n * 4
+for byte in sorted(fields):
     ab = byte - (a.ab - a.dp)
     tag = f"audio_base+0x{ab:x}" if ab >= 0 else f"audio_base-0x{-ab:x}"
-    uses = fields[n]
+    uses = fields[byte]
     nld = sum(1 for u in uses if u[1] == "LD"); nst = sum(1 for u in uses if u[1] == "ST")
-    print(f"\n== B14[{n}] = 0x{a.dp + byte:x} = {tag}   ({nld} LD, {nst} ST, {len(uses) - nld - nst} other)")
+    print(f"\n== B14+0x{byte:x} = 0x{a.dp + byte:x} = {tag}   ({nld} LD, {nst} ST, {len(uses) - nld - nst} other)")
     for addr, kind, mn, ops, rt in uses:
         print(f"   {addr:06x}  routine {rt:06x}  {kind:2s}  {mn:8s} {ops}")
