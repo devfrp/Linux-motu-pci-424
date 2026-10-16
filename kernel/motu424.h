@@ -8,13 +8,14 @@
  * ---------------------------------------------------------------------------
  * IMPORTANT - REVERSE ENGINEERING STATUS
  * ---------------------------------------------------------------------------
- * The MOTU PCI-324/424 is undocumented hardware. The model below was recovered
- * by static RE of the vendor Windows driver MOTUAW.sys (docs/register-map.md,
- * docs/transport.md, docs/vendor-driver-map.md). Structural facts (windowed
- * address space, port BAR, PIO-aperture transport, audio-register offsets,
- * IRQ ack protocol) are CONFIRMED from disassembly; anything tagged
- * "TODO: verify" is still a hypothesis, and the card-reported runtime
- * addresses (audio base / ack address) cannot be known without a card.
+ * The MOTU PCI-324/424 is undocumented hardware. The model below comes from
+ * static RE of the vendor Windows driver MOTUAW.sys and of the card's own DSP
+ * program, checked on a real PCI-424 (issue #2; docs/register-map.md,
+ * docs/transport.md, docs/fpga-upload.md). The board is a TI TMS320C6412 DSP
+ * (its PCI port is the card's PCI interface) plus an FPGA with no config
+ * PROM, so the host loads both on every start. The DSP is the PCI bus
+ * master: it moves audio to and from a host ring by itself. Anything tagged
+ * "TODO: verify" is still a hypothesis.
  *
  * All accesses are funnelled through motu424_hw.c so that hardware truth
  * lives in a single file.
@@ -49,17 +50,17 @@
 /* --------------------------------------------------------------------------
  * Windowed card-address space - CONFIRMED (accessor VAs 0x29110/0x29160)
  * --------------------------------------------------------------------------
- * The card is not a flat register file. A 32-bit "card address" is dispatched
- * onto one of two MMIO BAR windows:
+ * A 32-bit "card address" is a TMS320C6412 address, dispatched onto one of
+ * two MMIO BAR windows:
  *
  *   if ((addr & 0xff800000) == 0x01800000)   // window A (8 MB)
- *       mmio = win_a + (addr & 0x007fffff);
+ *       mmio = win_a + (addr & 0x007fffff);  // DSP peripheral registers
  *   else                                      // window B (4 MB)
- *       mmio = win_b + (addr & 0x003fffff);
+ *       mmio = win_b + (addr & 0x003fffff);  // DSP memory page set by DSPP
  *
- * Windows A and B alias the same underlying space (0x018c0000 and 0x000c0000
- * both name bank 0); A is used for 8-dword block writes, B for ordinary
- * accesses and the audio aperture. All accesses are little-endian 32-bit.
+ * With DSPP = 0, window B offsets 0..0x3ffff are the DSP's internal RAM; the
+ * rest of that page is reserved on the C6412 and is never touched. All
+ * accesses are little-endian 32-bit.
  */
 #define MOTU424_WINA_TAG	0x01800000u
 #define MOTU424_WINA_TAG_MASK	0xff800000u
@@ -67,17 +68,27 @@
 #define MOTU424_WINB_MASK	0x003fffffu
 #define MOTU424_WINA_LEN	0x00800000u	/* 8 MB */
 #define MOTU424_WINB_LEN	0x00400000u	/* 4 MB */
+#define MOTU424_RAM_LEN		0x00040000u	/* C6412 internal RAM, DSPP = 0 */
 
 /*
- * Window A also exposes the TMS320C6412's EEPROM controller (SPRS219J:
- * EEADD/EEDAT/EECTL at card addr 0x01c20000/4/8 -> window-A offset
- * 0x420000/4/8). That EEPROM (Atmel 93C66) holds the card's PCI identity;
- * nothing in this driver has a legitimate reason to write there, so
- * motu424_wr32() denies every write in this range on its own (see
- * motu424_hw.c) rather than relying on callers to avoid it.
+ * The only DSP peripheral registers the driver writes (SPRS219J / SPRU581C /
+ * SPRU234C). Every other window-A write is refused by motu424_wr32(); that
+ * keeps the DSP EEPROM controller (card 0x01c20000, which holds the card's
+ * PCI identity) out of reach by construction.
  */
-#define MOTU424_WINA_EEPROM_START	0x420000u
-#define MOTU424_WINA_EEPROM_END		0x420008u
+#define MOTU424_EMIF_CECTL0	0x01800008u	/* EMIF CE0 space control      */
+#define MOTU424_GPIO_GPEN	0x01b00000u	/* GPIO enable                 */
+#define MOTU424_GPIO_GPDIR	0x01b00004u	/* GPIO direction              */
+#define MOTU424_GPIO_GPVAL	0x01b00008u	/* GPIO value                  */
+#define MOTU424_PCI_RSTSRC	0x01c00000u	/* PCI reset source / IRQ ack  */
+
+#define MOTU424_CECTL0_INIT	0x10914221u	/* 32-bit async CE0, vendor value */
+#define MOTU424_RSTSRC_INTRST	0x10u		/* bit 4: clear the DSP's INTREQ  */
+
+/* FPGA serial-configuration pins on the DSP GPIO (vendor fn 0x251e0). */
+#define MOTU424_GP_DATA0	BIT(5)
+#define MOTU424_GP_NCONFIG	BIT(6)
+#define MOTU424_GP_DCLK		BIT(7)
 
 /* --------------------------------------------------------------------------
  * I/O-port BAR = TMS320C6412 Host Port Interface (HPI) registers, per the
@@ -85,21 +96,12 @@
  *
  *   +0x0  HSR  (Host Status Register)          - bit 2 INTAM masks PINTA#
  *         when SET; the host must clear it (write 0) to unmask/enable the
- *         card's interrupt to the host. Bit 1 mirrors PINTA# pending.
+ *         card's interrupt to the host. Bit 1 INTAVAL = interrupt pending.
  *   +0x4  HDCR (Host-to-DSP Control Register)  - bit 0 WARMRESET resets the
- *         DSP core; bit 1 DSPINT pulses to release a reset core to execute
- *         from address 0 (only meaningful once code has been loaded there).
- *   +0x8  DSPP (DSP Page Register)             - selects the active window
- *         page (reused below as the aperture page-select, see
- *         MOTU424_APERTURE_PAGE_SHIFT).
- *
- * The vendor routine at 0x298e0 (WRITE_PORT(+0x0, 4) then WRITE_PORT(+0x4,
- * 1)) sets INTAM and asserts WARMRESET: per the TI docs that is a stop/reset
- * sequence, not a start one, so it is used as such here. Enabling is the
- * inverse: clear INTAM (write 0 to HSR) to unmask PINTA#. Booting the DSP
- * core itself (DSPP + code load + DSPINT) needs firmware upload, which is a
- * separate, not-yet-implemented piece of work (see docs/fpga-upload.md);
- * until then the driver only ever toggles the IRQ mask.
+ *         DSP core; bit 1 DSPINT releases a reset core to execute from
+ *         address 0 once the program has been loaded there.
+ *   +0x8  DSPP (DSP Page Register)             - selects the window-B page;
+ *         always 0 here (internal RAM).
  */
 #define MOTU424_PORT_HSR	0x0
 #define MOTU424_PORT_IRQ_PENDING	BIT(1)
@@ -110,89 +112,65 @@
 #define MOTU424_PORT_DSPP	0x8
 
 /* --------------------------------------------------------------------------
- * Bank register file - INFERRED (window-B card addresses)
+ * Host-loaded firmware - CONFIRMED on hardware (docs/fpga-upload.md)
  * --------------------------------------------------------------------------
- * Two banks at 0xc0000 / 0x100000 (stride 0x40000); per-bank ctrl/status at
- * bank+0x24 (bit 6 is a r/w control flag); bank+0x08..+0x24 programmed as an
- * 8-dword unit at init via window A (WriteBlock8 0x291a0).
+ * Both images are MOTU's and are not shipped: the user extracts them from
+ * their own MOTUAW.sys with tools/re/extract-firmware.py and installs them
+ * under /lib/firmware/motu424/. Lengths and SHA-256 are checked before any
+ * byte reaches the card.
  */
-#define MOTU424_BANK0		0x000c0000u
-#define MOTU424_BANK1		0x00100000u
-#define MOTU424_BANK_STRIDE	0x00040000u
-#define MOTU424_BANK_CTRL	0x24u
+#define MOTU424_FW_FPGA		"motu424/pci424-serial-container.bin"
+#define MOTU424_FW_FPGA_LEN	37177
+#define MOTU424_FW_PROG		"motu424/pci424-program.bin"
+#define MOTU424_FW_PROG_LEN	28272
+
+/* The DSP program publishes audio_base in the last dword of internal RAM. */
+#define MOTU424_MAILBOX		0x0003fffcu
 
 /* --------------------------------------------------------------------------
- * Audio register block - CONFIRMED offsets, runtime base
+ * Audio block - the DSP program's global data, published at audio_base
  * --------------------------------------------------------------------------
- * The audio register base is a CARD-REPORTED card address (vendor keeps it at
- * devext+0x98, read from the card at init; likewise the IRQ-ack address at
- * devext+0x88 and the CueMix mixer base at devext+0x9c). These are runtime
- * values: they cannot be recovered statically and must be dumped on real
- * hardware (tools/motu424-probe). Until then they are 0 here and streaming is
- * refused; they can be injected via module parameters for bring-up
- * (motu424.audio_base= / ack_addr= / mix_base=).
+ * audio_base is read from the mailbox after the program starts (0x6fac with
+ * the current image: B14 + 0x13c). Offsets CONFIRMED against the DSP code
+ * and a Windows-configured dump (issue #2, 2026-10-15).
  */
-#define MOTU424_AREG_ENABLE	0x54u	/* W: 1 = stream/DMA enable          */
-#define MOTU424_AREG_INCR	0x60u	/* W: period increment 0x10<<(2*fam) */
-#define MOTU424_AREG_PARAM	0x64u	/* W: rate param (encoding TODO)     */
-#define MOTU424_AREG_DMAPOINT	0x2cu	/* R: HW position counter (raw bytes);
-					 *   fn 0x2a5c0 returns
-					 *   (raw - aperture_base) >> 2 dwords
-					 */
-#define MOTU424_AREG_AUXPOS	0x34u	/* R: 2nd position/counter (semantics
-					 *   OPEN; reader fn 0x2a610)
-					 */
-#define MOTU424_AREG_POS	0x128u	/* R->W0: position counter           */
-#define MOTU424_AREG_NUM	0x12cu	/* R->W0: numerator                  */
-#define MOTU424_AREG_DIV	0x130u	/* R->W0: divisor                    */
+#define MOTU424_AREG_MIXBASE	0x00u	/* R: CueMix coefficient block (45 dwords) */
+#define MOTU424_AREG_DMAPOINT	0x2cu	/* R: DSP's current host bus address    */
+#define MOTU424_AREG_ENABLE_INIT 0x50u	/* W 1: vendor init, end of bring-up    */
+#define MOTU424_AREG_ENABLE	0x54u	/* W: 1 = start, 0 = stop the stream     */
+#define MOTU424_AREG_RING_BASE	0x5cu	/* W: host ring bus address              */
+#define MOTU424_AREG_IRQ_FRAMES	0x60u	/* W: frames per interrupt               */
+#define MOTU424_AREG_RING_SIZE	0x8cu	/* W: host ring size code (bytes)        */
+#define MOTU424_AREG_STOP_ACK	0xf4u	/* W 0 before stop; DSP sets !0 when done */
 
-#define MOTU424_ACK_MAGIC	0x10u	/* IRQ ack: write 0x10 to ack_addr   */
-#define MOTU424_PERIOD_UNIT	0x800u	/* vendor period accumulator bound   */
-
-/* --------------------------------------------------------------------------
- * PIO aperture ring - CONFIRMED shape (arm routine fn 0x2c150)
- * --------------------------------------------------------------------------
- * Audio is NOT host bus-master DMA. The vendor pushes samples into a window-B
- * aperture with WRITE_REGISTER_BUFFER_ULONG (<=64 KB bursts, dword units) and
- * runs a software readHead/writeHead/len ring against a hardware "dmaPoint".
- *
- * The aperture base + length are RUNTIME values read from the audio sub-object
- * (play: base [A+0x18], len [A+0x1c]; capture: base [A+0x28], len [A+0x2c]) -
- * card-reported, like the audio base itself, so they cannot be known without a
- * card. Before streaming a direction the driver programs a page/segment select:
- * WRITE_PORT(port+0x8, apertureBase >> 22) - the window-B 4 MB page index.
- */
-#define MOTU424_APERTURE_PAGE_SHIFT	22	/* base>>22 -> port+0x8 page reg */
-#define MOTU424_RING_DWORDS	0x4000u		/* 64 KB burst, power of two */
-#define MOTU424_RING_BYTES	(MOTU424_RING_DWORDS * 4)
+#define MOTU424_MIX_DWORDS	45
 
 /*
  * Software IRQ bits: driver-internal contract between motu424_hw_irq_ack()
  * and the interrupt handler in motu424_main.c (NOT hardware register bits).
  */
-#define MOTU424_IRQ_PLAY	BIT(0)	/* playback period elapsed */
-#define MOTU424_IRQ_REC		BIT(1)	/* capture  period elapsed */
+#define MOTU424_IRQ_OURS	BIT(0)	/* the card interrupted; acked       */
+#define MOTU424_IRQ_PLAY	BIT(1)	/* ... while playback was running    */
 
 /* --------------------------------------------------------------------------
- * Audio format constants
+ * Host ring - CONFIRMED shape, format OPEN (docs/transport.md)
  * --------------------------------------------------------------------------
- * The card's native wire format is 24-bit samples packed 3 bytes per channel
- * per frame ("event"). We expose S24_3LE; endianness must be confirmed on a
- * card. The fixed frame's channel count shrinks as the rate family rises
- * (1x/2x/4x).
+ * One coherent host buffer, 512 KB as on Windows (+0x8c size code 0x80000).
+ * The DSP fetches from it as PCI master and raises one interrupt per
+ * IRQ_FRAMES frames (0x40 at 1x). Only the 1x / 48 kHz state the program
+ * boots into is used: rate changes go through the relock sequence, which is
+ * not implemented.
+ *
+ * The bytes per frame on the ring are NOT known yet (the DSP side hints at
+ * 48), so the frame size is a module parameter and streaming stays off until
+ * it is set; it must divide the ring size. Samples are exposed as 32-bit
+ * words (S32_LE), frame_bytes / 4 of them per frame. TODO: verify both with a
+ * mid-stream dump of the ring.
  */
-#define MOTU424_BYTES_PER_SAMPLE	3
-#define MOTU424_MAX_CHANNELS		24	/* e.g. one 2408 mk3 bank */
-#define MOTU424_MIN_CHANNELS		2
-
-/*
- * Host buffer sizing bounds (bytes). The period must fit the aperture ring
- * with double-buffering, hence the period cap at half the ring.
- */
-#define MOTU424_MAX_BUFFER_BYTES	(512 * 1024)
-#define MOTU424_MIN_PERIOD_BYTES	1024
-#define MOTU424_MAX_PERIOD_BYTES	(MOTU424_RING_BYTES / 2)
-#define MOTU424_MAX_PERIODS		32
+#define MOTU424_RING_BYTES	0x80000u
+#define MOTU424_IRQ_FRAMES_1X	0x40u
+#define MOTU424_RATE		48000
+#define MOTU424_MAX_PERIODS	1024
 
 struct motu424;
 
@@ -200,14 +178,6 @@ struct motu424;
 struct motu424_stream {
 	struct snd_pcm_substream *substream;	/* NULL when closed        */
 	bool running;
-	unsigned int period_bytes;
-	unsigned int buffer_bytes;
-	unsigned int buffer_frames;
-	/* PIO ring bookkeeping (all owned by motu424_hw.c under chip->lock) */
-	unsigned int buf_pos;		/* next host-buffer byte to copy     */
-	unsigned int ring_pos;		/* aperture write head, in bytes     */
-	unsigned int pos_frames;	/* ALSA pointer, frames in buffer    */
-	unsigned int period_acc;	/* frames since last period elapsed  */
 };
 
 /*
@@ -226,47 +196,32 @@ struct motu424 {
 	struct pci_dev *pci;
 
 	struct motu424_bar bars[PCI_STD_NUM_BARS];	/* from main.c   */
-	void __iomem *win_a;		/* 8 MB MMIO window (may be NULL) */
+	void __iomem *win_a;		/* 8 MB MMIO window               */
 	void __iomem *win_b;		/* 4 MB MMIO window               */
-	void __iomem *port;		/* small I/O-port bridge BAR      */
+	void __iomem *port;		/* HPI register BAR (16 bytes)    */
 	int irq;
 
 	spinlock_t lock;		/* guards register access + stream state */
 
-	/* Card-reported runtime card-addresses (0 = not yet discovered). */
-	u32 audio_base;			/* audio register block base    */
-	u32 ack_addr;			/* IRQ ack register             */
-	u32 mix_base;			/* CueMix coefficient region    */
-	u32 aperture[2];		/* [0]=playback [1]=capture base */
+	/* Published by the DSP program after the load (0 = not running). */
+	u32 audio_base;			/* audio block (DSP global data) */
+	u32 mix_base;			/* CueMix coefficient block      */
+
+	unsigned int frame_bytes;	/* host-ring bytes per frame, 0 = unknown */
 
 	struct snd_pcm *pcm;
 	struct motu424_stream playback;
-	struct motu424_stream capture;
-
-	unsigned int rate;		/* active sample rate (Hz)        */
-	unsigned int family;		/* 0/1/2 = 1x/2x/4x               */
-	unsigned int period_incr;	/* samples per IRQ, 0x10<<(2*fam) */
-	unsigned int channels;		/* last-prepared channel count;
-					 * informational only — not read by
-					 * motu424_hw.c (runtime->channels
-					 * is used in its place)
-					 */
 
 	char model[32];			/* human-readable model string */
 };
 
-#define MOTU424_STREAM_IS_PLAYBACK(s) \
-	((s)->stream == SNDRV_PCM_STREAM_PLAYBACK)
-
 /* --- motu424_hw.c : the only file that touches real register semantics --- */
 int  motu424_hw_init(struct motu424 *chip);
 void motu424_hw_shutdown(struct motu424 *chip);
-int  motu424_hw_set_rate(struct motu424 *chip, unsigned int rate);
-int  motu424_hw_stream_prepare(struct motu424 *chip,
-			       struct snd_pcm_substream *substream);
-void motu424_hw_stream_start(struct motu424 *chip, bool playback, bool fresh);
-void motu424_hw_stream_stop(struct motu424 *chip, bool playback);
-snd_pcm_uframes_t motu424_hw_stream_pointer(struct motu424 *chip, bool playback);
+void motu424_hw_stream_start(struct motu424 *chip, dma_addr_t ring);
+void motu424_hw_stream_stop(struct motu424 *chip);
+int  motu424_hw_stream_sync_stop(struct motu424 *chip);
+snd_pcm_uframes_t motu424_hw_stream_pointer(struct motu424 *chip, dma_addr_t ring);
 u32  motu424_hw_irq_ack(struct motu424 *chip);	/* returns MOTU424_IRQ_* bits */
 
 /* --- motu424_pcm.c --- */

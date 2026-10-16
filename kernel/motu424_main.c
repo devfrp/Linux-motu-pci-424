@@ -36,9 +36,9 @@ static const struct pci_device_id motu424_ids[] = {
 MODULE_DEVICE_TABLE(pci, motu424_ids);
 
 /*
- * Interrupt handler. The card raises one IRQ per elapsed period, per active
- * DMA engine. motu424_hw_irq_ack() reads and clears the source register and
- * tells us which streams advanced; we then notify ALSA.
+ * Interrupt handler. The DSP raises one interrupt every IRQ_FRAMES frames;
+ * motu424_hw_irq_ack() acks it, and ALSA reads the real position through
+ * the pointer callback.
  */
 static irqreturn_t motu424_interrupt(int irq, void *dev_id)
 {
@@ -49,13 +49,8 @@ static irqreturn_t motu424_interrupt(int irq, void *dev_id)
 	if (!pending)
 		return IRQ_NONE;
 
-	if ((pending & MOTU424_IRQ_PLAY) && chip->playback.running &&
-	    chip->playback.substream)
+	if ((pending & MOTU424_IRQ_PLAY) && chip->playback.substream)
 		snd_pcm_period_elapsed(chip->playback.substream);
-
-	if ((pending & MOTU424_IRQ_REC) && chip->capture.running &&
-	    chip->capture.substream)
-		snd_pcm_period_elapsed(chip->capture.substream);
 
 	return IRQ_HANDLED;
 }
@@ -87,15 +82,15 @@ static int motu424_probe(struct pci_dev *pci, const struct pci_device_id *ent)
 	}
 
 	/*
-	 * The PCIe-424 (HD Express) is a different card generation: an
-	 * ARM+Xilinx design that needs a firmware image uploaded over PCIe
-	 * before it does anything, unlike the classic PCI-324/424's
-	 * self-configuring Altera FPGA that this driver's register model
-	 * (motu424_hw.c) assumes.
+	 * Only the PCI-424 (0004) load sequence is implemented and tested.
+	 * The PCI-324 (0003) loads its FPGA through different registers, and
+	 * the PCIe-424 (0005) has not been checked on a card yet
+	 * (docs/fpga-upload.md).
 	 */
-	if (ent->device == MOTU424_DEV_PCI424_C) {
+	if (ent->device != MOTU424_DEV_PCI424_B) {
 		dev_warn(&pci->dev,
-			 "PCIe-424 (HD Express) is not supported yet: firmware upload is not implemented\n");
+			 "device %04x is not supported yet: only the PCI-424 (0004) firmware load is implemented\n",
+			 ent->device);
 		return -ENODEV;
 	}
 
@@ -139,15 +134,24 @@ static int motu424_probe(struct pci_dev *pci, const struct pci_device_id *ent)
 		chip->bars[i].flags = pci_resource_flags(pci, i);
 	}
 
-	/* No bus mastering: the card is fed by PIO, it never DMAs host RAM. */
+	err = dma_set_mask_and_coherent(&pci->dev, DMA_BIT_MASK(32));
+	if (err < 0)
+		return err;
 
 	snprintf(chip->model, sizeof(chip->model), "MOTU PCI-%s",
 		 ent->device == MOTU424_DEV_PCI424_A ? "324" : "424");
 
-	/* Bring the hardware to a known idle state before enabling IRQs. */
+	/* Load the FPGA and DSP program; PINTA# stays masked until a stream. */
 	err = motu424_hw_init(chip);
 	if (err < 0)
 		return err;
+
+	/*
+	 * The DSP is the PCI bus master: it fetches audio from the host ring.
+	 * Enabled only now that it has been reset and reloaded, so a DSP left
+	 * running by a warm reboot cannot reach stale host addresses.
+	 */
+	pci_set_master(pci);
 
 	err = pci_alloc_irq_vectors(pci, 1, 1, PCI_IRQ_ALL_TYPES);
 	if (err < 0) {
@@ -169,10 +173,10 @@ static int motu424_probe(struct pci_dev *pci, const struct pci_device_id *ent)
 	card->sync_irq = chip->irq;
 
 	/*
-	 * Registered last so it runs first on teardown: quiesce DMA and mask
-	 * interrupts before the IRQ handler and vectors are torn down (devres
-	 * releases in reverse order). This keeps a shared IRQ line from
-	 * "screaming" after free_irq().
+	 * Registered after the IRQ so it runs before it on teardown: stop and
+	 * reset the DSP, ending its DMA, and mask interrupts before the IRQ
+	 * handler and vectors are torn down (devres releases in reverse
+	 * order). The host ring is freed later with the card.
 	 */
 	err = devm_add_action_or_reset(&pci->dev,
 				       motu424_hw_shutdown_action, chip);
