@@ -79,11 +79,11 @@ base and go through the same window dispatch:
 | `base+0x50` | W `1` | init `0x2c5ff` | bring-up **enable** at end of the init routine (`0x2c5d3` address) |
 | `base+0x54` | W `1` | `0x29660` (slot 1) | stream/DMA **enable** (writes 1 when arg≠0) |
 | `base+0x5c` | W | `0x29840` | **host ring bus address** (writes `[this+0x10]`; `0xd9e20000` on a Windows-configured card) — see `transport.md` |
-| `base+0x60` | W | `0x295e0` (slot 0) | **frames per interrupt** = `0x10 << (2*fam)` (×2 if `[+0x1cc]>1`); `0x80` on the card at 96 kHz, `0x40` at 1x. `fam` here is not the 1x/2x/4x rate family (that would give `0x10` at 1x) |
-| `base+0x64` | W | `0x297f0` (slot 2) | rate/clock **parameter** (caller-supplied dword, no encoding in the setter) |
+| `base+0x60` | W | `0x295e0` (slot 0) | **frames per interrupt** = `0x10 << (2*arg)` (×2 if `[+0x1cc]>1`); `0x80` on the card at 96 kHz = arg 1 doubled. The argument is caller-supplied, not derived from the rate family: `fn 0x13c30` passes `2`. The DSP loads this once in its tick and does not visibly use it (`transport.md`) |
+| `base+0x64` | W | `0x297f0` (slot 2) | **periods per ring wrap**: the DSP's period counter wraps here and its pointer returns to `+0x5c` (`8` on the Windows-configured card; `fn 0x13c30` passes `4`). Caller-supplied dword, no encoding in the setter |
 | `base+0x80` | W | `0x2a820` (`0x2a8c2`) | **rate/mode register**: `lookup_table[rate_mode] (at 0x30c74)` OR `[+0x1d4]` (high-bit sentinel) OR `(0x10000 or 0xf0000` based on `[+0x1ec]`); also influenced by `+0x1ec` `OR` mask `0xfff10000` |
 | `base+0x88` | W | `0x2a710` (`0x2a7a2`) | **period buffer size** (e.g. `0x80000` default, `0x40000` for rate class 2, scaled for 2x/4x families) |
-| `base+0x8c` | W | `0x2a710` (`0x2a7d7`) | **host ring size code** in bytes (computed per rate family: `0x80000`, `0x40000`, or `1 << (rate-8+0xe)` if `[+0x1d0]` bit set, else `0x20000`); `0x80000` = 512 KB on the Windows-configured card |
+| `base+0x8c` | W | `0x2a710` (`0x2a7d7`) | **host ring size code** in bytes (computed per rate family: `0x80000`, `0x40000`, or `1 << (rate-8+0xe)` if `[+0x1d0]` bit set, else `0x20000`); `0x80000` = 512 KB on the Windows-configured card. Not the wrap point: the DSP reads it only in its rate/mode path (`transport.md`) |
 | `base+0x90` | W | `0x2a710` (`0x2a803`) | secondary period value `[ebp-4]` (purpose OPEN; zero-init default) |
 | `base+0x9c` | W | `0x2aab0` (`0x2ab08`) | rate-state write: `([+0x280]+0x32)/100` (the CueMix base mirror's +0x9c is read at init; this writes the audio-block register) — also written by `+0x288` path |
 | `base+0xac` | W | `0x2a820` (`0x2a88c`) | **transport-arm length**: `(rate_mode-4)*25 + 24` (only written when 4 ≤ rate_mode < 8) |
@@ -213,11 +213,16 @@ not a start.
 
 ## Rate mapping (PARTIAL)
 
-- **family** ∈ {0,1,2} = {1x, 2x, 4x} drives `period_increment = 0x10 <<
-  (2*family)` → `base+0x60` (16 / 64 / 256, doubled in one mode).
+- ~~**family** ∈ {0,1,2} = {1x, 2x, 4x} drives `period_increment = 0x10 <<
+  (2*family)` → `base+0x60` (16 / 64 / 256, doubled in one mode).~~ Superseded:
+  the setter's argument is caller-supplied (1 on the Windows 96 kHz path, 2 in
+  `fn 0x13c30`), see the `base+0x60` row.
 - **base rate** is validated as **44100 or 48000 only** (`0x191a0`; else logs
   error `0x4c5`); the 2x/4x multiply is applied on top.
-- **Resolved (2026-07-06):** `base+0x64` selects the internal **rate mode**
+- **Superseded (2026-10-16):** `base+0x64` is the number of periods per ring
+  wrap (`transport.md`), not a rate mode. The notes below are kept for the
+  record.
+- ~~**Resolved (2026-07-06):**~~ `base+0x64` selects the internal **rate mode**
   (see the `[obj+0x3e]`/`fn 0x11330` note below); there is **no clock-SOURCE
   register in MOTUAW.sys** — external-source (word/ADAT/SPDIF) selection is a
   higher-layer / CueMix concern, not an audio-base register. Only the exact
@@ -245,7 +250,9 @@ cannot hold the `[this+0x98]`/`[this+0x260]` fields the setters read — so eith
 there are multiple hardware sub-classes sharing the vtable shape, or the
 setter⇄object mapping is not what it appears. Resolving this reliably needs
 proper type recovery (Ghidra) or a card to observe the actual `base+0x64` writes.
-Treat the "`+0x64` = small mode index" reading as a hypothesis, not a fact.
+~~Treat the "`+0x64` = small mode index" reading as a hypothesis, not a fact.~~
+Settled 2026-10-16: the DSP program compares its period counter with `+0x64`
+and wraps the ring pointer there (`4` and `8` are both period counts).
 
 ## DSPP (port `+0x8`)
 
