@@ -76,10 +76,10 @@ independent confirmation that the audio path is not host bus-mastered.
   confirm that `this` is the *same* device-extension object used by
   `WriteRegister`/`ReadRegister` elsewhere — it may be a sub-object, but the
   `+0x28`/teardown pair is internally consistent either way. What's solid
-  regardless of that: this DMA-adapter object is **never referenced by the
-  PIO audio path** (`WRITE_REGISTER_BUFFER_ULONG` sites don't touch it), so
-  it's orthogonal to streaming — likely WDM-template boilerplate; not
-  blocking for the Linux driver, which has no DMA adapter.
+  regardless of that: this DMA-adapter object is **not used by the audio
+  ring**: the DSP is its own PCI bus master and fetches from a host ring whose
+  bus address the driver hands it (`transport.md`). It is used for the
+  0x2800-byte common buffer only.
 
 Device-extension field map extended by this trace: **`+0x28`** = HAL
 DMA-adapter pointer, **`+0x50`** = pending-error/status code (checked before
@@ -145,7 +145,7 @@ pinned by at least one concrete access is listed:
 | `+0x28c` | u32 | computed in `0x2aab0` from `+0x280+0x32` then `/100`, stored before writing `audio_base+0x9c` | `0x2aae8` |
 | `+0x290` | u32 | SRC/phase-accumulator modulus = `[+0x280]*6`; used in `0x2b010` as `x - (x/[+0x290])*[+0x290]` (modulo wrap) | write `0x2aab0`, read `0x2b010` |
 | `+0x294` | u32 | second SRC modulus = `[+0x290]/10` (= `[+0x280]*6/10`); also pushed to card `audio_base+0xa0`, second modulo divisor in `0x2b010` | write `0x2aab0`, read `0x2b010` |
-| `+0x298` | embedded | **DMA common-buffer wrapper** (vtable `0x30720`, ~0x30 bytes; the `0x2800` is the *buffer size*, not the object size). `0x200b0` builds a `DEVICE_DESCRIPTION` + `IoGetDmaAdapter`; `0x202c0` calls `DMA_OPS->AllocateCommonBuffer` for a 0x2800-byte coherent buffer. Fields: `+0x08` bus/logical addr, `+0x0c` CPU virtual addr, `+0x10` len `0x2800`, `+0x28` `DMA_ADAPTER*`. **Not in the audio path** — the audio bring-up (`0x2c150`) never touches it; likely control/descriptor/scratch. Does NOT overturn the PIO transport model. | ctor `0x2b751`, init `0x2c164`, dtor `0x2c103` |
+| `+0x298` | embedded | **DMA common-buffer wrapper** (vtable `0x30720`, ~0x30 bytes; the `0x2800` is the *buffer size*, not the object size). `0x200b0` builds a `DEVICE_DESCRIPTION` + `IoGetDmaAdapter`; `0x202c0` calls `DMA_OPS->AllocateCommonBuffer` for a 0x2800-byte coherent buffer. Fields: `+0x08` bus/logical addr, `+0x0c` CPU virtual addr, `+0x10` len `0x2800`, `+0x28` `DMA_ADAPTER*`. **Not the audio ring** — the audio bring-up (`0x2c150`) never touches it. The clock-relock routine (`0x2b7f0`) has the DSP copy from it into DSP RAM (`audio_base+0xf8/+0xfc/+0x100`); the ring itself is a separate 512 KB buffer (`transport.md`). | ctor `0x2b751`, init `0x2c164`, dtor `0x2c103` |
 | `+0x2a0` | u32 | clock/calibration value written to card `audio_base+0xf8` during the clock-relock routine `0x2b7f0` (which toggles `+0x8c` and polls `audio_base+0x100`); set elsewhere | `0x2b7f0` |
 | `+0x2a4` | u32 | flag checked early during init (init `0x2c150`: nonzero skips the "no resource" WMI log) | init `0x2c185` |
 
@@ -268,7 +268,7 @@ hardware to `MOTUAW.sys`** — confirmed: *no* direct `READ/WRITE_REGISTER` or
 `READ/WRITE_PORT`. This is exactly the layer the Linux **ALSA PCM** side replaces,
 so it carries no unique register knowledge. Minor confirmation: the WaveRT model
 (a shared cyclic buffer the app fills and the device drains) is consistent with
-the PIO-aperture ring recovered in `transport.md`.
+the host ring the DSP reads by bus-master DMA (`transport.md`).
 
 ## `HDExpress_FullImageRun.bin` — PCIe variant image (RE'd)
 

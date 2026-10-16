@@ -7,17 +7,16 @@
 Un pilote ALSA Linux écrit de zéro pour la carte audio **MOTU PCI-324 / PCI-424**
 et ses interfaces de sortie AudioWire (2408, 24I/O, 828, HD192, 896HD, …).
 
-> **État : le pilote implémente le modèle matériel rétro-conçu ; en attente
-> d'une vraie carte.** Toute la mécanique PCI / IRQ / ALSA est réelle et
-> complète, et la couche matérielle encode désormais le modèle récupéré du
-> pilote Windows constructeur (espace d'adressage fenêtré, pont I/O-port,
-> transport PIO vers l'ouverture, vrai protocole d'acquittement IRQ — voir
-> [Rétro-ingénierie](#rétro-ingénierie)). Deux choses bloquent encore l'audio :
-> les **adresses runtime rapportées par la carte** (base audio / ack IRQ —
-> injectables via les paramètres module `motu424.audio_base=`/`ack_addr=` une
-> fois dumpées sur une carte) et la base de l'anneau d'ouverture (placeholder,
-> `TODO: verify`). Le module se charge et enregistre une carte ALSA ; le
-> streaming est refusé tant que ces valeurs sont inconnues.
+> **État : la carte démarre sous Linux ; aucun son n'a encore été joué.** Toute
+> la mécanique PCI / IRQ / ALSA est complète. Sur une vraie PCI-424, la
+> séquence de chargement (image FPGA via le GPIO du DSP, programme DSP, boîte
+> aux lettres) a tourné avec `tools/motu424-bringup`, et le pilote fait
+> désormais la même chose quand il s'attache à la carte, avec `request_firmware()`
+> (voir [Firmware](#firmware)). L'audio passe par le DMA du DSP depuis un anneau
+> en mémoire hôte ; le chemin de flux est écrit mais pas testé, et reste coupé
+> tant que la taille d'une trame dans l'anneau n'est pas connue
+> (`motu424.frame_bytes=`). Lecture seule, 48 kHz seulement, PCI-424
+> (`137a:0004`) seulement pour l'instant.
 
 ## Démarrage rapide
 
@@ -35,13 +34,13 @@ Détails et options dans [Installation](#installation-toute-distro).
 | `kernel/motu424.h` | Définitions partagées + le **modèle matériel rétro-conçu** (source de vérité unique) |
 | `kernel/motu424_main.c` | Attach/detach PCI, gestion des ressources + IRQ, gestionnaire d'interruption |
 | `kernel/motu424_hw.c` | **Abstraction matérielle — le seul fichier avec la vraie sémantique des registres** |
-| `kernel/motu424_pcm.c` | Callbacks PCM ALSA (lecture + capture) |
+| `kernel/motu424_pcm.c` | Callbacks PCM ALSA (lecture ; capture quand le format de l'anneau sera connu) |
 | `tools/motu424-portregs.py` | Décodage en lecture seule des trois registres du port d'E/S (HSR/HDCR/DSPP, TI SPRU581C) |
 | `tools/motu424-bringup.c` | **Rejeu du démarrage** (simulation par défaut) : chargement du FPGA via le GPIO du DSP, chargement du programme DSP, DSPINT, lecture de la boîte aux lettres |
 | `tools/motu424-probe.c` | Énumérateur/dumpeur de BARs (modèle fenêtré) en espace utilisateur pour la rétro-ingénierie |
 | `tools/motu424-ctl.c` | **CLI de gestion façon CueMix** (horloge/format + mixeur de monitoring) via alsa-lib |
 | `tools/motu424-gui` | **Console de mixage GTK4** façon CueMix FX (front-end de `motu424-ctl`) |
-| `tools/re/` | Aides à la RE statique (`vtable-scan.py`, `xref.py` basé sur capstone, `extract-firmware.py`) |
+| `tools/re/` | Aides à la RE statique (`vtable-scan.py`, `xref.py` basé sur capstone, `extract-firmware.py`, `dis-c64x.py` pour le C64x) |
 | `get.sh` | **Bootstrap `curl \| sh`** — récupère les sources + lance l'installeur |
 | `install.sh` | **Installeur multi-distro** (dépendances + DKMS + outils) |
 | `ARCHITECTURE.md` | Notes de conception : la séparation en 3 couches + la règle de confinement matériel |
@@ -192,84 +191,55 @@ pilote chargé — c'est un rapport réel de la machine où ces captures ont ét
 
 <img src="docs/screenshots/clock-format.png" width="49%"> <img src="docs/screenshots/diagnostics.png" width="49%">
 
+## Firmware
+
+Le FPGA de la PCI-424 n'a pas de PROM de configuration : l'hôte le charge, ainsi
+que le programme du DSP, chaque fois que le pilote s'attache à la carte (comme
+le pilote Windows). Les deux images appartiennent à MOTU et ne sont **pas**
+fournies ici. Extrayez-les de votre propre copie du pilote constructeur et
+installez-les :
+
+```sh
+python3 tools/re/extract-firmware.py chemin/vers/MOTUAW.sys   # pilote 32 bits ; écrit vendor/firmware/ (ignoré par git)
+sudo install -Dm644 vendor/firmware/pci424-serial-container.bin \
+    /lib/firmware/motu424/pci424-serial-container.bin
+sudo install -Dm644 vendor/firmware/pci424-program.bin \
+    /lib/firmware/motu424/pci424-program.bin
+```
+
+Le pilote vérifie la taille et le SHA-256 des deux fichiers et refuse de
+s'attacher si l'un manque ou diffère. Sur la carte de test, le chargement a pris
+environ 15 s depuis l'espace utilisateur (894k écritures GPIO) ; ensuite `dmesg`
+affiche `DSP running: audio_base=0x6fac ...`.
+
 ## Rétro-ingénierie
 
-Le pilote implémente déjà le modèle matériel rétro-conçu ; ce qu'une vraie carte
-doit fournir, ce sont les **adresses runtime rapportées par la carte** (base
-audio, ack IRQ, les deux bases d'aperture) et quelques valeurs encore marquées
-`TODO: verify`. Flux de bring-up :
+Le modèle matériel vient du pilote Windows constructeur `MOTUAW.sys` (RE
+statique avec `objdump`, `tools/re/vtable-scan.py`, `tools/re/xref.py`), du
+programme du DSP de la carte (`tools/re/dis-c64x.py`) et d'essais sur une vraie
+PCI-424 dans l'issue #2 :
 
-1. **Identifier la carte.** `lspci -nn | grep -i 137a` (0x137A = Mark of the Unicorn).
-2. **Énumérer + classer les BARs** avec le pilote *non lié* :
-   ```sh
-   sudo ./tools/motu424-probe                       # tague window A / B / port
-   sudo ./tools/motu424-probe 0000:01:00.0 0xc0000 0x400   # dump window-B @off,len
-   ```
-   Il lit les registres de banque window-B connus et prend un dump ciblé pour
-   **differ** repos vs. streaming (sous l'OS constructeur) et localiser les
-   adresses carte base audio / ack / aperture.
-3. **Injecter ces adresses** et charger le pilote :
-   ```sh
-   sudo insmod kernel/motu424.ko \
-       audio_base=0x… ack_addr=0x… play_aperture=0x… cap_aperture=0x…
-   ```
-   Sans elles la carte s'enregistre mais le streaming est refusé (`-ENXIO`) —
-   c'est volontaire, le pilote ne touche jamais d'adresses inconnues.
-4. **Tracer le format d'événement** (nombre de canaux par famille de fréquence,
-   empaquetage 24 bits, boutisme) et le dword exact `base+0x64`.
-5. Replier les valeurs confirmées dans `motu424.h` / `motu424_hw.c` (retirer les
-   paramètres).
-
-Une grande partie du protocole a **déjà** été récupérée statiquement depuis le
-pilote constructeur (sans carte) — les faits confirmés ci-dessous remplacent les
-suppositions de l'en-tête ; les lacunes restantes sont ce que les étapes 1–5
-referment sur du vrai matériel.
-
-### Découvertes issues de la RE du pilote constructeur (statique, sans carte)
-
-Établies en désassemblant le pilote Windows constructeur `MOTUAW.sys`, avec
-`objdump`, `tools/re/vtable-scan.py` (résout les slots de vtable C++) et
-`tools/re/xref.py` (références croisées basées sur capstone — appelants, corps de
-fonction, sites de dispatch virtuel). Elles **remplacent la carte des registres
-hypothétique** de `motu424.h` :
-
-- **Deux fenêtres MMIO, pas un petit banc de registres.** La carte expose un
-  espace d'« adresse carte » fenêtré d'environ 24 bits. Une adresse 32 bits est
-  routée par `(addr & 0xff800000) == 0x01800000` : si vrai → fenêtre A
-  `(addr & 0x7fffff)` (8 Mo), sinon → fenêtre B `(addr & 0x3fffff)` (4 Mo).
-  Registres ctrl/état par banc à `0xC0024` / `0x100024` (banc+`0x24`, pas
-  `0x40000`), atteignables via la fenêtre A à `0x18C0000` / `0x1900000`. (`0xAC44`
-  n'est **pas** une adresse — c'est 44100 en décimal ; les six fréquences
-  apparaissent comme constantes Hz `0xAC44`..`0x2EE00` dans les calculs de diviseur.)
-- **Un petit BAR de ports d'E/S** (`READ/WRITE_PORT_ULONG`) porte le contrôle
-  bridge/GPIO : lire `+0x0` (bit 1 = IRQ en attente), écrire `+0x0`←4 (activation
-  IRQ/flux), écrire `+0x4`←1 (strobe/commit). Un pont de bus local façon PLX
-  devant le FPGA.
-- **Chemin IRQ — confirmé** (ISR = vtable `0x30cc0` slot `0x28` = `0x2bae0`) :
-  en attente = BAR de ports `+0x0` bit 1 ; **ack = écrire `0x10`** à l'adresse
-  carte en device-ext `+0x88` ; « période écoulée » se déclenche quand un
-  accumulateur par IRQ franchit `0x800`, puis une DPC est mise en file.
-- **Bloc de registres audio — confirmé** (base = une adresse carte en device-ext
-  `+0x98`) : `base+0x54`←1 activation du flux, `base+0x60` incrément de période
-  (`0x10 << 2*family`), `base+0x64` paramètre fréquence/horloge, `base+0x128/12c/130`
-  compteurs de position (lus puis remis à zéro à chaque période).
-- **Le transport audio est du PIO vers une ouverture de la carte, pas du DMA
-  bus-master hôte.** L'assistant de push (`fn 0x29420`) copie les tampons hôte
-  dans la fenêtre B via `WRITE_REGISTER_BUFFER_ULONG` (un tampon rebond de 64 Ko
-  marqué `'MOTU'`) et suit un `dmaPoint` matériel + `readHead`/`writeHead`/`len`
-  logiciels.
-- **Firmware FPGA.** Deux architectures : la PCI-324/424 classique utilise un FPGA
-  Altera en série passive (`altera424b.rbf`, **absent** de l'installeur constructeur
-  4.0.6 — probablement auto-configuré depuis une flash embarquée) ; la PCIe
-  **HD Express** utilise un SoC ARM + Xilinx Virtex, livré sous forme de
-  `HDExpress_FullImageRun.bin` (un conteneur à en-tête de 24 octets, checksum
-  vérifié). Verdict de la RE complète ([`docs/fpga-upload.md`](docs/fpga-upload.md)) :
-  la carte classique ne nécessite **aucun envoi de firmware par l'hôte** (pas de
-  `request_firmware()`) ; seule la variante PCIe HD Express reçoit une image hôte.
-- **Jeu de contrôles CueMix** décodé depuis le `CueMixFX-PCI-424.touchosc` fourni
-  (l'API OSC CueMix de MOTU) : une matrice de monitoring entrées×bus + le
-  conditionnement analogique par entrée + horloge/format. Pilote
-  `tools/motu424-ctl` — voir [`docs/cuemix-control-map.md`](docs/cuemix-control-map.md).
+- **La carte** est un **DSP TI TMS320C6412** en mode de boot PCI, plus un FPGA
+  sans PROM. La BAR d'I/O est le Host Port Interface du DSP (HSR/HDCR/DSPP) ;
+  la BAR de 8 Mo (fenêtre A) contient les registres périphériques du DSP, celle
+  de 4 Mo (fenêtre B) sa mémoire, avec la RAM interne en `0..0x3ffff`.
+- **Démarrage** (`fn 0x2c150` du constructeur, testé sur la carte) : WARMRESET,
+  image FPGA envoyée bit à bit via le GPIO du DSP, programme C64x de 28 272
+  octets écrit en RAM interne, DSPINT, puis le programme publie `audio_base`
+  dans la boîte aux lettres en `0x3fffc` (`0x6fac`).
+- **Le bloc audio** à `audio_base` est la zone de données globales du programme
+  DSP : `mix_base` en `+0`, l'adresse de l'anneau hôte en `+0x5c`, la position
+  du DSP en `+0x2c`, démarrage/arrêt en `+0x54`/`+0xf4`, trames par
+  interruption en `+0x60`.
+- **Le transport est du DMA piloté par le DSP.** L'hôte donne au DSP un anneau
+  cohérent (512 Ko sous Windows) ; le DSP y lit l'audio lui-même et lève une
+  interruption toutes les 64 trames. IRQ en attente = bit 1 de HSR ; acquittement
+  = `0x10` (INTRST) dans le registre RSTSRC du DSP.
+- **Jeu de contrôles CueMix** décodé depuis le `CueMixFX-PCI-424.touchosc`
+  livré (l'API OSC CueMix de MOTU) : une matrice de monitoring entrée×bus de
+  mix + le conditionnement analogique par entrée + horloge/format. Pilote
+  `tools/motu424-ctl` — voir
+  [`docs/cuemix-control-map.md`](docs/cuemix-control-map.md).
 
 Les rédactions détaillées, étiquetées par niveau de preuve, vivent dans `docs/` :
 [`register-map.md`](docs/register-map.md), [`transport.md`](docs/transport.md),
@@ -277,13 +247,10 @@ Les rédactions détaillées, étiquetées par niveau de preuve, vivent dans `do
 [`cuemix-control-map.md`](docs/cuemix-control-map.md),
 [`vendor-driver-map.md`](docs/vendor-driver-map.md).
 
-Encore ouvert (nécessite la carte, ou un travail `rz-ghidra` plus poussé sur les
-deux sous-objets embarqués) : le registre/bits de sélection de source d'horloge et
-l'encodage du paramètre `base+0x64`, les valeurs numériques à l'exécution de la
-base audio / adresse d'ack. Le handshake d'upload du FPGA de la carte classique
-est réglé — le verdict de la RE ([`docs/fpga-upload.md`](docs/fpga-upload.md)) est
-qu'elle s'auto-configure depuis la flash embarquée et ne nécessite aucun envoi
-hôte.
+Encore ouvert : le format d'une trame dans l'anneau hôte (octets par trame,
+format des échantillons, ordre des canaux), l'endroit où arrive la capture côté
+hôte, les changements de fréquence (la séquence de « relock » du constructeur),
+et les chemins de chargement de la PCI-324 et de la PCIe-424.
 
 La feuille de route complète et par phases, d'ici à un pilote 100 % fonctionnel,
 vit dans [`docs/REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md).

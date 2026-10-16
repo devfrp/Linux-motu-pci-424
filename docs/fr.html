@@ -221,9 +221,9 @@
   <div class="head"><span class="idx">00</span><h2>Une carte non documentée, portée sur Linux au grand jour</h2></div>
   <p class="lede">La PCI-324/424 est une carte hôte pour les interfaces MOTU AudioWire — les 2408, 24I/O,
   828, HD192, 896HD et consorts. Faute de documentation du constructeur, la table des registres et le
-  protocole de transport ont été reconstitués à partir du pilote Windows : la rétro-ingénierie statique est
-  terminée, seule la validation sur une vraie carte reste à faire. Toute l'infrastructure PCI, DMA, IRQ et
-  ALSA est déjà en place ; tout ce qui demeure incertain est confiné à deux fichiers, de sorte que les faits
+  protocole de transport ont été reconstitués à partir du pilote Windows et du programme du DSP de la carte,
+  puis vérifiés sur une vraie PCI-424 : la carte démarre désormais sous Linux. Toute l'infrastructure PCI,
+  DMA, IRQ et ALSA est en place ; tout ce qui demeure incertain est confiné à deux fichiers, de sorte que les faits
   confirmés se concentrent en un seul endroit.</p>
 </div></section>
 
@@ -248,19 +248,20 @@
 
 <section class="sec" id="re"><div class="wrap">
   <div class="head"><span class="idx">02</span><h2>Ce que la rétro-ingénierie a établi</h2></div>
-  <p class="lede">Reconstitué statiquement à partir du pilote Windows du constructeur — sans carte — avec
+  <p class="lede">Reconstitué à partir du pilote Windows du constructeur avec
   <code class="mono">objdump</code>, un analyseur de références croisées capstone et le décompileur
-  <code class="mono">rz-ghidra</code> pour le graphe d'objets C++. La RE statique est désormais terminée.</p>
+  <code class="mono">rz-ghidra</code>, à partir du programme C64x du DSP de la carte, et vérifié sur une
+  vraie PCI-424.</p>
   <div class="rdout"><table>
     <thead><tr><th>Découverte</th><th>Valeur</th><th>État</th></tr></thead>
     <tbody>
-      <tr><td><b>Espace d'adressage MMIO fenêtré</b><br><span>aiguillé par le bit-repère 0x01800000 — fenêtre A de 8&nbsp;Mo / fenêtre B de 4&nbsp;Mo</span></td><td class="v">& 0xff800000</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Chemin d'interruption</b><br><span>l'ISR est une méthode virtuelle C++ ; interruption en attente = bit 1 du port</span></td><td class="v">ack ← 0x10 @ +0x88</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Transport</b><br><span>PIO vers une fenêtre de la carte, dmaPoint matériel + anneau logiciel — pas de DMA bus-master côté hôte</span></td><td class="v">WRITE_REGISTER_BUFFER</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Séquence d'initialisation audio</b><br><span>la carte <em>publie</em> son adresse de base audio après une impulsion sur le port, relue par scrutation</span></td><td class="v">impulsion port+4 ← 2</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>La carte</b><br><span>un DSP TI TMS320C6412 en mode de boot PCI : fenêtre A = ses registres périphériques, fenêtre B = sa mémoire, BAR d'I/O = son port hôte</span></td><td class="v">& 0xff800000</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Chemin d'interruption</b><br><span>le DSP lève INTREQ ; en attente = bit 1 de HSR, acquittement = INTRST dans RSTSRC</span></td><td class="v">0x10 → 0x01c00000</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Transport</b><br><span>DMA piloté par le DSP depuis un anneau en mémoire hôte ; le DSP indique l'adresse bus qu'il a atteinte</span></td><td class="v">anneau → +0x5c</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Démarrage</b><br><span>DSPINT lance le programme chargé, qui publie son bloc audio dans la boîte aux lettres — testé sur une vraie carte</span></td><td class="v">0x3fffc → 0x6fac</td><td class="s">CONFIRMÉ</td></tr>
       <tr><td><b>Cartographie des canaux du boîtier</b><br><span>le nombre de canaux est lu dans un descripteur fourni par l'interface connectée — pas dans une table statique</span></td><td class="v">descripteur à l'exécution</td><td class="s">CONFIRMÉ</td></tr>
       <tr><td><b>Modèle d'objets du périphérique</b><br><span>l'objet audio est un singleton global ; sous-objets : gestionnaire de fenêtres MMIO + tampon DMA partagé</span></td><td class="v">A @ 0x61f50</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Firmware FPGA</b><br><span>la carte classique se configure depuis sa flash embarquée — aucun envoi depuis l'hôte</span></td><td class="v">pas de request_firmware</td><td class="s">CONFIRMÉ</td></tr>
+      <tr><td><b>Firmware FPGA</b><br><span>pas de PROM : l'hôte envoie l'image bit à bit via le GPIO du DSP, puis charge le programme du DSP — testé sur une vraie carte</span></td><td class="v">request_firmware</td><td class="s">CONFIRMÉ</td></tr>
       <tr><td><b>Destination du mixeur CueMix</b><br><span>coefficients transférés par plage modifiée vers une base indiquée par la carte</span></td><td class="v">[dev + 0x9c]</td><td class="s">CONFIRMÉ</td></tr>
       <tr><td><b>Paramètre de fréquence &amp; sélection d'horloge</b><br><span>liés à l'interface et à la carte — ces dernières valeurs ne s'observent que sur du matériel</span></td><td class="v">base + 0x64</td><td class="s open">SUR CARTE</td></tr>
     </tbody>
@@ -307,14 +308,15 @@ motu424-gui             <span class="c"># panneau graphique</span></pre>
 
 <section class="sec" id="roadmap"><div class="wrap">
   <div class="head"><span class="idx">05</span><h2>Où en est le projet</h2></div>
-  <p class="lede">La rétro-ingénierie statique est terminée — tout ce qui est accessible sans matériel est acquis.
-  Le reste est empirique et demande une vraie carte sur le banc.</p>
+  <p class="lede">La carte démarre sous Linux. Il reste à connaître le format de l'audio dans l'anneau hôte,
+  puis la lecture, la capture et les changements de fréquence sur une vraie carte.</p>
   <ul class="steps">
     <li><span class="chip c-done">FAIT</span><div><b>Cadre &amp; outillage</b> · <span class="d">ossature PCI/DMA/IRQ/ALSA, installeur multi-distribution, CLI + GUI, chaîne d'outils RE.</span></div></li>
-    <li><span class="chip c-done">FAIT</span><div><b>Modèle registres, IRQ &amp; transport</b> · <span class="d">MMIO fenêtré, ack IRQ, anneau PIO, l'interface IOCTL complète, le verdict sur le firmware.</span></div></li>
+    <li><span class="chip c-done">FAIT</span><div><b>Modèle registres, IRQ &amp; transport</b> · <span class="d">fenêtres du DSP, ack IRQ, anneau en DMA bus-master, l'interface IOCTL complète.</span></div></li>
+    <li><span class="chip c-done">FAIT</span><div><b>Chargement du firmware sur une vraie carte</b> · <span class="d">image FPGA et programme DSP chargés, bloc audio publié ; le pilote le fait désormais avec request_firmware().</span></div></li>
     <li><span class="chip c-done">FAIT</span><div><b>Modèle d'objets &amp; initialisation</b> · <span class="d">toute la structure d'extension du périphérique, l'objet audio &amp; ses sous-objets, et la séquence qui publie l'adresse de base audio.</span></div></li>
     <li><span class="chip c-part">PARTIEL</span><div><b>Encodage horloge &amp; fréquence</b> · <span class="d">familles de fréquence, activation et incrément obtenus ; la sélection d'horloge et le paramètre de fréquence sont liés à l'interface — leurs valeurs demandent une carte.</span></div></li>
-    <li><span class="chip c-card">CARTE REQUISE</span><div><b>Initialisation &amp; validation</b> · <span class="d">relever les adresses d'exécution, lecture/capture à chaque fréquence, le mixeur CueMix, tests d'endurance — le dernier pas avant le son.</span></div></li>
+    <li><span class="chip c-card">CARTE REQUISE</span><div><b>Premier son &amp; validation</b> · <span class="d">format des trames dans l'anneau, lecture/capture à chaque fréquence, le mixeur CueMix, tests d'endurance — le dernier pas avant le son.</span></div></li>
   </ul>
 </div></section>
 </main>

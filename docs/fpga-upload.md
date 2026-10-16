@@ -139,8 +139,10 @@ no firmware IOCTL, because the driver needs none.
 
 - Load both images with `request_firmware()` and declare them with
   `MODULE_FIRMWARE()`; fail device start loudly in `dmesg` if either is
-  missing or its hash is wrong. Suggested names match the extractor's:
-  `pci424-serial-container.bin` and `pci424-program.bin`.
+  missing or its hash is wrong. Done in `motu424_hw_init()` (2026-10-16): the
+  driver asks for `motu424/pci424-serial-container.bin` and
+  `motu424/pci424-program.bin` (the extractor's names, under
+  `/lib/firmware/motu424/`).
 - The user extracts the files from their own installer with
   `tools/re/extract-firmware.py`. The images are MOTU's; they are **not**
   shipped with the driver and not committed to this repository.
