@@ -23,8 +23,8 @@ fi
 mkdir -p "$OUT"
 echo "run $RUN, insmod args: $ARGS" | tee "$OUT/run.log"
 # Tell the sampler the period size the driver is using, so its "periods"
-# column lines up (driver default is 0x3000 when not given).
-PB=$(printf '%s\n' $ARGS | sed -n 's/^period_bytes=//p'); PB=${PB:-0x3000}
+# column lines up (driver default is 0x1800 when not given).
+PB=$(printf '%s\n' $ARGS | sed -n 's/^period_bytes=//p'); PB=${PB:-0x1800}
 WATCHARGS="--period-bytes $PB"
 WATCH=
 HWP=
