@@ -3,10 +3,13 @@
 """
 motu424-ringwatch - sample the DSP's published ring position while the
 motu424 driver streams.  Reads only: it mmaps the window-B BAR read-only
-through sysfs and reads /proc/interrupts.  It can run with the driver bound.
+through sysfs and reads /proc/interrupts.  It can run with the driver bound,
+except on kernels built with CONFIG_IO_STRICT_DEVMEM=y (Arch, for one): there
+the mmap is refused while the driver holds the BARs, unless the kernel was
+booted with iomem=relaxed.
 
     sudo tools/motu424-ringwatch.py [--bdf 0000:02:01.0] [--audio-base 0x6fac]
-                                    [--period-bytes 0x3000] [--interval 0.1]
+                                    [--period-bytes 0x1800] [--interval 0.1]
                                     [--duration 10]
 
 audio_base defaults to the value the driver logged ("DSP running:
@@ -63,7 +66,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bdf")
     ap.add_argument("--audio-base", type=lambda s: int(s, 0))
-    ap.add_argument("--period-bytes", type=lambda s: int(s, 0), default=0x3000)
+    ap.add_argument("--period-bytes", type=lambda s: int(s, 0), default=0x1800)
     ap.add_argument("--interval", type=float, default=0.1)
     ap.add_argument("--duration", type=float, default=10.0)
     ap.add_argument("--dump", metavar="FILE",
@@ -75,7 +78,11 @@ def main():
     ab = a.audio_base or audio_base_from_dmesg() or 0x6fac
     res = winb_resource(bdf)
     fd = os.open(res, os.O_RDONLY | os.O_SYNC)
-    mm = mmap.mmap(fd, WINB_SIZE, prot=mmap.PROT_READ)
+    try:
+        mm = mmap.mmap(fd, WINB_SIZE, prot=mmap.PROT_READ)
+    except OSError as e:
+        sys.exit(f"cannot mmap {res}: {e.strerror}; with the driver bound, a "
+                 "CONFIG_IO_STRICT_DEVMEM=y kernel needs iomem=relaxed")
 
     def rd(off):
         return int.from_bytes(mm[ab + off:ab + off + 4], "little")
