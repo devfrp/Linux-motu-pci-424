@@ -163,24 +163,26 @@
  * code 0x80000, which the DSP only reads in its rate/mode path). The DSP
  * fetches from it as PCI master, one period per interrupt, and wraps back to
  * +0x5c after RING_PERIODS periods (+0x64), so the part in use is
- * RING_PERIODS * period_bytes. The period size is set by the DSP's own
- * transfer loop, not by +0x60: 0x3000 bytes at 96 kHz on Windows, not yet
- * observed at 1x. Only the 1x / 48 kHz state the program boots into is used:
- * rate changes go through the relock sequence, which is not implemented.
+ * RING_PERIODS * period_bytes. Measured on a card: 0x1800 bytes per period
+ * at 48 kHz with +0x60 = 0x40 (Linux), 0x3000 at 96 kHz with +0x60 = 0x80
+ * (Windows); whether +0x60 sets it or the DSP picks it per rate is still
+ * open. Only the 1x / 48 kHz state the program boots into is used: rate
+ * changes go through the relock sequence, which is not implemented.
  *
  * The fetch geometry (+0x58/+0x68/+0x6c) is what the vendor's configure path
  * (0x29930) wrote on a Windows-configured card; the 24-dword channel map at
  * [+0x14] is left zero for now.
  *
- * Bytes per frame (96 inferred from the Windows dump) and period bytes at 1x
- * are module parameters until a Linux stream confirms them; streaming stays
- * off while frame_bytes is 0. Samples are exposed as 32-bit words (S32_LE),
- * frame_bytes / 4 of them per frame. TODO: verify with +0x2c mid-stream.
+ * Bytes per frame (96, measured on a Linux stream), period bytes and frames
+ * per interrupt are module parameters; streaming stays off while frame_bytes
+ * is 0, its default until the device-configure path makes the outputs play.
+ * Samples are exposed as 32-bit words (S32_LE), frame_bytes / 4 per frame.
  */
 #define MOTU424_RING_BYTES	0x80000u
 #define MOTU424_RING_PERIODS	8
-#define MOTU424_PERIOD_BYTES	0x3000u
+#define MOTU424_PERIOD_BYTES	0x1800u
 #define MOTU424_IRQ_FRAMES_1X	0x40u
+#define MOTU424_IRQ_FRAMES_MAX	0x400u
 #define MOTU424_XFER_A		0xeu
 #define MOTU424_XFER_B		0x10u
 #define MOTU424_CFG_C		0u
@@ -223,6 +225,7 @@ struct motu424 {
 
 	unsigned int frame_bytes;	/* host-ring bytes per frame, 0 = unknown */
 	unsigned int period_bytes;	/* bytes the DSP fetches per interrupt    */
+	unsigned int irq_frames;	/* frames per interrupt written to +0x60  */
 
 	struct snd_pcm *pcm;
 	struct motu424_stream playback;

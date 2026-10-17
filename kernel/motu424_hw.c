@@ -35,12 +35,17 @@
 static unsigned int frame_bytes;
 module_param(frame_bytes, uint, 0444);
 MODULE_PARM_DESC(frame_bytes,
-		 "Host-ring bytes per frame (unconfirmed, 96 suggested, see docs/transport.md); 0 = streaming disabled");
+		 "Host-ring bytes per frame (96 measured at 48 kHz, see docs/transport.md); 0 = streaming disabled");
 
 static unsigned int period_bytes = MOTU424_PERIOD_BYTES;
 module_param(period_bytes, uint, 0444);
 MODULE_PARM_DESC(period_bytes,
-		 "Host-ring bytes the DSP fetches per interrupt (0x3000 seen at 96 kHz; unconfirmed at 48 kHz)");
+		 "Host-ring bytes the DSP fetches per interrupt (0x1800 measured at 48 kHz with irq_frames=0x40)");
+
+static unsigned int irq_frames = MOTU424_IRQ_FRAMES_1X;
+module_param(irq_frames, uint, 0444);
+MODULE_PARM_DESC(irq_frames,
+		 "Frames per interrupt written to +0x60 (0x40 by default; diagnostic, see docs/transport.md)");
 
 MODULE_FIRMWARE(MOTU424_FW_FPGA);
 MODULE_FIRMWARE(MOTU424_FW_PROG);
@@ -374,6 +379,13 @@ int motu424_hw_init(struct motu424 *chip)
 
 	chip->frame_bytes = frame_bytes;
 	chip->period_bytes = period_bytes;
+	chip->irq_frames = irq_frames;
+	if (!chip->irq_frames || chip->irq_frames > MOTU424_IRQ_FRAMES_MAX) {
+		dev_warn(dev, "irq_frames=0x%x out of range (1..0x%x); using 0x%x\n",
+			 chip->irq_frames, MOTU424_IRQ_FRAMES_MAX,
+			 MOTU424_IRQ_FRAMES_1X);
+		chip->irq_frames = MOTU424_IRQ_FRAMES_1X;
+	}
 	if (chip->frame_bytes && (chip->frame_bytes % 4 || !chip->period_bytes ||
 				  chip->period_bytes % chip->frame_bytes ||
 				  chip->period_bytes > MOTU424_RING_BYTES / MOTU424_RING_PERIODS)) {
@@ -432,7 +444,7 @@ void motu424_hw_stream_start(struct motu424 *chip, dma_addr_t ring)
 	motu424_awr(chip, MOTU424_AREG_XFER_B, MOTU424_XFER_B);
 	motu424_awr(chip, MOTU424_AREG_RING_BASE, lower_32_bits(ring));
 	motu424_awr(chip, MOTU424_AREG_RING_SIZE, MOTU424_RING_BYTES);
-	motu424_awr(chip, MOTU424_AREG_IRQ_FRAMES, MOTU424_IRQ_FRAMES_1X);
+	motu424_awr(chip, MOTU424_AREG_IRQ_FRAMES, chip->irq_frames);
 	motu424_awr(chip, MOTU424_AREG_RING_PERIODS, MOTU424_RING_PERIODS);
 	motu424_awr(chip, MOTU424_AREG_ENABLE, 1);
 	motu424_wr32(chip, MOTU424_PCI_RSTSRC, MOTU424_RSTSRC_INTRST);

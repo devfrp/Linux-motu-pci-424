@@ -31,7 +31,9 @@ The DSP wraps at **`+0x64` periods**, not at the size code. In its period tick
 (`0x2610..0x2674`) it counts periods, and when the count reaches `+0x64` it
 resets the counter and sets both its running pointer and `+0x2c` back to
 `+0x5c`. So the part of the ring in use is `+0x64 × period_bytes`: 8 ×
-`0x3000` = 96 KB on Windows at 96 kHz. `+0x8c` is read only once, at `0x2820`,
+`0x3000` = 96 KB on Windows at 96 kHz, 8 × `0x1800` = 48 KB on Linux at
+48 kHz (measured: `+0x2c - +0x5c` takes exactly the eight values
+`0..0xa800`). `+0x8c` is read only once, at `0x2820`,
 in the rate/mode path with `+0x88`/`+0x90`.
 
 | Audio block off | Dir | Meaning |
@@ -96,7 +98,8 @@ has passed (`vendor-driver-map.md`, devext `+0x1f0`).
 `kernel/motu424_hw.c` follows this model: the ring is a `SNDRV_DMA_TYPE_DEV`
 allocation of 512 KB (32-bit DMA mask), and the ALSA buffer is the first
 `8 × period_bytes` of it (`+0x64 = 8`, `period_bytes` a module parameter,
-`0x3000` by default). It writes `+0x58 = 0`, `+0x68 = 0xe`, `+0x6c = 0x10`
+`0x1800` by default; `+0x60` is the `irq_frames` parameter, `0x40` by
+default). It writes `+0x58 = 0`, `+0x68 = 0xe`, `+0x6c = 0x10`
 and leaves the channel map zero for a first test. The trigger runs the start
 and stop sequences above, `.sync_stop` waits for `+0xf4`, the IRQ handler
 acks INTRST and calls `snd_pcm_period_elapsed()`, and `.pointer` returns
@@ -107,16 +110,26 @@ Rate changes go through the relock sequence, which is not implemented.
 
 ## Open
 
-- **Bytes per frame on the ring.** `0x3000` bytes per period at `+0x60 =
-  0x80` gives **96 bytes** (24 dwords, one 24-channel frame of 32-bit
-  samples), inferred from one dump at 2x. The 48-byte figure came from the
-  DSP's `0x30`-granular transfer loop, a sub-unit. The driver keeps it as the
-  `frame_bytes` module parameter (try 96) and refuses to stream while it is 0;
-  it must divide `period_bytes`.
-- **Period bytes at 1x.** Set by the DSP's transfer loop, not by `+0x60`.
-  `0x3000` at 96 kHz; maybe `0x1800` at 48 kHz. `+0x2c` against the ring in a
-  first Linux stream settles both this and the frame size.
-- **Channel map** at `[+0x14]` (24 dwords): not written yet.
+- **Bytes per frame: 96 (CONFIRMED).** Measured on a Linux stream two ways:
+  752 interrupts/s × `0x1800` bytes = 96 bytes × 48 000 frames/s, and the
+  DSP staging buffers held one sine sample every 96 bytes. The Windows dump
+  gives the same (750/s × `0x3000` at 96 kHz). The driver still keeps it as
+  the `frame_bytes` parameter, 0 by default, until the outputs play.
+- **Period bytes vs `+0x60`.** `+0x60 × frame_bytes = period_bytes` held in
+  both observations (`0x40 × 96 = 0x1800` at 48 kHz, `0x80 × 96 = 0x3000` at
+  96 kHz). Whether `+0x60` sets the period or the DSP picks it per rate is
+  not split yet: a 48 kHz run with `irq_frames=0x80` does it (half the
+  interrupt rate and `0x3000` steps in `+0x2c` if `+0x60` drives it).
+- **Device-configure path (blocks audio).** A 48 kHz Linux stream runs
+  cleanly but nothing reaches the outputs and the interfaces never lock.
+  A RAM diff against a Windows-configured card shows what the vendor writes
+  after bring-up and the driver does not: the interface mailbox exchange
+  (`0x2a190`), the relock / `+0x100` sequence (`0x2b7f0`), the parameter
+  group (`+0x88`, `+0x9c..+0xa4`, `+0xb0..+0xbc`, `+0xdc..+0xe4`, `+0xf0`,
+  `+0xf4`, `+0x114` commit) and the channel map at `[+0x14]`. Their order
+  and arguments at device start are being reversed.
+- **Channel map** at `[+0x14]` (24 dwords): not written yet. Windows held
+  14 bytes `0x19..0x26` there (14 = `+0x68`).
 - **Sample format and channel order** inside a frame. The driver exposes
   `frame_bytes / 4` raw 32-bit words (`S32_LE`) until that is known.
 - **Capture.** Audio is DMA both ways, but where the DSP writes recorded

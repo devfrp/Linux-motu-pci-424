@@ -91,25 +91,29 @@ Module parameters
 
 .. code-block:: text
 
-   frame_bytes=<n>   Bytes per frame on the host ring. Not confirmed yet
-                     (96 is the value to try); 0 (the default) keeps
-                     streaming disabled. Must divide period_bytes.
-   period_bytes=<n>  Bytes the DSP fetches per interrupt. 0x3000 (the
-                     default) was seen at 96 kHz; not confirmed at 48 kHz.
+   frame_bytes=<n>   Bytes per frame on the host ring: 96, measured on a
+                     card. 0 (the default) keeps streaming disabled until
+                     the outputs actually play. Must divide period_bytes.
+   period_bytes=<n>  Bytes the DSP fetches per interrupt. 0x1800 (the
+                     default) measured at 48 kHz with irq_frames=0x40.
                      The ALSA buffer is 8 periods.
+   irq_frames=<n>    Frames per interrupt written to +0x60. 0x40 (the
+                     default). Diagnostic: tells whether +0x60 sets the
+                     period size.
 
 Current status and limitations
 ===============================
 
 - The firmware load matches the sequence run on a real PCI-424 with
   ``tools/motu424-bringup``. The stream path (start, stop, interrupt,
-  pointer) follows the vendor driver and the DSP program but has not run on
-  a card yet.
+  pointer) has run on a card: interrupts, wrap and position are right, but
+  the outputs stay silent and the interfaces do not lock, because the
+  vendor's device-configure path is not implemented yet.
 - Only the PCI-424 (``0x0004``) is supported. The PCI-324 loads its FPGA
   through different registers, and the PCIe-424 has not been checked on a
   card.
-- Playback only, 48 kHz only, and the frame layout on the ring is unknown:
-  samples are exposed as ``frame_bytes / 4`` raw ``S32_LE`` words. Capture
+- Playback only, 48 kHz only. Frames are 96 bytes; the channel order inside
+  a frame is not mapped yet, so samples are exposed as ``frame_bytes / 4`` raw ``S32_LE`` words. Capture
   and rate changes (the vendor relock sequence) are not implemented.
 - No mixer (CueMix) kcontrols are registered yet; a companion userspace tool
   (``tools/motu424-ctl``, ``tools/motu424-gui``) implements the control
