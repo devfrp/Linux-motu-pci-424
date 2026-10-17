@@ -17,6 +17,9 @@ tools/motu424-probe
 tools/motu424-ctl
 __pycache__/
 
+# Local test captures (tools/stream-run.sh); attach them to issues instead
+reports/
+
 # Vendor installer (proprietary) — kept LOCAL only, never committed. Only the
 # reverse-engineered facts extracted from it go into docs/, not the blobs.
 MOTU Audio Installer*/
