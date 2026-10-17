@@ -171,6 +171,57 @@ table at `0x8738` (unity `0x40`) and the `0x4000` gain run at `0x7184`. The
 zero on Windows too. The order and arguments the vendor uses for these writes
 at device start are still being reversed; see `transport.md` (Open).
 
+### Which offsets the DSP program loads and stores (`--fields`, issue #2)
+
+Audiosyncrasy's `tools/re/dis-c64x.py --fields --dp 0x6e70 --ab 0x6fac` over
+the program, after the load/store fixes of PR #9: 211 access sites at 93
+offsets (summary attached to issue #2, 2026-10-17). The fixes corrected the
+offset of eight byte and halfword sites and left the others unchanged:
+
+| Site | Access | Corrected offset |
+|---|---|---|
+| `0x6e4c` | `ldh` | `+0xb6`, the upper half of `+0xb4` |
+| `0x6d58` | `stb` | `0x6eab` = `-0x101`, below the block |
+| six byte sites | `ldb`/`stb` | `0x8730` (`+0x1784`, 2 loads, 2 stores), `0x8abc` (`+0x1b10`, store), `0x969b` (`+0x26ef`, load); all previously placed far too high |
+
+Coverage: only accesses relative to the data page (`*+B14[n]`). A word the
+DSP reaches through a pointer register is missing, e.g. the live
+`+0x128..+0x130` statistics, which only the init routine stores relative to
+B14. An offset absent here is therefore not proof the DSP ignores it. The data
+page starts where the 28,272-byte (`0x6e70`) image ends, and the host zeroes
+RAM before the load, so nothing in it is preloaded.
+
+Routine addresses are the tool's heuristic starts. `0x1b8c` is the init
+routine: it stores every value the first bring-up read (`+0x0`, `+0x4`,
+`+0x8`, `+0x14`, `+0x18`, `+0x80`, `+0x98`, `+0x108`). `0x2140` holds the
+period tick (`0x2610..0x2674`) and the `+0x8c` read at `0x2820`.
+
+| DSP access | Offsets from `audio_base` |
+|---|---|
+| loads only | `+0x58..+0x70`, `+0x78`, `+0x84..+0x90`, `+0x9c..+0xf0` (incl. `+0xb6`, 16-bit), `-0x13c` (16-bit), `-0xd0`, `+0x26ef` (8-bit) |
+| stores only | `+0x0`, `+0x4`, `+0x8`, `+0x14`, `+0x18`, `+0x2c..+0x34`, `+0x3c..+0x48`, `+0xf4`, `+0x108`, `+0x11c..+0x134`, `-0x2c..-0x20`, `-0x101` (8-bit), `+0x10e0`, `+0x1394`, `+0x1b10` (8-bit) |
+| both | `+0x38`, `+0x4c`, `+0x54`, `+0x74`, `+0x7c`, `+0x80`, `+0x94`, `+0x98`, `+0xf8..+0x104`, `+0x10c..+0x118`, `+0x138`, `-0x1c..-0x10`, `+0x1774..+0x1784` (`+0x1784` 8-bit) |
+| none (B14-relative) | `+0xc`, `+0x10`, `+0x1c..+0x28`, `+0x50`, `+0x13c` |
+
+What follows for the configure path:
+
+- Every word of the parameter group the RAM diff shows missing on Linux
+  (`+0x88`, `+0x9c..+0xa4`, `+0xb0..+0xbc`, `+0xdc..+0xe4`, `+0xf0`) and the
+  relock words `+0x70`/`+0x78` is load-only, and all of them read 0 on Linux
+  after a stream: the host has to write them. The DSP also stores `+0x114`
+  (routine `0x45e0`) and `+0xf8..+0x100`, so those are not write-once
+  parameters.
+- `+0xf4` is store-only: the DSP publishes the stop acknowledge and never
+  reads back the host's `+0xf4 ← 0` before a stop.
+- `+0x84`, `+0xa8`, `+0xc0`, `+0xc8..+0xd8`, `+0xe8`, `+0xec` are load-only
+  too, but neither the vendor table above nor the RAM diff has a writer for
+  them; they read the same in the Windows and Linux images (INFERRED: not part
+  of what the configure path must add, at least for that Windows state).
+- `+0x34`, which the vendor's init writes (table above), is store-only on the
+  DSP side, and `+0x50` (the vendor's end-of-bring-up `1`) has no B14-relative
+  access at all: either the DSP reads them through a pointer or the host
+  writes are not what the DSP consumes. OPEN.
+
 ## Rate-mode lookup table (CONFIRMED — rdata at VA `0x30c74`)
 
 The transport-arm routine `0x2a820` writes `audio_base+0x80` with

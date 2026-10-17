@@ -127,7 +127,9 @@ Rate changes go through the relock sequence, which is not implemented.
   (`0x2a190`), the relock / `+0x100` sequence (`0x2b7f0`), the parameter
   group (`+0x88`, `+0x9c..+0xa4`, `+0xb0..+0xbc`, `+0xdc..+0xe4`, `+0xf0`,
   `+0xf4`, `+0x114` commit) and the channel map at `[+0x14]`. Their order
-  and arguments at device start are being reversed.
+  and arguments at device start are being reversed. The DSP program only
+  loads the parameter-group words (`register-map.md`, `--fields`) and they
+  read 0 on Linux, so the host has to write every one.
 - **Channel map** at `[+0x14]` (24 dwords): not written yet. Windows held
   14 bytes `0x19..0x26` there (14 = `+0x68`).
 - **Sample format and channel order** inside a frame. The driver exposes
