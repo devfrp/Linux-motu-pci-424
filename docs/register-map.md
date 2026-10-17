@@ -138,6 +138,39 @@ the vendor writes to window A `+0x8`).
 The DSP forwards `+0x80 >> 8` to an FPGA control register whenever the
 rate/mode word changes. `+0x138/+0x13c` are firmware timing maxima.
 
+### What the vendor writes after bring-up (RAM diff, issue #2, 2026-10-17)
+
+Audiosyncrasy diffed the data page (`0x6e70..0x9000`) of the Windows image
+above against the Linux image after a 48 kHz stream on `4cfb714`
+(`frame_bytes=96 period_bytes=0x1800`): the stream ran, but no output played
+and neither interface locked. Program text is identical. Leaving out live
+counters, bus addresses and the rate-dependent `+0x60`/`+0x80`, every
+difference is a value the vendor writes after bring-up and the Linux driver
+does not:
+
+| Off / address | Windows (96 kHz) | Linux | Written by |
+|---|---|---|---|
+| `+0x70` | `0x0044ffbc` | 0 | relock sequence `0x2b7f0` |
+| `+0x78` | `0x00032800` | 0 | relock sequence |
+| `+0x88` | `1` | 0 | parameter group |
+| `+0x9c/+0xa0/+0xa4` | `0x1e / 0x708 / 0x4650` | 0 | parameter group |
+| `+0xb0..+0xbc` | `0x1e / 0xcccd / 0x492b4000 / 0x640` | 0 | parameter group |
+| `+0xdc/+0xe0/+0xe4` | `0x7fff / 0x4e0c0 / 0xc31e00` | 0 | parameter group |
+| `+0xf0` | `0x223` | 0 | parameter group |
+| `+0xf4` | `1` | 0 | stop acknowledge / parameter group |
+| `+0xf8/+0xfc` | host address / `0x32cfc` | 0 | `+0x100` copy (host source, card destination) |
+| `+0x114` | `1` | 0 | commit of the parameter group |
+| `0x7648..0x7984` | live box status | `ff000000` defaults | interface mailbox exchange `0x2a190` |
+| `0x7c68..0x7c84`, `0x7ca4..0x7cb8` | channel lists `0x27..0x2e`, `0x10..0x17`, `0x19..0x26` | 0 | mailbox request blocks `[+0x24]/[+0x28]` |
+| `0x8348..0x8355` (`[+0x14]`) | 14 bytes `0x19..0x26` (14 = `+0x68`) | 0 | channel map, configure path `0x29930` |
+| `0x8d40..0x8e04`, `0x8ff0..0x8ffc` | structured non-zero tables | 0 | not attributed yet |
+
+Identical on both, so set by the firmware's own init: the 100-byte routing
+table at `0x8738` (unity `0x40`) and the `0x4000` gain run at `0x7184`. The
+45-dword mixer, the `m4` gain pairs, the `m8` flags and the `m18` deltas are
+zero on Windows too. The order and arguments the vendor uses for these writes
+at device start are still being reversed; see `transport.md` (Open).
+
 ## Rate-mode lookup table (CONFIRMED — rdata at VA `0x30c74`)
 
 The transport-arm routine `0x2a820` writes `audio_base+0x80` with
