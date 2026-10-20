@@ -85,13 +85,77 @@ has passed (`vendor-driver-map.md`, devext `+0x1f0`).
 
 - `+0x100` command: a chunked DSP-master copy of `+0x100` bytes from host
   address `+0xf8` to card address `+0xfc`; polling `+0x100` to 0 means "copy
-  complete". The clock-relock routine (`0x2b7f0`) uses it to prime the DSP
-  buffer from the host's common buffer.
+  complete". The relock sequence (`0x2b7f0`, below) uses it to hand the DSP
+  a mixer program from the host's 0x2800-byte common buffer.
 - `+0x128..+0x130`: per-period statistics the host reads and clears.
 - `+0x138/+0x13c`: firmware timing maxima (profiling); the host need not
   touch them.
-- Window B `0x30000/0x32800` (`+0x0c/+0x10`): two 0x2800-byte DSP-side
-  buffers; on the Windows-configured card each held 0x5b0 bytes of data.
+- Window B `0x30000/0x32800` (`+0x0c/+0x10`): the DSP's two 0x2800-byte
+  **mixer-program buffers**, not PCM. The Windows-configured card held two
+  generations: 0x5bc bytes at `0x30000` and 0x4fc bytes at `0x32800`, the one
+  in use (`+0x78 = 0x32800`).
+
+## Device configure (issue #2, 2026-10-20)
+
+Audiosyncrasy's reading of the 32-bit `MOTUAW.sys`: what the vendor writes
+after bring-up beyond the stream start, and when. The RAM diff in
+`register-map.md` shows all of it missing on Linux; the driver now writes it
+(below), not yet run on a card.
+
+- **Parameter group** (`+0x88/+0x8c/+0x90`, `+0x9c..+0xc0`, `+0xc4/+0xc8`,
+  `+0xe0/+0xe4/+0xf0`, `+0x98`, `+0x114` commit): written **inside bring-up**
+  (step 16, hw slot `0x30`: `0x2a820/0x2a710/0x2a9e0/0x2aab0`), after the
+  mixer zero and before `+0x50 ← 1`; rewritten identically at the settings
+  restore and on every rate change. The DSP routine that consumes `+0x114`
+  (`0x45e0`) also reads `+0x80` and `+0xc4/+0xc8`; it presumably configures
+  the clock (INFERRED: the missing lock).
+- **Relock / `+0x100` sequence** (`0x2b7f0`): on channel-set or mixer
+  changes (`0x27970`), on resume, on a meter-mode change, and in set-rate
+  (`0x1b620`) when the 1x/2x/4x multiplier changes. Not part of a stream
+  start. At driver start the registry restore calls set-rate with the saved
+  rate, so a box saved at 96 kHz relocks at load and one saved at 1x does
+  not.
+- **Configure** (`0x26760`: channel map, `+0x58/+0x68/+0x6c`): at every
+  stream start (`0x13b30`), then `+0x60`, `+0x64`, the ring, `+0x54 ← 1`.
+- **Mailbox** (`0x2a190`): **metering only**, never needed for clock or
+  audio. `0x24960` sends the channels the host has meters open for (the
+  channel-map byte encoding, at most 0x30 bytes = hw slot `+0x34`),
+  bank-selects with `+0x7c`, polls `+0x30 == 0` and reads 26 dwords of
+  peaks; `0x24420` resets it. The lists are host-chosen. The interface-state
+  area at `0x7648..` is presumably maintained by the DSP once the clock runs;
+  nothing on the host writes it.
+
+### The relock sequence
+
+The host keeps a ping-pong index starting at 0; `n` is the dword count of
+the mixer program.
+
+1. `idx = 1 - idx`; `dst = READ(+0x0c + 4 × idx)` (the first call reads
+   `+0x10` = `0x32800`);
+2. `+0xf8 ← ` bus address of the 0x2800-byte coherent common buffer;
+3. `+0xfc ← dst`;
+4. `+0x100 ← n × 4`;
+5. `+0x74 ← 1`;
+6. poll `+0x100 == 0`, 20 µs apart, at most 10000 times;
+7. `+0x74 ← 0`; on timeout, stop here;
+8. poll `+0x108 != 0`, 5 µs apart;
+9. `+0x108 ← 0`, `+0x78 ← dst`, `+0x70 ← (q << 16) | (u16)-q` with
+   `q = 0x10000 / (mult × 0x1e0)` (1x `0x0088ff78`, 2x `0x0044ffbc`, the
+   Windows value), `+0x104 ← 1`.
+
+The DSP copies the program from `+0xf8` to `+0xfc` in chunks, reading host
+memory only. On `+0x104` its main loop takes `+0x78` as the mixer-program
+pointer, clears `+0x104`, and raises `+0x108` when the next swap is safe.
+
+### The mixer program
+
+The CueMix **mixer program** is built by the host (`0x28d30`) from its own
+mixer model: variable-length records ending with the trailer `0x001c00e2
+0x079803e2 0x00008000`. The serialiser stops at 0x9f5 dwords, so 0x2800
+bytes is the buffer size. It is neither a constant nor a mailbox response.
+Before this, Linux never handed the DSP one (`+0x78 = 0`), the second
+candidate for the silence. The record format is not decoded yet, so the
+driver can only replay a program saved from a Windows-configured card.
 
 ## The Linux driver
 
@@ -99,14 +163,34 @@ has passed (`vendor-driver-map.md`, devext `+0x1f0`).
 allocation of 512 KB (32-bit DMA mask), and the ALSA buffer is the first
 `8 × period_bytes` of it (`+0x64 = 8`, `period_bytes` a module parameter,
 `0x1800` by default; `+0x60` is the `irq_frames` parameter, `0x40` by
-default). It writes `+0x58 = 0`, `+0x68 = 0xe`, `+0x6c = 0x10`
-and leaves the channel map zero for a first test. The trigger runs the start
-and stop sequences above, `.sync_stop` waits for `+0xf4`, the IRQ handler
-acks INTRST and calls `snd_pcm_period_elapsed()`, and `.pointer` returns
-`(+0x2c - ring) / frame_bytes`.
+default). The trigger runs the start and stop sequences above, `.sync_stop`
+waits for `+0xf4`, the IRQ handler acks INTRST and calls
+`snd_pcm_period_elapsed()`, and `.pointer` returns `(+0x2c - ring) /
+frame_bytes`.
+
+The device configure follows the write list Audiosyncrasy gave for 48 kHz
+with a 2408mk3 and a 24I/O (issue #2, 2026-10-20):
+
+- `motu424_hw_init()` writes the parameter group between the mixer zero and
+  `+0x50 ← 1`, in the vendor's order (`register-map.md`). Half the values
+  derive from the firmware constants `+0x44/+0x48`, so it is skipped with a
+  warning unless they read `0x03a89000/0x0009c180`. `+0x80` keeps the
+  firmware's own `0x800f0200`; the vendor writes `0x80000200` there at the
+  first bring-up only, and leaving it is the conservative choice.
+- If `/lib/firmware/motu424/pci424-mixer.bin` exists, probe hands it to the
+  DSP with the relock sequence once, after bus mastering is on. It must be a
+  multiple of 4 bytes, at most 0x2800, and end with the trailer above. It is
+  never shipped. Without it, the DSP runs with no mixer program, as before.
+- The stream start writes the channel map before `+0x58/+0x68/+0x6c`:
+  `0x191a1b1c 0x1d1e1f20 0x21222324 0x25260000` and 20 zeros. These are the
+  14 (= `+0x68`) playback channels 24..37, one byte each as `ch + ch/24` at
+  byte index `i ^ 3`, as the Windows image held them at `0x8348`. `+0x6c =
+  0x10` is the input count.
+- `configure=0` skips the parameter group and the channel map.
 
 Only playback at 48 kHz (1x, the state the program boots into) is exposed.
-Rate changes go through the relock sequence, which is not implemented.
+Rate changes go through the relock sequence with a different `+0x70` and the
+parameter group per rate, not implemented.
 
 ## Open
 
@@ -120,18 +204,20 @@ Rate changes go through the relock sequence, which is not implemented.
   96 kHz). Whether `+0x60` sets the period or the DSP picks it per rate is
   not split yet: a 48 kHz run with `irq_frames=0x80` does it (half the
   interrupt rate and `0x3000` steps in `+0x2c` if `+0x60` drives it).
-- **Device-configure path (blocks audio).** A 48 kHz Linux stream runs
-  cleanly but nothing reaches the outputs and the interfaces never lock.
-  A RAM diff against a Windows-configured card shows what the vendor writes
-  after bring-up and the driver does not: the interface mailbox exchange
-  (`0x2a190`), the relock / `+0x100` sequence (`0x2b7f0`), the parameter
-  group (`+0x88`, `+0x9c..+0xa4`, `+0xb0..+0xbc`, `+0xdc..+0xe4`, `+0xf0`,
-  `+0xf4`, `+0x114` commit) and the channel map at `[+0x14]`. Their order
-  and arguments at device start are being reversed. The DSP program only
-  loads the parameter-group words (`register-map.md`, `--fields`) and they
-  read 0 on Linux, so the host has to write every one.
-- **Channel map** at `[+0x14]` (24 dwords): not written yet. Windows held
-  14 bytes `0x19..0x26` there (14 = `+0x68`).
+- **Device configure (blocked audio; now written, not yet run).** A 48 kHz
+  Linux stream ran cleanly, but nothing reached the outputs and the
+  interfaces never locked. The parameter group, the mixer program and the
+  channel map were the missing pieces (Device configure, above); the driver
+  now writes all three. Pass criterion: the 2408mk3 and 24I/O lock after
+  the load, before any stream. Loading once without and once with
+  `pci424-mixer.bin` separates the two candidates (parameter group alone vs.
+  mixer program).
+- **Channel map for other interface sets.** The driver writes the one
+  Windows used for a 2408mk3 + 24I/O. How the vendor derives it from the
+  connected boxes is not traced.
+- **Mixer program format.** Records ending with a fixed trailer, not
+  decoded; a default program for a clean state would remove the need to
+  save one from Windows.
 - **Sample format and channel order** inside a frame. The driver exposes
   `frame_bytes / 4` raw 32-bit words (`S32_LE`) until that is known.
 - **Capture.** Audio is DMA both ways, but where the DSP writes recorded
