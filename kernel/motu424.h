@@ -124,6 +124,15 @@
 #define MOTU424_FW_PROG		"motu424/pci424-program.bin"
 #define MOTU424_FW_PROG_LEN	28272
 
+/*
+ * Optional: a CueMix mixer program for the DSP (docs/transport.md). The
+ * vendor builds it from its mixer model; the user can save the one a
+ * Windows-configured card holds. Never shipped and not hash-checked: it is
+ * generated routing data, so only its size and trailer are checked.
+ */
+#define MOTU424_FW_MIXER	"motu424/pci424-mixer.bin"
+#define MOTU424_MIXPROG_LEN	0x2800u	/* each DSP-side program buffer */
+
 /* The DSP program publishes audio_base in the last dword of internal RAM. */
 #define MOTU424_MAILBOX		0x0003fffcu
 
@@ -135,7 +144,11 @@
  * and a Windows-configured dump (issue #2, 2026-10-15).
  */
 #define MOTU424_AREG_MIXBASE	0x00u	/* R: CueMix coefficient block (45 dwords) */
+#define MOTU424_AREG_MIXPROG_BUF 0x0cu	/* R: two DSP mixer-program buffers (+0x10) */
+#define MOTU424_AREG_CHMAP	0x14u	/* R: address of the 24-dword channel map */
 #define MOTU424_AREG_DMAPOINT	0x2cu	/* R: DSP's current host bus address    */
+#define MOTU424_AREG_FW_K1	0x44u	/* R: firmware constant, parameter group  */
+#define MOTU424_AREG_FW_K2	0x48u	/* R: firmware constant, parameter group  */
 #define MOTU424_AREG_ENABLE_INIT 0x50u	/* W 1: vendor init, end of bring-up    */
 #define MOTU424_AREG_ENABLE	0x54u	/* W: 1 = start, 0 = stop the stream     */
 #define MOTU424_AREG_CFG_C	0x58u	/* W: configure arg c (0 on Windows)     */
@@ -144,10 +157,26 @@
 #define MOTU424_AREG_RING_PERIODS 0x64u	/* W: periods per ring wrap              */
 #define MOTU424_AREG_XFER_A	0x68u	/* W: fetch geometry, 0x30-byte units    */
 #define MOTU424_AREG_XFER_B	0x6cu	/* W: fetch geometry                     */
+#define MOTU424_AREG_RELOCK_W	0x70u	/* W: relock word (q << 16 | -q)         */
+#define MOTU424_AREG_COPY_ARM	0x74u	/* W: 1 while the host copy runs         */
+#define MOTU424_AREG_MIXPROG	0x78u	/* W: mixer program the DSP runs         */
 #define MOTU424_AREG_RING_SIZE	0x8cu	/* W: host ring size code (bytes)        */
 #define MOTU424_AREG_STOP_ACK	0xf4u	/* W 0 before stop; DSP sets !0 when done */
+#define MOTU424_AREG_COPY_SRC	0xf8u	/* W: host bus address to copy from      */
+#define MOTU424_AREG_COPY_DST	0xfcu	/* W: DSP address to copy to             */
+#define MOTU424_AREG_COPY_LEN	0x100u	/* W: bytes; the DSP zeroes it when done */
+#define MOTU424_AREG_MIXPROG_SWAP 0x104u /* W 1: switch to +0x78; DSP clears it  */
+#define MOTU424_AREG_MIXPROG_READY 0x108u /* R: DSP sets !0 when a swap is safe  */
 
 #define MOTU424_MIX_DWORDS	45
+#define MOTU424_CHMAP_DWORDS	24
+
+/* What the program's own init leaves in +0x44/+0x48 (bring-up run 1). */
+#define MOTU424_FW_K1_VAL	0x03a89000u
+#define MOTU424_FW_K2_VAL	0x0009c180u
+
+/* +0x70 at 1x: q = 0x10000 / (1 * 0x1e0) = 0x88, (q << 16) | (u16)-q. */
+#define MOTU424_RELOCK_W_1X	0x0088ff78u
 
 /*
  * Software IRQ bits: driver-internal contract between motu424_hw_irq_ack()
@@ -167,11 +196,12 @@
  * at 48 kHz with +0x60 = 0x40 (Linux), 0x3000 at 96 kHz with +0x60 = 0x80
  * (Windows); whether +0x60 sets it or the DSP picks it per rate is still
  * open. Only the 1x / 48 kHz state the program boots into is used: rate
- * changes go through the relock sequence, which is not implemented.
+ * changes go through the relock sequence, which the driver only runs once,
+ * at load, to hand the DSP a mixer program.
  *
- * The fetch geometry (+0x58/+0x68/+0x6c) is what the vendor's configure path
- * (0x29930) wrote on a Windows-configured card; the 24-dword channel map at
- * [+0x14] is left zero for now.
+ * The fetch geometry (+0x58/+0x68/+0x6c) and the 24-dword channel map at
+ * [+0x14] are what the vendor's configure path (0x26760) wrote on a
+ * Windows-configured card with two interfaces.
  *
  * Bytes per frame (96, measured on a Linux stream), period bytes and frames
  * per interrupt are module parameters; streaming stays off while frame_bytes
@@ -222,6 +252,13 @@ struct motu424 {
 	/* Published by the DSP program after the load (0 = not running). */
 	u32 audio_base;			/* audio block (DSP global data) */
 	u32 mix_base;			/* CueMix coefficient block      */
+	u32 chmap_base;			/* channel map ([+0x14])         */
+
+	/* Optional mixer program, copied by the DSP from host memory. */
+	void *mixer_buf;		/* coherent, MOTU424_MIXPROG_LEN */
+	dma_addr_t mixer_bus;
+	size_t mixer_len;		/* 0 = none loaded               */
+	unsigned int mixer_idx;		/* DSP program buffer last used  */
 
 	unsigned int frame_bytes;	/* host-ring bytes per frame, 0 = unknown */
 	unsigned int period_bytes;	/* bytes the DSP fetches per interrupt    */
@@ -235,6 +272,7 @@ struct motu424 {
 
 /* --- motu424_hw.c : the only file that touches real register semantics --- */
 int  motu424_hw_init(struct motu424 *chip);
+void motu424_hw_relock(struct motu424 *chip);
 void motu424_hw_shutdown(struct motu424 *chip);
 void motu424_hw_stream_start(struct motu424 *chip, dma_addr_t ring);
 void motu424_hw_stream_stop(struct motu424 *chip);
