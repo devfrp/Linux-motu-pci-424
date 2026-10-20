@@ -17,13 +17,18 @@
  *  - audio is DSP bus-master DMA: the host hands the DSP a coherent ring,
  *    the DSP raises one interrupt per period (ack: RSTSRC INTRST), wraps
  *    after RING_PERIODS periods and reports its position as a host bus
- *    address at audio_base+0x2c.
+ *    address at audio_base+0x2c;
+ *  - the device configure (issue #2, 2026-10-20) is the vendor's 48 kHz
+ *    parameter group at load, an optional mixer program handed over by the
+ *    relock sequence, and the channel map at every stream start.
  *
  * Only the PCI-424 (137a:0004) load path is implemented and tested.
  */
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/firmware.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/sched.h>
@@ -47,6 +52,11 @@ module_param(irq_frames, uint, 0444);
 MODULE_PARM_DESC(irq_frames,
 		 "Frames per interrupt written to +0x60 (0x40 by default; diagnostic, see docs/transport.md)");
 
+static bool configure = true;
+module_param(configure, bool, 0444);
+MODULE_PARM_DESC(configure,
+		 "Write the vendor's 48 kHz parameter group at load and the channel map at stream start (default Y)");
+
 MODULE_FIRMWARE(MOTU424_FW_FPGA);
 MODULE_FIRMWARE(MOTU424_FW_PROG);
 
@@ -62,6 +72,68 @@ static const u8 motu424_prog_sha256[SHA256_DIGEST_SIZE] = {
 	0xeb, 0xa8, 0x95, 0x66, 0x81, 0xee, 0x8d, 0xd0,
 	0x21, 0x2c, 0xd7, 0x09, 0x1e, 0x8d, 0x67, 0x7c,
 	0x27, 0x2c, 0xcb, 0x1a, 0x7f, 0xaa, 0x6e, 0x4f
+};
+
+/* The last three dwords of every CueMix mixer program the vendor builds. */
+static const u32 motu424_mixprog_trailer[] = {
+	0x001c00e2, 0x079803e2, 0x00008000
+};
+
+/*
+ * The vendor's parameter group for 48 kHz at 1x (bring-up step 16, hw slot
+ * 0x30: 0x2a820/0x2a710/0x2a9e0/0x2aab0) with its constructor defaults:
+ * internal clock, latency 0, P = Q = 3000. K1/K2 are the firmware constants
+ * at +0x44/+0x48. Committed by +0x114, which DSP routine 0x45e0 consumes.
+ */
+struct motu424_wr {
+	u32 off;
+	u32 val;
+};
+
+static const struct motu424_wr motu424_cfg_head[] = {
+	{ 0x88, 1 },
+	{ 0x8c, MOTU424_RING_BYTES },
+	{ 0x90, 0 },
+};
+
+/* Written twice, before and after the +0x98 rate word. */
+static const struct motu424_wr motu424_cfg_rate[] = {
+	{ 0xc4, 0 },		/* latency: ms * rate / 1000 */
+	{ 0xc8, 0 },
+	{ 0x9c, 0x1e },		/* (Q + 50) / 100 */
+	{ 0xa4, 0x4650 },	/* 6Q */
+	{ 0xa0, 0x708 },	/* 6Q / 10 */
+	{ 0xb0, 0x1e },		/* Q / 100 */
+	{ 0xb4, 0xcccd },	/* (8P * 2^20 / rate + 5) / 10 */
+	{ 0xb8, 0x492b4000 },	/* K1 * rate * 10 / 8P */
+	{ 0xbc, 0x640 },	/* rate * 100 / P */
+	{ 0xc0, 0 },
+	{ 0xe0, 0x9c180 },	/* K2 (halved at 2x/4x) */
+	{ 0xe4, 0xc31e00 },	/* (K2 * rate * 10 + 4P) / 8P */
+	{ 0xf0, 0x223 },	/* 0x40000 / (K2 * rate / 64e6) */
+	{ 0x114, 1 },		/* commit */
+};
+
+static const struct motu424_wr motu424_cfg_tail[] = {
+	{ 0x84, 0 },		/* internal clock */
+	{ 0xa8, 0 },
+	{ 0x114, 1 },		/* commit again */
+	{ 0x118, 1 },		/* the DSP clears it */
+	{ 0xcc, 0 },		/* clock-source words */
+	{ 0xd0, 0 },
+	{ 0xd4, 0 },
+	{ 0xdc, 0x7fff },	/* restored user setting */
+};
+
+#define MOTU424_RATE_WORD_48K	0x05355555u	/* +0x98, as the firmware boots */
+
+/*
+ * Channel map at [+0x14], as a Windows-configured card with a 2408mk3 and a
+ * 24I/O held it: the 14 (= +0x68) playback channels 24..37, one byte each
+ * as ch + ch / 24, at byte index i ^ 3.
+ */
+static const u32 motu424_chmap[MOTU424_CHMAP_DWORDS] = {
+	0x191a1b1c, 0x1d1e1f20, 0x21222324, 0x25260000,
 };
 
 /* --- windowed card-address dispatch (vendor accessors 0x29110/0x29160) --- */
@@ -314,19 +386,53 @@ static int motu424_dsp_start(struct motu424 *chip)
 	chip->audio_base = ab;
 
 	chip->mix_base = motu424_ard(chip, MOTU424_AREG_MIXBASE);
-	if (!motu424_in_ram(chip->mix_base, MOTU424_MIX_DWORDS * 4)) {
-		dev_err(dev, "DSP published an invalid mix_base 0x%08x\n",
-			chip->mix_base);
+	chip->chmap_base = motu424_ard(chip, MOTU424_AREG_CHMAP);
+	if (!motu424_in_ram(chip->mix_base, MOTU424_MIX_DWORDS * 4) ||
+	    !motu424_in_ram(chip->chmap_base, MOTU424_CHMAP_DWORDS * 4)) {
+		dev_err(dev, "DSP published an invalid mix_base 0x%08x or channel map 0x%08x\n",
+			chip->mix_base, chip->chmap_base);
 		chip->audio_base = 0;
 		return -EIO;
 	}
 	return 0;
 }
 
+static void motu424_awr_list(struct motu424 *chip,
+			     const struct motu424_wr *w, size_t n)
+{
+	for (; n; n--, w++)
+		motu424_awr(chip, w->off, w->val);
+}
+
+/*
+ * The vendor's parameter group for 48 kHz (bring-up step 16), in its order.
+ * Half the values derive from +0x44/+0x48, so nothing is written unless the
+ * program left the constants they were computed from.
+ */
+static void motu424_dsp_configure(struct motu424 *chip)
+{
+	struct device *dev = &chip->pci->dev;
+	u32 k1 = motu424_ard(chip, MOTU424_AREG_FW_K1);
+	u32 k2 = motu424_ard(chip, MOTU424_AREG_FW_K2);
+
+	if (k1 != MOTU424_FW_K1_VAL || k2 != MOTU424_FW_K2_VAL) {
+		dev_warn(dev, "+0x44/+0x48 = 0x%x/0x%x, expected 0x%x/0x%x: parameter group not written\n",
+			 k1, k2, MOTU424_FW_K1_VAL, MOTU424_FW_K2_VAL);
+		return;
+	}
+	motu424_awr_list(chip, motu424_cfg_head, ARRAY_SIZE(motu424_cfg_head));
+	motu424_awr_list(chip, motu424_cfg_rate, ARRAY_SIZE(motu424_cfg_rate));
+	motu424_awr(chip, 0x98, MOTU424_RATE_WORD_48K);
+	motu424_awr_list(chip, motu424_cfg_rate, ARRAY_SIZE(motu424_cfg_rate));
+	motu424_awr_list(chip, motu424_cfg_tail, ARRAY_SIZE(motu424_cfg_tail));
+	dev_info(dev, "48 kHz parameter group written\n");
+}
+
 /*
  * Step 5, the rest of the vendor init (fn 0x2c150): zero the mixer block,
- * audio_base+0x50 <- 1, then the EMIF CE0 timing the DSP needs to reach the
- * FPGA (the value a Windows-configured card reads back in CECTL0/CECTL1).
+ * the parameter group, audio_base+0x50 <- 1, then the EMIF CE0 timing the
+ * DSP needs to reach the FPGA (the value a Windows-configured card reads
+ * back in CECTL0/CECTL1).
  */
 static void motu424_dsp_init(struct motu424 *chip)
 {
@@ -334,8 +440,52 @@ static void motu424_dsp_init(struct motu424 *chip)
 
 	for (i = 0; i < MOTU424_MIX_DWORDS; i++)
 		motu424_wr32(chip, chip->mix_base + 4 * i, 0);
+	if (configure)
+		motu424_dsp_configure(chip);
 	motu424_awr(chip, MOTU424_AREG_ENABLE_INIT, 1);
 	motu424_wr32(chip, MOTU424_EMIF_CECTL0, MOTU424_CECTL0_INIT);
+}
+
+/*
+ * The optional mixer program: a multiple of 4 bytes that fits a DSP program
+ * buffer and ends with the vendor's trailer. It goes into a coherent buffer
+ * now, while the DSP cannot master the bus yet; motu424_hw_relock() hands it
+ * over. The buffer is devres-managed and registered before the shutdown
+ * action, so it outlives any DSP access to it.
+ */
+static void motu424_mixer_get(struct motu424 *chip)
+{
+	struct device *dev = &chip->pci->dev;
+	const size_t tlen = sizeof(motu424_mixprog_trailer);
+	const struct firmware *fw;
+	size_t i, n;
+
+	if (request_firmware_direct(&fw, MOTU424_FW_MIXER, dev)) {
+		dev_info(dev, "no %s: the DSP runs without a mixer program\n",
+			 MOTU424_FW_MIXER);
+		return;
+	}
+	n = fw->size;
+	if (n % 4 || n < tlen || n > MOTU424_MIXPROG_LEN)
+		goto bad;
+	for (i = 0; i < ARRAY_SIZE(motu424_mixprog_trailer); i++)
+		if (get_unaligned_le32(fw->data + n - tlen + 4 * i) !=
+		    motu424_mixprog_trailer[i])
+			goto bad;
+
+	chip->mixer_buf = dmam_alloc_coherent(dev, MOTU424_MIXPROG_LEN,
+					      &chip->mixer_bus, GFP_KERNEL);
+	if (chip->mixer_buf) {
+		memcpy(chip->mixer_buf, fw->data, n);
+		chip->mixer_len = n;
+	}
+	release_firmware(fw);
+	return;
+
+bad:
+	dev_warn(dev, "%s: %zu bytes, not a mixer program (multiple of 4, at most 0x%x, ending with the CueMix trailer); ignored\n",
+		 MOTU424_FW_MIXER, n, MOTU424_MIXPROG_LEN);
+	release_firmware(fw);
 }
 
 /*
@@ -376,6 +526,7 @@ int motu424_hw_init(struct motu424 *chip)
 		goto out;
 	}
 	motu424_dsp_init(chip);
+	motu424_mixer_get(chip);
 
 	chip->frame_bytes = frame_bytes;
 	chip->period_bytes = period_bytes;
@@ -405,6 +556,57 @@ out:
 }
 
 /*
+ * Hand the DSP the mixer program, if one was loaded (vendor relock
+ * 0x2b7f0, once at load here). The DSP copies it by bus-master DMA from the
+ * host buffer into the next of its two program buffers (+0x0c/+0x10, used
+ * in turn), reading host memory only, then switches to it at a safe point.
+ * Probe calls this after pci_set_master() and the shutdown action. A
+ * failure is reported and leaves the DSP on no program, as before.
+ */
+void motu424_hw_relock(struct motu424 *chip)
+{
+	struct device *dev = &chip->pci->dev;
+	u32 dst, v;
+	int err;
+
+	if (!chip->mixer_len || !chip->audio_base)
+		return;
+
+	chip->mixer_idx ^= 1;
+	dst = motu424_ard(chip, MOTU424_AREG_MIXPROG_BUF + 4 * chip->mixer_idx);
+	if (!motu424_in_ram(dst, MOTU424_MIXPROG_LEN)) {
+		dev_warn(dev, "invalid DSP mixer-program buffer 0x%08x\n", dst);
+		return;
+	}
+
+	motu424_awr(chip, MOTU424_AREG_COPY_SRC, lower_32_bits(chip->mixer_bus));
+	motu424_awr(chip, MOTU424_AREG_COPY_DST, dst);
+	motu424_awr(chip, MOTU424_AREG_COPY_LEN, chip->mixer_len);
+	motu424_awr(chip, MOTU424_AREG_COPY_ARM, 1);
+	/* The vendor polls every 20 us, at most 10000 times. */
+	err = read_poll_timeout(motu424_ard, v, !v, 20, 200000, false,
+				chip, MOTU424_AREG_COPY_LEN);
+	motu424_awr(chip, MOTU424_AREG_COPY_ARM, 0);
+	if (err) {
+		dev_warn(dev, "DSP did not finish the mixer-program copy (+0x100 = 0x%x)\n",
+			 v);
+		return;
+	}
+	err = read_poll_timeout(motu424_ard, v, v, 5, 100000, false,
+				chip, MOTU424_AREG_MIXPROG_READY);
+	if (err) {
+		dev_warn(dev, "DSP never signalled a safe mixer-program swap (+0x108)\n");
+		return;
+	}
+	motu424_awr(chip, MOTU424_AREG_MIXPROG_READY, 0);
+	motu424_awr(chip, MOTU424_AREG_MIXPROG, dst);
+	motu424_awr(chip, MOTU424_AREG_RELOCK_W, MOTU424_RELOCK_W_1X);
+	motu424_awr(chip, MOTU424_AREG_MIXPROG_SWAP, 1);
+	dev_info(dev, "mixer program: 0x%zx bytes handed to the DSP at 0x%x\n",
+		 chip->mixer_len, dst);
+}
+
+/*
  * Quiesce the card before its IRQ and the host ring go away: stop the
  * stream, mask PINTA# and warm-reset the DSP, which also ends its bus-master
  * accesses to host memory.
@@ -429,16 +631,22 @@ void motu424_hw_shutdown(struct motu424 *chip)
 }
 
 /*
- * Start playback from the host ring at bus address @ring: the fetch geometry
- * the vendor's configure path writes (0x29930), ring base, size code, frames
- * per interrupt and periods per wrap, then enable; clear any stale interrupt
- * request and unmask PINTA#. Called from the atomic trigger.
+ * Start playback from the host ring at bus address @ring: what the vendor's
+ * configure path (0x26760) writes at every stream start, the channel map and
+ * fetch geometry, then ring base, size code, frames per interrupt and
+ * periods per wrap, then enable; clear any stale interrupt request and
+ * unmask PINTA#. Called from the atomic trigger.
  */
 void motu424_hw_stream_start(struct motu424 *chip, dma_addr_t ring)
 {
 	unsigned long flags;
+	unsigned int i;
 
 	spin_lock_irqsave(&chip->lock, flags);
+	if (configure)
+		for (i = 0; i < MOTU424_CHMAP_DWORDS; i++)
+			motu424_wr32(chip, chip->chmap_base + 4 * i,
+				     motu424_chmap[i]);
 	motu424_awr(chip, MOTU424_AREG_CFG_C, MOTU424_CFG_C);
 	motu424_awr(chip, MOTU424_AREG_XFER_A, MOTU424_XFER_A);
 	motu424_awr(chip, MOTU424_AREG_XFER_B, MOTU424_XFER_B);
