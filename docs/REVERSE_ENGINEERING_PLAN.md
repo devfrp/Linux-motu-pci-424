@@ -214,10 +214,15 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
   waits for the DSP's `+0xf4` acknowledge; pointer = `(+0x2c - ring) /
   frame_bytes`. Playback at 48 kHz only; `frame_bytes` is a module parameter
   (0 = streaming off) until the ring's frame layout is known.
-- [ ] **4.4 Clock/rate.** **[OPEN]** The driver no longer writes rate
-  registers: it streams at the 48 kHz / 1x state the DSP program boots into.
-  Rate changes go through the vendor relock sequence (`0x2b7f0`: `+0x80`,
-  `+0x88/+0x8c/+0x90`, the `+0xf8/+0xfc/+0x100` DSP copy), not implemented.
+- [ ] **4.4 Clock/rate.** **[PARTIAL 2026-10-20, not yet run on a card]**
+  The driver streams at the 48 kHz / 1x state the DSP program boots into.
+  From Audiosyncrasy's write list it now writes the vendor's 48 kHz parameter
+  group in `motu424_hw_init()` and the channel map at stream start. It also
+  runs the relock sequence (`0x2b7f0`, the `+0xf8/+0xfc/+0x100` DSP copy)
+  once at load when the user provides a mixer program saved from Windows
+  (`transport.md`, Device configure). Still to do: other rates (parameter
+  group and `+0x70` per rate, relock on a multiplier change), a default mixer
+  program, and the channel map for other interface sets.
 - [x] **4.5 IRQ.** **[DONE, not yet run on a card]** pending = HSR bit 1, ack
   = `0x10` (INTRST) to RSTSRC `0x01c00000`, `snd_pcm_period_elapsed()` on every
   interrupt (the DSP raises one per `+0x60` frames). Teardown stops the

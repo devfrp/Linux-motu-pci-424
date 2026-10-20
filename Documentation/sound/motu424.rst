@@ -71,6 +71,14 @@ extract them from their own copy of the vendor driver with
 Their lengths and SHA-256 are checked before anything reaches the card;
 probe fails if either is missing or different.
 
+After the load, the driver writes the vendor's 48 kHz parameter group (see
+``docs/register-map.md``). An optional third file,
+``/lib/firmware/motu424/pci424-mixer.bin``, is a CueMix mixer program saved
+from a Windows-configured card. It is generated routing data, never
+distributed. If present, probe hands it to the DSP once with the vendor's
+relock sequence. It must be a multiple of 4 bytes, at most 0x2800, and end
+with the vendor's trailer.
+
 Transport
 ---------
 
@@ -100,6 +108,9 @@ Module parameters
    irq_frames=<n>    Frames per interrupt written to +0x60. 0x40 (the
                      default). Diagnostic: tells whether +0x60 sets the
                      period size.
+   configure=<bool>  Write the vendor's 48 kHz parameter group at load and
+                     the channel map at stream start. Y (the default);
+                     N restores the earlier behaviour for comparison.
 
 Current status and limitations
 ===============================
@@ -107,8 +118,11 @@ Current status and limitations
 - The firmware load matches the sequence run on a real PCI-424 with
   ``tools/motu424-bringup``. The stream path (start, stop, interrupt,
   pointer) has run on a card: interrupts, wrap and position are right, but
-  the outputs stay silent and the interfaces do not lock, because the
-  vendor's device-configure path is not implemented yet.
+  the outputs stayed silent and the interfaces did not lock without the
+  vendor's device configure. That configure (parameter group, optional
+  mixer program, channel map) is now written as reversed from the vendor
+  driver, but has not run on a card yet. The channel map is the one Windows
+  used for a 2408mk3 and a 24I/O.
 - Only the PCI-424 (``0x0004``) is supported. The PCI-324 loads its FPGA
   through different registers, and the PCIe-424 has not been checked on a
   card.

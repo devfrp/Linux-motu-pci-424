@@ -160,16 +160,16 @@ does not:
 | `+0xf4` | `1` | 0 | stop acknowledge / parameter group |
 | `+0xf8/+0xfc` | host address / `0x32cfc` | 0 | `+0x100` copy (host source, card destination) |
 | `+0x114` | `1` | 0 | commit of the parameter group |
-| `0x7648..0x7984` | live box status | `ff000000` defaults | interface mailbox exchange `0x2a190` |
-| `0x7c68..0x7c84`, `0x7ca4..0x7cb8` | channel lists `0x27..0x2e`, `0x10..0x17`, `0x19..0x26` | 0 | mailbox request blocks `[+0x24]/[+0x28]` |
-| `0x8348..0x8355` (`[+0x14]`) | 14 bytes `0x19..0x26` (14 = `+0x68`) | 0 | channel map, configure path `0x29930` |
+| `0x7648..0x7984` | live box status | `ff000000` defaults | presumably the DSP once the clock runs; no host writer |
+| `0x7c68..0x7c84`, `0x7ca4..0x7cb8` | channel lists `0x27..0x2e`, `0x10..0x17`, `0x19..0x26` | 0 | metering requests `[+0x24]/[+0x28]` (`0x24960`, host-chosen; metering only) |
+| `0x8348..0x8355` (`[+0x14]`) | 14 bytes `0x19..0x26` (14 = `+0x68`) | 0 | channel map, configure step `0x26760` at stream start |
 | `0x8d40..0x8e04`, `0x8ff0..0x8ffc` | structured non-zero tables | 0 | not attributed yet |
 
 Identical on both, so set by the firmware's own init: the 100-byte routing
 table at `0x8738` (unity `0x40`) and the `0x4000` gain run at `0x7184`. The
 45-dword mixer, the `m4` gain pairs, the `m8` flags and the `m18` deltas are
 zero on Windows too. The order and arguments the vendor uses for these writes
-at device start are still being reversed; see `transport.md` (Open).
+are in the write list below and in `transport.md` (Device configure).
 
 ### Which offsets the DSP program loads and stores (`--fields`, issue #2)
 
@@ -214,13 +214,52 @@ What follows for the configure path:
 - `+0xf4` is store-only: the DSP publishes the stop acknowledge and never
   reads back the host's `+0xf4 ← 0` before a stop.
 - `+0x84`, `+0xa8`, `+0xc0`, `+0xc8..+0xd8`, `+0xe8`, `+0xec` are load-only
-  too, but neither the vendor table above nor the RAM diff has a writer for
-  them; they read the same in the Windows and Linux images (INFERRED: not part
-  of what the configure path must add, at least for that Windows state).
-- `+0x34`, which the vendor's init writes (table above), is store-only on the
-  DSP side, and `+0x50` (the vendor's end-of-bring-up `1`) has no B14-relative
-  access at all: either the DSP reads them through a pointer or the host
-  writes are not what the DSP consumes. OPEN.
+  too and read the same in the Windows and Linux images. Resolved by the
+  write list below: the vendor writes `0` to `+0x84/+0xa8`, `+0xc0`, `+0xc8`
+  and `+0xcc..+0xd4`; `+0xd8`, `+0xe8`, `+0xec` and `+0xac` (clock sources
+  4..7 only) stay unwritten at 48 kHz.
+- `+0x34` is store-only on the DSP side and, per the write list, stays
+  unwritten on Windows at 48 kHz too. `+0x50` (the vendor's end-of-bring-up
+  `1`) has no B14-relative access at all. OPEN.
+
+### The vendor's 48 kHz configure writes (issue #2, 2026-10-20)
+
+Audiosyncrasy's write list from the 32-bit `MOTUAW.sys`, for 48 kHz at 1x
+with the constructor defaults (internal clock, latency 0, P = Q = 3000) and
+the firmware constants K1 = `+0x44` = `0x03a89000`, K2 = `+0x48` =
+`0x0009c180` (bring-up run 1). It runs inside bring-up, after the mixer zero
+and before `+0x50 ← 1`; `transport.md` (Device configure) has where the
+other pieces run. Every derived value below reproduces from its formula.
+
+| # | Word | Value | Formula / note |
+|---|---|---|---|
+| 1 | `+0x80` | `0x80000200` | clock-source index 0, 1x; first bring-up only. The driver keeps the firmware's `0x800f0200` |
+| 2 | `+0x88` | `1` | |
+| 3 | `+0x8c` | `0x80000` | ring size code |
+| 4 | `+0x90` | `0` | |
+| 5 | `+0xc4` | `0` | latency, `ms × rate / 1000` |
+| 6 | `+0xc8` | `0` | |
+| 7 | `+0x9c` | `0x1e` | `(Q + 50) / 100` |
+| 8 | `+0xa4` | `0x4650` | `6Q` |
+| 9 | `+0xa0` | `0x708` | `6Q / 10` |
+| 10 | `+0xb0` | `0x1e` | `Q / 100` |
+| 11 | `+0xb4` | `0xcccd` | `(8P × 2^20 / rate + 5) / 10` |
+| 12 | `+0xb8` | `0x492b4000` | `K1 × rate × 10 / 8P` |
+| 13 | `+0xbc` | `0x640` | `rate × 100 / P` |
+| 14 | `+0xc0` | `0` | |
+| 15 | `+0xe0` | `0x9c180` | `K2`, halved at 2x/4x (`0x4e0c0` on Windows at 96 kHz) |
+| 16 | `+0xe4` | `0xc31e00` | `(K2 × rate × 10 + 4P) / 8P` |
+| 17 | `+0xf0` | `0x223` | `0x40000 / (K2 × rate / 64e6)` |
+| 18 | `+0x114` | `1` | commit |
+| 19 | `+0x98` | `0x05355555` | then rows 5-18 again |
+| 20 | `+0x84`, `+0xa8` | `0`, `0` | internal clock; then `+0x114 ← 1` again |
+| 21 | `+0x118` | `1` | the DSP clears it |
+| 22 | `+0xcc`, `+0xd0`, `+0xd4` | `0` | clock-source words |
+| 23 | `+0xdc` | `0x7fff` | restored user setting |
+
+Then `+0x50 ← 1`, CECTL0, and the relock sequence with the mixer program
+(`transport.md`). At every stream start the configure step adds the
+channel map at `[+0x14]` to the fetch geometry.
 
 ## Rate-mode lookup table (CONFIRMED — rdata at VA `0x30c74`)
 

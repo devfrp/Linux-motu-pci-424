@@ -13,9 +13,10 @@ et ses interfaces de sortie AudioWire (2408, 24I/O, 828, HD192, 896HD, …).
 > aux lettres) a tourné avec `tools/motu424-bringup`, et le pilote fait
 > désormais la même chose quand il s'attache à la carte, avec `request_firmware()`
 > (voir [Firmware](#firmware)). L'audio passe par le DMA du DSP depuis un anneau
-> en mémoire hôte ; le chemin de flux est écrit mais pas testé, et reste coupé
-> tant que la taille d'une trame dans l'anneau n'est pas connue
-> (`motu424.frame_bytes=`). Lecture seule, 48 kHz seulement, PCI-424
+> en mémoire hôte. Le chemin de flux a tourné sur une carte, mais les sorties
+> restaient muettes faute de la configuration constructeur, désormais écrite et
+> pas encore testée. Le flux reste coupé sauf avec `motu424.frame_bytes=96`.
+> Lecture seule, 48 kHz seulement, PCI-424
 > (`137a:0004`) seulement pour l'instant.
 
 ## Démarrage rapide
@@ -211,6 +212,18 @@ Le pilote vérifie la taille et le SHA-256 des deux fichiers et refuse de
 s'attacher si l'un manque ou diffère. Sur la carte de test, le chargement a pris
 environ 15 s depuis l'espace utilisateur (894k écritures GPIO) ; ensuite `dmesg`
 affiche `DSP running: audio_base=0x6fac ...`.
+
+Facultatif, pour les testeurs : `/lib/firmware/motu424/pci424-mixer.bin`, un
+programme de mixage CueMix récupéré sur une carte configurée par Windows.
+Redémarrez à chaud depuis Windows, videz la RAM du DSP avec `sudo
+tools/motu424-ringwatch.py --dump ram.bin` avant de charger le pilote, puis
+découpez le programme pointé par `+0x78`, jusqu'à sa signature de fin
+`e2 00 1c 00 e2 03 98 07 00 80 00 00` incluse. Sur la carte de test, c'était
+0x4fc octets à `0x32800` :
+`dd if=ram.bin of=pci424-mixer.bin bs=1 skip=$((0x32800)) count=$((0x4fc))`.
+Ce sont vos propres données de routage, jamais distribuées. Si le fichier est
+présent, le pilote le transmet au DSP au chargement (`docs/transport.md`,
+Device configure).
 
 ## Rétro-ingénierie
 

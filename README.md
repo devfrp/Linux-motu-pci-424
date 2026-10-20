@@ -13,8 +13,9 @@ and its AudioWire breakout interfaces (2408, 24I/O, 828, HD192, 896HD, …).
 > sequence (FPGA image through the DSP's GPIO, DSP program, mailbox) has been
 > run with `tools/motu424-bringup`, and the driver now does the same when it binds
 > with `request_firmware()` (see [Firmware](#firmware)). Audio is DSP
-> bus-master DMA from a host ring; the stream path is written but untested,
-> and stays off until the ring's frame size is known (`motu424.frame_bytes=`).
+> bus-master DMA from a host ring. The stream path has run on a card, but the
+> outputs were silent until the vendor's device configure, which is now written
+> and not yet tested. Streaming stays off unless `motu424.frame_bytes=96`.
 > Playback only, 48 kHz only, PCI-424 (`137a:0004`) only for now.
 
 ## Quick start
@@ -200,6 +201,17 @@ sudo install -Dm644 vendor/firmware/pci424-program.bin \
 The driver checks both by length and SHA-256 and refuses to probe if either is
 missing or different. The load took about 15 s from userspace on the test card (894k GPIO writes), then
 `dmesg` shows `DSP running: audio_base=0x6fac ...`.
+
+Optional, for testers: `/lib/firmware/motu424/pci424-mixer.bin`, a CueMix
+mixer program saved from a card that Windows configured. Warm-reboot from
+Windows, dump the DSP RAM with `sudo tools/motu424-ringwatch.py --dump
+ram.bin` before loading the driver, then cut out the program that `+0x78`
+points to, up to and including its trailer `e2 00 1c 00 e2 03 98 07 00 80 00
+00`. On the test card that was 0x4fc bytes at `0x32800`:
+`dd if=ram.bin of=pci424-mixer.bin bs=1 skip=$((0x32800)) count=$((0x4fc))`.
+It is your own routing data and is never shipped. If the file is present,
+the driver hands it to the DSP at load (`docs/transport.md`, Device
+configure).
 
 ## Reverse engineering
 
