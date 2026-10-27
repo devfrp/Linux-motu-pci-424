@@ -3,377 +3,247 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>motu-pci-424 — pilote ALSA Linux pour la MOTU PCI-324/424</title>
-<meta name="description" content="Un pilote ALSA Linux écrit de zéro, une application de contrôle façon CueMix et une rétro-ingénierie clean-room pour la carte son AudioWire MOTU PCI-324 / PCI-424, non documentée.">
+<title>motu-pci-424, pilote ALSA Linux pour la MOTU PCI-324/424</title>
+<meta name="description" content="A from-scratch Linux ALSA driver, CueMix-style control app and clean-room reverse-engineering for the undocumented MOTU PCI-324 / PCI-424 AudioWire audio card.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='5' fill='%230d1013'/><path d='M3 16 h5 l2-7 3 14 3-11 3 8 2-4 h5' fill='none' stroke='%23f0a63a' stroke-width='2' stroke-linejoin='round' stroke-linecap='round'/></svg>">
-<style>
-  :root{
-    /* light: cool datasheet */
-    --bg:#eceff2; --panel:#ffffff; --panel2:#f3f5f7; --term:#12161b;
-    --line:#d3dae0; --line2:#bcc6cf; --ink:#141a20; --dim:#5c6a76;
-    --amber:#b06f12; --amber-ink:#8a560c; --lock:#2f9e44;
-    --grid:#e2e7ec;
-    --mono:"SFMono-Regular",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
-    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  }
-  @media (prefers-color-scheme:dark){
-    :root{
-      --bg:#0d1013; --panel:#14181d; --panel2:#191f26; --term:#0a0d10;
-      --line:#262e37; --line2:#3a4753; --ink:#ccd4da; --dim:#7c8791;
-      --amber:#f0a63a; --amber-ink:#f4b458; --lock:#57c96a; --grid:#1a2027;
-    }
-  }
-  :root[data-theme="light"]{
-    --bg:#eceff2; --panel:#ffffff; --panel2:#f3f5f7; --term:#12161b;
-    --line:#d3dae0; --line2:#bcc6cf; --ink:#141a20; --dim:#5c6a76;
-    --amber:#b06f12; --amber-ink:#8a560c; --lock:#2f9e44; --grid:#e2e7ec;
-  }
-  :root[data-theme="dark"]{
-    --bg:#0d1013; --panel:#14181d; --panel2:#191f26; --term:#0a0d10;
-    --line:#262e37; --line2:#3a4753; --ink:#ccd4da; --dim:#7c8791;
-    --amber:#f0a63a; --amber-ink:#f4b458; --lock:#57c96a; --grid:#1a2027;
-  }
-
-  *{box-sizing:border-box}
-  html{scroll-behavior:smooth}
-  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
-  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
-    line-height:1.62;-webkit-font-smoothing:antialiased;font-size:16px}
-  a{color:var(--amber);text-decoration:none}
-  a:hover{text-decoration:underline}
-  :focus-visible{outline:2px solid var(--amber);outline-offset:2px}
-  .wrap{max-width:1000px;margin:0 auto;padding:0 22px}
-  .mono{font-family:var(--mono)}
-  .lab{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
-
-  /* engraved-panel utility */
-  .panel{background:var(--panel);border:1px solid var(--line);border-radius:6px}
-
-  /* top bar */
-  .bar{position:sticky;top:0;z-index:30;background:color-mix(in srgb,var(--bg) 88%,transparent);
-    backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-  .bar .wrap{display:flex;align-items:center;gap:18px;height:56px}
-  .logo{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-weight:600;
-    letter-spacing:.02em;color:var(--ink)}
-  .logo svg{display:block}
-  .bar nav{margin-left:auto;display:flex;gap:20px;align-items:center}
-  .bar nav a{font-family:var(--mono);font-size:.8rem;color:var(--dim);letter-spacing:.03em}
-  .bar nav a:hover{color:var(--ink);text-decoration:none}
-  .bar .gh{border:1px solid var(--line2);padding:6px 12px;border-radius:5px;color:var(--ink)}
-  .bar .gh:hover{border-color:var(--amber)}
-  #themetog{background:none;border:1px solid var(--line2);color:var(--dim);border-radius:5px;
-    width:30px;height:30px;cursor:pointer;font-size:.9rem}
-  #themetog:hover{color:var(--ink);border-color:var(--amber)}
-  .langsel{display:inline-flex;border:1px solid var(--line2);border-radius:5px;overflow:hidden;
-    font-family:var(--mono);font-size:.74rem}
-  .langsel a{padding:5px 9px;color:var(--dim);letter-spacing:.04em}
-  .langsel a:hover{color:var(--ink);text-decoration:none}
-  .langsel a.active{background:var(--amber);color:#0d1013}
-  @media(max-width:680px){.bar nav a.opt{display:none}}
-
-  /* hero */
-  .hero{border-bottom:1px solid var(--line);position:relative}
-  .hero .wrap{padding:60px 22px 0}
-  .tag{display:inline-flex;align-items:center;gap:9px}
-  .tag .led{width:8px;height:8px;border-radius:50%;background:var(--lock);
-    box-shadow:0 0 8px 1px color-mix(in srgb,var(--lock) 60%,transparent)}
-  h1{font-size:clamp(2.2rem,6.4vw,3.9rem);line-height:1.02;letter-spacing:-.02em;
-    margin:18px 0 0;text-wrap:balance;font-weight:800}
-  h1 .u{color:var(--amber)}
-  .sub{font-size:clamp(1.02rem,2.3vw,1.24rem);color:var(--dim);max-width:600px;margin:14px 0 0}
-  .cta{display:flex;flex-wrap:wrap;gap:11px;margin:26px 0 34px}
-  .btn{font-family:var(--mono);font-size:.86rem;border-radius:5px;padding:11px 18px;
-    border:1px solid var(--line2);color:var(--ink);cursor:pointer;background:var(--panel);
-    transition:border-color .12s,transform .12s;letter-spacing:.02em}
-  .btn:hover{text-decoration:none;transform:translateY(-1px);border-color:var(--amber)}
-  .btn.p{background:var(--amber);color:#0d1013;border-color:var(--amber);font-weight:600}
-  :root[data-theme="light"] .btn.p,{color:#fff}
-
-  /* terminal command */
-  .term{background:var(--term);border:1px solid var(--line);border-radius:6px;
-    display:flex;align-items:center;gap:12px;padding:13px 13px 13px 16px;max-width:660px}
-  .term .p{color:var(--amber);font-family:var(--mono);user-select:none}
-  .term code{font-family:var(--mono);color:#d6dee6;font-size:.86rem;flex:1;overflow-x:auto;white-space:nowrap}
-  .term button{font-family:var(--mono);background:#20272f;border:1px solid #313b45;color:#9aa6b1;
-    border-radius:4px;padding:6px 11px;cursor:pointer;font-size:.76rem;white-space:nowrap}
-  .term button:hover{color:#fff;border-color:var(--amber)}
-
-  /* scope */
-  .scope{margin-top:40px;border-top:1px solid var(--line);position:relative;height:118px}
-  .scope canvas{display:block;width:100%;height:118px}
-  .scope .rd{position:absolute;top:10px;right:16px;font-family:var(--mono);font-size:.68rem;
-    letter-spacing:.12em;color:var(--dim)}
-
-  /* section scaffold */
-  .sec{border-bottom:1px solid var(--line);padding:56px 0}
-  .head{display:flex;align-items:baseline;gap:14px;margin-bottom:8px}
-  .head .idx{font-family:var(--mono);font-size:.72rem;color:var(--amber);letter-spacing:.1em}
-  h2{font-size:clamp(1.45rem,3.6vw,2rem);margin:0;letter-spacing:-.01em;font-weight:750;text-wrap:balance}
-  .lede{color:var(--dim);max-width:640px;margin:14px 0 30px}
-
-  /* modules */
-  .mods{display:grid;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:6px;
-    grid-template-columns:repeat(auto-fit,minmax(250px,1fr));overflow:hidden}
-  .mod{background:var(--panel);padding:22px}
-  .mod:hover{background:var(--panel2)}
-  .mod .lab{margin-bottom:9px}
-  .mod h3{margin:0 0 5px;font-size:1.04rem}
-  .mod p{margin:0;color:var(--dim);font-size:.92rem}
-  .mod h3 code,.mod p code{font-family:var(--mono);font-size:.86em;color:var(--amber-ink)}
-
-  /* register readout */
-  .rdout{border:1px solid var(--line);border-radius:6px;overflow:hidden;overflow-x:auto}
-  .rdout table{width:100%;border-collapse:collapse;min-width:520px}
-  .rdout th{font-family:var(--mono);font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;
-    color:var(--dim);text-align:left;padding:11px 16px;background:var(--panel2);border-bottom:1px solid var(--line)}
-  .rdout td{padding:13px 16px;border-bottom:1px solid var(--line);vertical-align:top;font-size:.92rem}
-  .rdout tr:last-child td{border-bottom:none}
-  .rdout tr:hover td{background:var(--panel2)}
-  .rdout .v{font-family:var(--mono);color:var(--amber);white-space:nowrap;font-size:.86rem}
-  .rdout .s{font-family:var(--mono);font-size:.68rem;letter-spacing:.08em;color:var(--lock)}
-  .rdout .s.open{color:var(--dim)}
-  .rdout td b{font-weight:650} .rdout td span{color:var(--dim)}
-
-  /* signal flow (architecture) */
-  .flow{display:grid;gap:12px}
-  .node{border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:16px 18px;
-    display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:center}
-  .node .n{font-family:var(--mono);font-size:.82rem;color:var(--amber);white-space:nowrap}
-  .node .d{color:var(--dim);font-size:.92rem}
-  .node.hw{border-color:var(--amber);border-left-width:3px}
-  .flow .arrow{font-family:var(--mono);color:var(--line2);text-align:center;font-size:.8rem;line-height:1}
-
-  /* install cols */
-  .cols{display:grid;gap:18px;grid-template-columns:1fr 1fr}
-  @media(max-width:680px){.cols{grid-template-columns:1fr}}
-  pre.blk{background:var(--term);border:1px solid var(--line);border-radius:6px;padding:16px;
-    overflow-x:auto;font-family:var(--mono);font-size:.82rem;color:#d6dee6;line-height:1.7;margin:0}
-  pre.blk .c{color:#6f7c88} pre.blk .f{color:var(--amber)}
-  .cols h3{font-family:var(--mono);font-size:.8rem;letter-spacing:.06em;color:var(--dim);
-    text-transform:uppercase;margin:0 0 10px}
-
-  /* roadmap */
-  .steps{list-style:none;padding:0;margin:0;display:grid;gap:10px}
-  .steps li{display:grid;grid-template-columns:110px 1fr;gap:16px;align-items:start;
-    border:1px solid var(--line);border-radius:6px;padding:14px 16px;background:var(--panel)}
-  .chip{font-family:var(--mono);font-size:.66rem;letter-spacing:.08em;padding:4px 8px;border-radius:4px;
-    text-align:center;font-weight:600;align-self:start}
-  .c-done{background:color-mix(in srgb,var(--lock) 15%,transparent);color:var(--lock);
-    border:1px solid color-mix(in srgb,var(--lock) 40%,transparent)}
-  .c-part{background:color-mix(in srgb,var(--amber) 15%,transparent);color:var(--amber-ink);
-    border:1px solid color-mix(in srgb,var(--amber) 40%,transparent)}
-  .c-card{background:var(--panel2);color:var(--dim);border:1px solid var(--line2)}
-  .steps b{font-weight:650} .steps .d{color:var(--dim);font-size:.92rem}
-
-  footer{padding:40px 0 64px;color:var(--dim);font-size:.88rem}
-  footer .wrap{display:flex;flex-wrap:wrap;gap:20px;justify-content:space-between;align-items:flex-start}
-  footer .disc{max-width:540px}
-  footer .links{font-family:var(--mono);font-size:.82rem;display:flex;gap:8px;flex-wrap:wrap}
-  .kbd{font-family:var(--mono);background:var(--panel2);border:1px solid var(--line2);
-    padding:1px 6px;border-radius:4px;font-size:.85em;color:var(--ink)}
-</style>
+<script>document.documentElement.classList.add('js');</script>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://api.fontshare.com/v2/css?f[]=switzer@400,500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-
-<header class="bar"><div class="wrap">
-  <a class="logo" href="#top">
-    <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="5" fill="var(--panel2)" stroke="var(--line2)"/><path d="M3 16 h5 l2-7 3 14 3-11 3 8 2-4 h5" fill="none" stroke="var(--amber)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>
-    motu-pci-424
-  </a>
-  <nav>
-    <a class="opt" href="#modules">Modules</a>
-    <a class="opt" href="#re">Rétro-ing.</a>
-    <a href="#install">Installer</a>
-    <span class="langsel" role="group" aria-label="Langue">
-      <a href="index.html">EN</a>
-      <a href="fr.html" class="active" aria-current="page">FR</a>
-    </span>
-    <a class="gh" href="https://github.com/devfrp/Linux-motu-pci-424">GitHub&nbsp;↗</a>
-    <button id="themetog" title="Changer de thème" aria-label="Basculer le thème clair/sombre">◐</button>
-  </nav>
-</div></header>
+<a class="skip" href="#top">Aller au contenu</a>
+<header class="bar">
+  <div class="container bar__row">
+    <a class="wordmark" href="#top" aria-label="motu-pci-424, retour en haut">motu-pci-424</a>
+    <nav class="bar__links" aria-label="Sections">
+      <a href="#modules">Modules</a>
+      <a href="#re">Rétro-ingénierie</a>
+      <a href="#install">Installer</a>
+    </nav>
+    <div class="bar__tools">
+      <span class="lang" role="group" aria-label="Langue"><a href="index.html" lang="en">EN</a><a href="fr.html" aria-current="true" lang="fr">FR</a></span>
+      <button id="themetog" class="mode" type="button" title="Changer de thème" aria-label="Changer de teinte">Teinte</button>
+      <a class="gh" href="https://github.com/devfrp/Linux-motu-pci-424">GitHub</a>
+    </div>
+  </div>
+</header>
 
 <main id="top">
-<section class="hero">
-  <div class="wrap">
-    <span class="tag"><span class="led"></span><span class="lab">Carte hôte AudioWire · pilote Linux hors-arbre</span></span>
-    <h1>MOTU <span class="u">PCI-324 / PCI-424</span>,<br>réinventée pour Linux.</h1>
-    <p class="sub">Un pilote noyau ALSA écrit de A à Z, une application de contrôle façon CueMix (CLI&nbsp;+&nbsp;GTK) et une
-    rétro-ingénierie clean-room d'une carte son que le constructeur n'a jamais documentée.</p>
-    <div class="cta">
-      <a class="btn p" href="#install">Installer en une ligne</a>
-      <a class="btn" href="#re">Lire les découvertes RE</a>
-      <a class="btn" href="https://github.com/devfrp/Linux-motu-pci-424">Code source</a>
+  <section class="hero">
+    <div class="container hero__grid">
+      <div>
+        <h1>MOTU PCI‑324 / PCI‑424, réinventée pour Linux.</h1>
+        <p class="lead">Un pilote noyau ALSA écrit de A à Z, une application de contrôle façon CueMix (CLI + GTK) et une rétro-ingénierie clean-room d’une carte son que le constructeur n’a jamais documentée.</p>
+        <div class="hero__actions">
+          <a class="btn btn--primary" href="#install">Installer en une ligne</a>
+          <a class="btn" href="#re">Lire les découvertes RE</a>
+        </div>
+      </div>
+      <figure class="shot ticks">
+        <div class="shot__frame" data-slot="hero" data-kind="product" data-alt="motu424-gui, l’onglet Outputs">
+          <img src="screenshots/outputs-1.png" width="1600" height="959" alt="motu424-gui en mode démo, l’onglet Outputs : quatorze tranches analogiques avec faders, vumètres, mute et inserts FX" fetchpriority="high">
+        </div>
+        <figcaption>motu424-gui, onglet Outputs, sans carte avec --demo.</figcaption>
+      </figure>
     </div>
-    <div class="term">
-      <span class="p">$</span>
-      <code id="cmd">curl -fsSL https://raw.githubusercontent.com/devfrp/Linux-motu-pci-424/main/get.sh | sh</code>
-      <button id="cpb" onclick="cp()">copier</button>
+    <div class="container">
+      <div class="cmd">
+        <code id="cmd">curl -fsSL https://raw.githubusercontent.com/devfrp/Linux-motu-pci-424/main/get.sh | sh</code>
+        <button id="cpb" type="button" onclick="cp()">copier</button>
+      </div>
+      <p class="cmd__note">Carte hôte AudioWire, pilote Linux hors-arbre. <a class="link" href="https://github.com/devfrp/Linux-motu-pci-424">Code source</a></p>
     </div>
-  </div>
-  <div class="scope" aria-hidden="true">
-    <span class="rd">CH1 · 24 bits / 3&nbsp;octets · 1×/2×/4×</span>
-    <canvas id="scope"></canvas>
-  </div>
-</section>
+  </section>
 
-<section class="sec" id="about"><div class="wrap">
-  <div class="head"><span class="idx">00</span><h2>Une carte non documentée, portée sur Linux au grand jour</h2></div>
-  <p class="lede">La PCI-324/424 est une carte hôte pour les interfaces MOTU AudioWire — les 2408, 24I/O,
-  828, HD192, 896HD et consorts. Faute de documentation du constructeur, la table des registres et le
-  protocole de transport ont été reconstitués à partir du pilote Windows et du programme du DSP de la carte,
-  puis vérifiés sur une vraie PCI-424 : la carte démarre désormais sous Linux. Toute l'infrastructure PCI,
-  DMA, IRQ et ALSA est en place ; tout ce qui demeure incertain est confiné à deux fichiers, de sorte que les faits
-  confirmés se concentrent en un seul endroit.</p>
-</div></section>
+  <section class="section" id="about">
+    <div class="container about">
+      <div>
+        <h2>Une carte non documentée, portée sur Linux au grand jour</h2>
+        <p>La PCI-324/424 est une carte hôte pour les interfaces MOTU AudioWire : les 2408, 24I/O, 828, HD192, 896HD et consorts. Faute de documentation du constructeur, la table des registres et le protocole de transport ont été reconstitués à partir du pilote Windows et du programme du DSP de la carte, puis vérifiés sur une vraie PCI-424 : la carte démarre désormais sous Linux. Toute l’infrastructure PCI, DMA, IRQ et ALSA est en place ; tout ce qui demeure incertain est confiné à deux fichiers, de sorte que les faits confirmés se concentrent en un seul endroit.</p>
+      </div>
+      <div class="well ticks">
+        <dl>
+          <div><dt>Canal 1</dt><dd>24 bits / 3 octets</dd></div>
+          <div><dt>Familles de fréquence</dt><dd>1× / 2× / 4×</dd></div>
+          <div><dt>Interfaces</dt><dd>2408, 24I/O, 828, HD192, 896HD</dd></div>
+          <div><dt>État</dt><dd>démarre sous Linux</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
 
-<section class="sec" id="modules"><div class="wrap">
-  <div class="head"><span class="idx">01</span><h2>Ce qui est livré</h2></div>
-  <p class="lede">Un pilote, deux applications de contrôle et un installeur qui fonctionne sur n'importe quelle distribution.</p>
-  <div class="mods">
-    <div class="mod"><div class="lab">Noyau</div><h3>Module ALSA</h3>
-      <p>Découpage net en trois couches, entièrement géré par devm/pcim, empaqueté en DKMS pour se recompiler à chaque mise à jour du noyau.</p></div>
-    <div class="mod"><div class="lab">Contrôle · CLI</div><h3><code>motu424-ctl</code></h3>
-      <p>Le CueMix FX version Linux, sur alsa-lib : source d'horloge, fréquence d'échantillonnage, gain/atténuation/phase par entrée et la matrice d'écoute entrées×bus.</p></div>
-    <div class="mod"><div class="lab">Contrôle · GUI</div><h3><code>motu424-gui</code></h3>
-      <p>Une console de mixage GTK4 façon CueMix : tranches avec faders, vumètres à maintien de crête et panoramiques rotatifs, scènes, snapshots, annulation — visible sans carte avec <code>--demo</code>.</p></div>
-    <div class="mod"><div class="lab">Installation</div><h3>Toute distribution</h3>
-      <p>Détecte pacman/apt/dnf/zypper/apk/xbps, installe les dépendances puis le module via DKMS. Non interactif sous <code>curl | sh</code>.</p></div>
-    <div class="mod"><div class="lab">Outillage</div><h3>RE clean-room</h3>
-      <p>Un analyseur de références croisées capstone et un résolveur de vtables C++ ; chaque fait reconstitué est consigné avec sa preuve.</p></div>
-    <div class="mod"><div class="lab">Licence</div><h3>Faits seuls, GPL</h3>
-      <p>Seuls les décalages, formats et séquences entrent dans les sources GPL-2.0. Les binaires du constructeur ne sont jamais redistribués.</p></div>
-  </div>
-</div></section>
+  <section class="section" id="modules">
+    <div class="container">
+      <div class="head">
+        <h2>Ce qui est livré</h2>
+        <p class="lead">Un pilote, deux applications de contrôle et un installeur qui fonctionne sur n’importe quelle distribution.</p>
+      </div>
+      <ul class="rows">
+        <li><h3>Module ALSA</h3><span class="kind">Noyau</span><p>Découpage net en trois couches, entièrement géré par devm/pcim, empaqueté en DKMS pour se recompiler à chaque mise à jour du noyau.</p></li>
+        <li><h3><code>motu424-ctl</code></h3><span class="kind">Contrôle, CLI</span><p>Le CueMix FX version Linux, sur alsa-lib : source d’horloge, fréquence d’échantillonnage, gain/atténuation/phase par entrée et la matrice d’écoute entrées×bus.</p></li>
+        <li><h3><code>motu424-gui</code></h3><span class="kind">Contrôle, GUI</span><p>Une console de mixage GTK4 façon CueMix : tranches avec faders, vumètres à maintien de crête et panoramiques rotatifs, scènes, snapshots, annulation, visible sans carte avec --demo.</p></li>
+        <li><h3>Toute distribution</h3><span class="kind">Installation</span><p>Détecte pacman/apt/dnf/zypper/apk/xbps, installe les dépendances puis le module via DKMS. Non interactif sous curl | sh.</p></li>
+        <li><h3>RE clean-room</h3><span class="kind">Outillage</span><p>Un analyseur de références croisées capstone et un résolveur de vtables C++ ; chaque fait reconstitué est consigné avec sa preuve.</p></li>
+        <li><h3>Faits seuls, GPL</h3><span class="kind">Licence</span><p>Seuls les décalages, formats et séquences entrent dans les sources GPL-2.0. Les binaires du constructeur ne sont jamais redistribués.</p></li>
+      </ul>
+    </div>
+  </section>
 
-<section class="sec" id="re"><div class="wrap">
-  <div class="head"><span class="idx">02</span><h2>Ce que la rétro-ingénierie a établi</h2></div>
-  <p class="lede">Reconstitué à partir du pilote Windows du constructeur avec
-  <code class="mono">objdump</code>, un analyseur de références croisées capstone et le décompileur
-  <code class="mono">rz-ghidra</code>, à partir du programme C64x du DSP de la carte, et vérifié sur une
-  vraie PCI-424.</p>
-  <div class="rdout"><table>
-    <thead><tr><th>Découverte</th><th>Valeur</th><th>État</th></tr></thead>
-    <tbody>
-      <tr><td><b>La carte</b><br><span>un DSP TI TMS320C6412 en mode de boot PCI : fenêtre A = ses registres périphériques, fenêtre B = sa mémoire, BAR d'I/O = son port hôte</span></td><td class="v">& 0xff800000</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Chemin d'interruption</b><br><span>le DSP lève INTREQ ; en attente = bit 1 de HSR, acquittement = INTRST dans RSTSRC</span></td><td class="v">0x10 → 0x01c00000</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Transport</b><br><span>DMA piloté par le DSP depuis un anneau en mémoire hôte ; le DSP indique l'adresse bus qu'il a atteinte</span></td><td class="v">anneau → +0x5c</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Démarrage</b><br><span>DSPINT lance le programme chargé, qui publie son bloc audio dans la boîte aux lettres — testé sur une vraie carte</span></td><td class="v">0x3fffc → 0x6fac</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Cartographie des canaux du boîtier</b><br><span>le nombre de canaux est lu dans un descripteur fourni par l'interface connectée — pas dans une table statique</span></td><td class="v">descripteur à l'exécution</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Modèle d'objets du périphérique</b><br><span>l'objet audio est un singleton global ; sous-objets : gestionnaire de fenêtres MMIO + tampon DMA partagé</span></td><td class="v">A @ 0x61f50</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Firmware FPGA</b><br><span>pas de PROM : l'hôte envoie l'image bit à bit via le GPIO du DSP, puis charge le programme du DSP — testé sur une vraie carte</span></td><td class="v">request_firmware</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Destination du mixeur CueMix</b><br><span>coefficients transférés par plage modifiée vers une base indiquée par la carte</span></td><td class="v">[dev + 0x9c]</td><td class="s">CONFIRMÉ</td></tr>
-      <tr><td><b>Paramètre de fréquence &amp; sélection d'horloge</b><br><span>liés à l'interface et à la carte — ces dernières valeurs ne s'observent que sur du matériel</span></td><td class="v">base + 0x64</td><td class="s open">SUR CARTE</td></tr>
-    </tbody>
-  </table></div>
-</div></section>
+  <section class="section" id="console">
+    <div class="container">
+      <div class="head">
+        <h2>La console, onglet par onglet</h2>
+        <p class="lead">motu424-gui en mode démo, tel qu’il tourne sans carte.</p>
+      </div>
+      <div class="switch" data-switch>
+        <div class="seg" role="tablist" aria-label="Onglets de motu424-gui">
+          <button type="button" role="tab" id="t-in" aria-controls="p-in" aria-selected="true">Inputs</button>
+          <button type="button" role="tab" id="t-out" aria-controls="p-out" aria-selected="false" tabindex="-1">Outputs</button>
+          <button type="button" role="tab" id="t-patch" aria-controls="p-patch" aria-selected="false" tabindex="-1">Patchbay</button>
+          <button type="button" role="tab" id="t-clock" aria-controls="p-clock" aria-selected="false" tabindex="-1">Clock &amp; format</button>
+          <button type="button" role="tab" id="t-diag" aria-controls="p-diag" aria-selected="false" tabindex="-1">Diagnostics</button>
+        </div>
+        <div class="panes">
+          <figure class="shot" role="tabpanel" id="p-in" aria-labelledby="t-in"><div class="shot__frame" data-kind="product"><img src="screenshots/inputs-1-slot-a.png" width="1600" height="959" loading="lazy" alt="Onglet Inputs, emplacement A"></div><figcaption>Inputs, emplacement A.</figcaption></figure>
+          <figure class="shot" role="tabpanel" id="p-out" aria-labelledby="t-out"><div class="shot__frame" data-kind="product"><img src="screenshots/outputs-2.png" width="1600" height="959" loading="lazy" alt="Onglet Outputs, deuxième banque"></div><figcaption>Outputs, deuxième banque.</figcaption></figure>
+          <figure class="shot" role="tabpanel" id="p-patch" aria-labelledby="t-patch"><div class="shot__frame" data-kind="product"><img src="screenshots/patchbay.png" width="1600" height="959" loading="lazy" alt="Onglet Patchbay"></div><figcaption>Patchbay.</figcaption></figure>
+          <figure class="shot" role="tabpanel" id="p-clock" aria-labelledby="t-clock"><div class="shot__frame" data-kind="product"><img src="screenshots/clock-format.png" width="1600" height="959" loading="lazy" alt="Onglet Clock & format"></div><figcaption>Clock &amp; format.</figcaption></figure>
+          <figure class="shot" role="tabpanel" id="p-diag" aria-labelledby="t-diag"><div class="shot__frame" data-kind="product"><img src="screenshots/diagnostics.png" width="1600" height="959" loading="lazy" alt="Onglet Diagnostics"></div><figcaption>Diagnostics.</figcaption></figure>
+        </div>
+      </div>
+    </div>
+  </section>
 
-<section class="sec" id="arch"><div class="wrap">
-  <div class="head"><span class="idx">03</span><h2>Chemin du signal</h2></div>
-  <p class="lede">Les couches PCI et PCM restent indépendantes du matériel ; chaque décalage de registre et chaque
-  encodage résident uniquement dans le nœud du bas.</p>
-  <div class="flow">
-    <div class="node"><span class="n">motu424_main.c</span><span class="d">attache PCI · mappe les BAR · vecteur IRQ · création de la carte ALSA — l'interruption appelle <code class="mono">motu424_hw_irq_ack()</code></span></div>
-    <div class="arrow">↓</div>
-    <div class="node"><span class="n">motu424_pcm.c</span><span class="d">opérations PCM d'ALSA — traduit open/prepare/trigger/pointer en appels <code class="mono">motu424_hw_*</code></span></div>
-    <div class="arrow">↓</div>
-    <div class="node hw"><span class="n">motu424_hw.c</span><span class="d">registres · horloge/fréquence · anneau DMA · ack IRQ — <b>la vérité matérielle réside ici</b></span></div>
-  </div>
-</div></section>
+  <section class="section" id="re">
+    <div class="container">
+      <div class="head">
+        <h2>Ce que la rétro-ingénierie a établi</h2>
+        <p class="lead">Reconstitué à partir du pilote Windows du constructeur avec objdump, un analyseur de références croisées capstone et le décompileur rz-ghidra, à partir du programme C64x du DSP de la carte, et vérifié sur une vraie PCI-424.</p>
+      </div>
+      <table class="findings">
+        <thead><tr><th scope="col">Découverte</th><th scope="col">Valeur</th><th scope="col">État</th></tr></thead>
+        <tbody>
+          <tr><td><b>La carte</b><span>un DSP TI TMS320C6412 en mode de boot PCI : fenêtre A = ses registres périphériques, fenêtre B = sa mémoire, BAR d’I/O = son port hôte</span></td><td class="measure">&amp; 0xff800000</td><td><span class="state state--ok">Confirmé</span></td></tr>
+          <tr><td><b>Chemin d’interruption</b><span>le DSP lève INTREQ ; en attente = bit 1 de HSR, acquittement = INTRST dans RSTSRC</span></td><td class="measure">0x10 → 0x01c00000</td><td><span class="state state--ok">Confirmé</span></td></tr>
+          <tr><td><b>Transport</b><span>DMA piloté par le DSP depuis un anneau en mémoire hôte ; le DSP indique l’adresse bus qu’il a atteinte</span></td><td class="measure">anneau → +0x5c</td><td><span class="state state--ok">Confirmé</span></td></tr>
+          <tr><td><b>Démarrage</b><span>DSPINT lance le programme chargé, qui publie son bloc audio dans la boîte aux lettres (testé sur une vraie carte)</span></td><td class="measure">0x3fffc → 0x6fac</td><td><span class="state state--ok">Confirmé</span></td></tr>
+          <tr><td><b>Cartographie des canaux du boîtier</b><span>le nombre de canaux est lu dans un descripteur fourni par l’interface connectée, pas dans une table statique</span></td><td class="measure">descripteur à l’exécution</td><td><span class="state state--ok">Confirmé</span></td></tr>
+          <tr><td><b>Modèle d’objets du périphérique</b><span>l’objet audio est un singleton global ; sous-objets : gestionnaire de fenêtres MMIO + tampon DMA partagé</span></td><td class="measure">A @ 0x61f50</td><td><span class="state state--ok">Confirmé</span></td></tr>
+          <tr><td><b>Firmware FPGA</b><span>pas de PROM : l’hôte envoie l’image bit à bit via le GPIO du DSP, puis charge le programme du DSP (testé sur une vraie carte)</span></td><td class="measure">request_firmware</td><td><span class="state state--ok">Confirmé</span></td></tr>
+          <tr><td><b>Destination du mixeur CueMix</b><span>coefficients transférés par plage modifiée vers une base indiquée par la carte</span></td><td class="measure">[dev + 0x9c]</td><td><span class="state state--ok">Confirmé</span></td></tr>
+          <tr><td><b>Paramètre de fréquence &amp; sélection d’horloge</b><span>liés à l’interface et à la carte : ces dernières valeurs ne s’observent que sur du matériel</span></td><td class="measure">base + 0x64</td><td><span class="state state--card">Sur carte</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
-<section class="sec" id="install"><div class="wrap">
-  <div class="head"><span class="idx">04</span><h2>Installation</h2></div>
-  <p class="lede">La commande unique récupère les sources et lance l'installeur — dépendances, module DKMS,
-  outils. Ajoute <span class="kbd">--gui</span> pour le panneau graphique.</p>
-  <div class="cols">
-    <div>
-      <h3>Une ligne</h3>
-      <pre class="blk"><span class="c"># dépendances + module DKMS + outils + chargement</span>
+  <section class="section" id="arch">
+    <div class="container">
+      <div class="head">
+        <h2>Chemin du signal</h2>
+        <p class="lead">Les couches PCI et PCM restent indépendantes du matériel ; chaque décalage de registre et chaque encodage résident uniquement dans le nœud du bas.</p>
+      </div>
+      <ol class="path">
+        <li><code>motu424_main.c</code><p>Attache PCI, mappe les BAR, vecteur IRQ, création de la carte ALSA. L’interruption appelle motu424_hw_irq_ack().</p></li>
+        <li><code>motu424_pcm.c</code><p>Opérations PCM d’ALSA : traduit open/prepare/trigger/pointer en appels motu424_hw_*.</p></li>
+        <li><code>motu424_hw.c</code><p>Registres, horloge/fréquence, anneau DMA, ack IRQ. La vérité matérielle réside ici.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="section" id="install">
+    <div class="container">
+      <div class="head">
+        <h2>Installation</h2>
+        <p class="lead">La commande unique récupère les sources et lance l’installeur : dépendances, module DKMS, outils. Ajoute --gui pour le panneau graphique.</p>
+      </div>
+      <div class="install">
+        <figure class="code">
+          <figcaption>Une ligne</figcaption>
+<pre><span class="c"># dépendances + module DKMS + outils + chargement</span>
 curl -fsSL https://raw.githubusercontent.com/<span class="f">devfrp/Linux-motu-pci-424</span>/main/get.sh | sh
 
-<span class="c"># avec l'interface GTK</span>
+<span class="c"># avec l’interface GTK</span>
 curl -fsSL …/get.sh | sh -s -- <span class="f">--gui</span></pre>
-    </div>
-    <div>
-      <h3>Cloner &amp; compiler</h3>
-      <pre class="blk">git clone https://github.com/devfrp/Linux-motu-pci-424
+        </figure>
+        <figure class="code">
+          <figcaption>Cloner &amp; compiler</figcaption>
+<pre>git clone https://github.com/devfrp/Linux-motu-pci-424
 cd motu-pci-424
-./install.sh            <span class="c"># ou : make && make load</span>
+./install.sh            <span class="c"># ou : make &amp;&amp; make load</span>
 
 motu424-ctl             <span class="c"># état CueMix (CLI)</span>
 motu424-gui             <span class="c"># panneau graphique</span></pre>
+        </figure>
+      </div>
     </div>
-  </div>
-</div></section>
+  </section>
 
-<section class="sec" id="roadmap"><div class="wrap">
-  <div class="head"><span class="idx">05</span><h2>Où en est le projet</h2></div>
-  <p class="lede">La carte démarre sous Linux. Il reste à connaître le format de l'audio dans l'anneau hôte,
-  puis la lecture, la capture et les changements de fréquence sur une vraie carte.</p>
-  <ul class="steps">
-    <li><span class="chip c-done">FAIT</span><div><b>Cadre &amp; outillage</b> · <span class="d">ossature PCI/DMA/IRQ/ALSA, installeur multi-distribution, CLI + GUI, chaîne d'outils RE.</span></div></li>
-    <li><span class="chip c-done">FAIT</span><div><b>Modèle registres, IRQ &amp; transport</b> · <span class="d">fenêtres du DSP, ack IRQ, anneau en DMA bus-master, l'interface IOCTL complète.</span></div></li>
-    <li><span class="chip c-done">FAIT</span><div><b>Chargement du firmware sur une vraie carte</b> · <span class="d">image FPGA et programme DSP chargés, bloc audio publié ; le pilote le fait désormais avec request_firmware().</span></div></li>
-    <li><span class="chip c-done">FAIT</span><div><b>Modèle d'objets &amp; initialisation</b> · <span class="d">toute la structure d'extension du périphérique, l'objet audio &amp; ses sous-objets, et la séquence qui publie l'adresse de base audio.</span></div></li>
-    <li><span class="chip c-part">PARTIEL</span><div><b>Encodage horloge &amp; fréquence</b> · <span class="d">familles de fréquence, activation et incrément obtenus ; la sélection d'horloge et le paramètre de fréquence sont liés à l'interface — leurs valeurs demandent une carte.</span></div></li>
-    <li><span class="chip c-card">CARTE REQUISE</span><div><b>Premier son &amp; validation</b> · <span class="d">format des trames dans l'anneau, lecture/capture à chaque fréquence, le mixeur CueMix, tests d'endurance — le dernier pas avant le son.</span></div></li>
-  </ul>
-</div></section>
+  <section class="section" id="roadmap">
+    <div class="container">
+      <div class="head">
+        <h2>Où en est le projet</h2>
+        <p class="lead">La carte démarre sous Linux. Il reste à connaître le format de l’audio dans l’anneau hôte, puis la lecture, la capture et les changements de fréquence sur une vraie carte.</p>
+      </div>
+      <ol class="road">
+        <li><span><span class="state state--ok">Fait</span></span><h3>Cadre &amp; outillage</h3><p>Ossature PCI/DMA/IRQ/ALSA, installeur multi-distribution, CLI + GUI, chaîne d’outils RE.</p></li>
+        <li><span><span class="state state--ok">Fait</span></span><h3>Modèle registres, IRQ &amp; transport</h3><p>Fenêtres du DSP, ack IRQ, anneau en DMA bus-master, l’interface IOCTL complète.</p></li>
+        <li><span><span class="state state--ok">Fait</span></span><h3>Chargement du firmware sur une vraie carte</h3><p>Image FPGA et programme DSP chargés, bloc audio publié ; le pilote le fait désormais avec request_firmware().</p></li>
+        <li><span><span class="state state--ok">Fait</span></span><h3>Modèle d’objets &amp; initialisation</h3><p>Toute la structure d’extension du périphérique, l’objet audio &amp; ses sous-objets, et la séquence qui publie l’adresse de base audio.</p></li>
+        <li><span><span class="state">Partiel</span></span><h3>Encodage horloge &amp; fréquence</h3><p>Familles de fréquence, activation et incrément obtenus ; la sélection d’horloge et le paramètre de fréquence sont liés à l’interface, leurs valeurs demandent une carte.</p></li>
+        <li><span><span class="state state--card">Carte requise</span></span><h3>Premier son &amp; validation</h3><p>Format des trames dans l’anneau, lecture/capture à chaque fréquence, le mixeur CueMix, tests d’endurance : le dernier pas avant le son.</p></li>
+      </ol>
+    </div>
+  </section>
 </main>
 
-<footer><div class="wrap">
-  <div class="disc"><b class="mono">motu-pci-424</b> · GPL-2.0-or-later.<br>
-    Rétro-ingénierie menée pour l'interopérabilité avec du matériel que nous possédons ; seuls des faits entrent
-    dans les sources, les binaires du constructeur ne sont jamais redistribués. Projet ni affilié ni approuvé par Mark of the Unicorn,&nbsp;Inc.</div>
-  <div class="links">
-    <a href="https://github.com/devfrp/Linux-motu-pci-424">GitHub</a><span>·</span>
-    <a href="https://github.com/devfrp/Linux-motu-pci-424/blob/main/docs/REVERSE_ENGINEERING_PLAN.md">Plan&nbsp;RE</a><span>·</span>
-    <a href="index.html">English</a>
+<footer class="foot">
+  <div class="container">
+    <p class="foot__mark">motu-pci-424</p>
+    <div class="foot__row">
+      <p>GPL-2.0-or-later. Rétro-ingénierie menée pour l’interopérabilité avec du matériel que nous possédons ; seuls des faits entrent dans les sources, les binaires du constructeur ne sont jamais redistribués. Projet ni affilié ni approuvé par Mark of the Unicorn, Inc.</p>
+      <nav class="foot__links" aria-label="Liens">
+        <a href="https://github.com/devfrp/Linux-motu-pci-424">GitHub</a>
+        <a href="https://github.com/devfrp/Linux-motu-pci-424/blob/main/docs/REVERSE_ENGINEERING_PLAN.md">Plan RE</a>
+        <a href="index.html">English</a>
+      </nav>
+    </div>
   </div>
-</div></footer>
+</footer>
 
 <script>
 (function(){
-  // theme toggle
+  // colourway toggle: night (default) and station
   var root=document.documentElement, tog=document.getElementById('themetog');
-  function cur(){var t=root.getAttribute('data-theme');
-    if(t) return t;
-    return matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';}
   tog.addEventListener('click',function(){
-    root.setAttribute('data-theme', cur()==='dark'?'light':'dark'); draw(true);
+    root.setAttribute('data-theme', root.getAttribute('data-theme')==='light'?'dark':'light');
   });
 
   // copy
   window.cp=function(){var b=document.getElementById('cpb');
     navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(function(){
-      b.textContent='copié ✓'; setTimeout(function(){b.textContent='copier';},1500);});};
+      b.textContent='copié'; setTimeout(function(){b.textContent='copier';},1500);});};
 
-  // oscilloscope
-  var cv=document.getElementById('scope'), ctx=cv.getContext('2d'), t=0, raf=null;
-  var reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
-  function amber(){return getComputedStyle(root).getPropertyValue('--amber').trim()||'#f0a63a';}
-  function grid(){return getComputedStyle(root).getPropertyValue('--grid').trim()||'#1a2027';}
-  function size(){var d=Math.min(devicePixelRatio||1,2);
-    cv.width=cv.clientWidth*d; cv.height=cv.clientHeight*d; ctx.setTransform(d,0,0,d,0,0);}
-  function draw(once){
-    var w=cv.clientWidth,h=cv.clientHeight;
-    ctx.clearRect(0,0,w,h);
-    ctx.strokeStyle=grid(); ctx.lineWidth=1;
-    for(var x=0;x<w;x+=44){ctx.beginPath();ctx.moveTo(x+.5,0);ctx.lineTo(x+.5,h);ctx.stroke();}
-    ctx.beginPath();ctx.moveTo(0,h/2+.5);ctx.lineTo(w,h/2+.5);ctx.stroke();
-    ctx.strokeStyle=amber(); ctx.lineWidth=2; ctx.lineJoin='round';
-    ctx.beginPath();
-    for(var i=0;i<=w;i+=2){
-      var p=i/w*Math.PI*6 + t;
-      var y=h/2 + Math.sin(p)*h*0.20 + Math.sin(p*2.3+1)*h*0.09 + Math.sin(p*0.5)*h*0.05;
-      i?ctx.lineTo(i,y):ctx.moveTo(i,y);
+  // console tabs
+  document.querySelectorAll('[data-switch]').forEach(function(sw){
+    var tabs=[].slice.call(sw.querySelectorAll('[role="tab"]'));
+    function select(tab){
+      tabs.forEach(function(t){
+        var on=t===tab; t.setAttribute('aria-selected',on); t.tabIndex=on?0:-1;
+        document.getElementById(t.getAttribute('aria-controls')).hidden=!on;
+      });
     }
-    ctx.stroke();
-    if(once) return;
-    t+=0.02; raf=requestAnimationFrame(function(){draw(false);});
-  }
-  function start(){size(); if(reduce){draw(true);} else {if(raf)cancelAnimationFrame(raf); draw(false);}}
-  addEventListener('resize',start); start();
+    tabs.forEach(function(t,i){
+      t.addEventListener('click',function(){select(t);});
+      t.addEventListener('keydown',function(e){
+        var d=e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0; if(!d) return;
+        var n=tabs[(i+d+tabs.length)%tabs.length]; select(n); n.focus();
+      });
+    });
+    select(tabs[0]);
+  });
 })();
 </script>
 </body>

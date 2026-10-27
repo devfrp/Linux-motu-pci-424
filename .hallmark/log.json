@@ -1,0 +1,33 @@
+[
+ {
+  "mode": "redesign",
+  "depth": "full",
+  "scope": "site",
+  "shape": "Stat-Led",
+  "theme": "rim",
+  "axes": "dark/grotesk-sans/warm",
+  "hero": "Stage",
+  "nav": "edge-aligned",
+  "footer": "mast",
+  "imagery": "screenshots 6",
+  "photos": [],
+  "entry": "none",
+  "sections": [
+   "hero",
+   "split",
+   "rows",
+   "switcher",
+   "table",
+   "panels",
+   "code",
+   "rows"
+  ],
+  "signature": "the real motu424-gui console, five tabs switchable",
+  "waived": [
+   "71",
+   "77"
+  ],
+  "prompt": "MOTU PCI-424 Linux driver docs",
+  "date": "2026-10-27"
+ }
+]
