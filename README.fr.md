@@ -171,27 +171,44 @@ MOTU la console n'a rien à afficher — prévisualisez-la avec `--demo` ; sur d
 vrai matériel elle se remplit automatiquement dès que le pilote enregistre ses
 contrôles.
 
+#### Console multiplateforme (cuemix-studio)
+
+[`tools/cuemix-studio`](tools/cuemix-studio/README.md) est la même console en
+un seul binaire Rust/egui pour Linux, macOS et Windows. Sous Linux avec le
+pilote, elle pilote la carte via `motu424-ctl` ; ailleurs, ou sans carte, elle
+simule un rig PCI-424 (24I/O dans l'emplacement A, 1224 dans le B). Un second
+appareil, la 828mk3, ajoute les pages canal/dynamique, EQ et réverb.
+
+```sh
+cd tools/cuemix-studio && cargo build --release
+./target/release/cuemix-studio              # la carte si motu424-ctl en trouve une, sinon simulée
+./target/release/cuemix-studio --simulate   # ne touche jamais la carte
+./target/release/cuemix-studio --828mk3     # l'appareil avec effets
+```
+
 ##### Captures d'écran
 
-`--demo` sur le rig synthétique 24I/O + 1224, un onglet à la fois :
+Le rig simulé, un onglet à la fois (prises avec `--screenshot`).
 
-**Inputs** — tranches de canaux, défilées du slot A (24I/O, analogique) au
-slot B (1224, AES/EBU), avec le master du mix épinglé à droite :
+**Mixes** : pan, solo, mute et fader par entrée pour le bus de mixage choisi,
+son master à droite :
 
-<img src="docs/screenshots/inputs-1-slot-a.png" width="49%"> <img src="docs/screenshots/inputs-2-slot-b.png" width="49%">
+![Onglet Mixes](docs/screenshots/cuemix-mixes.png)
 
-**Outputs** — tranches de sortie mono, défilées sur les sorties analogiques du 24I/O :
+**Inputs** et **Outputs** : vumètres avant/après, trim, pad, phase et stéréo
+par entrée ; un fader, un vumètre, un mute et un lien stéréo par sortie, sous
+l'interrupteur du patchbay :
 
-<img src="docs/screenshots/outputs-1.png" width="49%"> <img src="docs/screenshots/outputs-2.png" width="49%">
+<img src="docs/screenshots/cuemix-inputs.png" width="49%"> <img src="docs/screenshots/cuemix-outputs.png" width="49%">
 
-**Patchbay** — sans cordon par défaut ; chaque jack reste à son normal :
+**Clock & format** : source d'horloge, fréquence, emplacements AudioWire et
+liaison avec la carte :
 
-![Onglet Patchbay](docs/screenshots/patchbay.png)
+![Onglet Clock & format](docs/screenshots/cuemix-clock.png)
 
-**Clock & format** et **Diagnostics** (ce dernier fonctionne sans carte ni
-pilote chargé — c'est un rapport réel de la machine où ces captures ont été prises) :
+**828mk3** : canal et dynamique, l'EQ sept bandes et la réverb :
 
-<img src="docs/screenshots/clock-format.png" width="49%"> <img src="docs/screenshots/diagnostics.png" width="49%">
+<img src="docs/screenshots/cuemix-828mk3-channel.png" width="32%"> <img src="docs/screenshots/cuemix-828mk3-eq.png" width="32%"> <img src="docs/screenshots/cuemix-828mk3-reverb.png" width="32%">
 
 ## Firmware
 

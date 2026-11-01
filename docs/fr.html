@@ -35,17 +35,17 @@
     <div class="container hero__grid">
       <div>
         <h1>MOTU PCI‑324 / PCI‑424, réinventée pour Linux.</h1>
-        <p class="lead">Un pilote noyau ALSA écrit de A à Z, une application de contrôle façon CueMix (CLI + GTK) et une rétro-ingénierie clean-room d’une carte son que le constructeur n’a jamais documentée.</p>
+        <p class="lead">Un pilote noyau ALSA écrit de A à Z, des applications de contrôle façon CueMix et une rétro-ingénierie clean-room d’une carte son que le constructeur n’a jamais documentée.</p>
         <div class="hero__actions">
           <a class="btn btn--primary" href="#install">Installer en une ligne</a>
           <a class="btn" href="#re">Lire les découvertes RE</a>
         </div>
       </div>
       <figure class="shot ticks">
-        <div class="shot__frame" data-slot="hero" data-kind="product" data-alt="motu424-gui, l’onglet Outputs">
-          <img src="screenshots/outputs-1.png" width="1600" height="959" alt="motu424-gui en mode démo, l’onglet Outputs : quatorze tranches analogiques avec faders, vumètres, mute et inserts FX" fetchpriority="high">
+        <div class="shot__frame" data-slot="hero" data-kind="product" data-alt="cuemix-studio, l’onglet mixes">
+          <img src="screenshots/cuemix-mixes.png" width="1600" height="950" alt="cuemix-studio, l’onglet mixes : quinze tranches avec pan, solo, mute, faders et vumètres, le bus de mixage 1 et son master" fetchpriority="high">
         </div>
-        <figcaption>motu424-gui, onglet Outputs, sans carte avec --demo.</figcaption>
+        <figcaption>cuemix-studio, onglet mixes, un rig PCI-424 simulé, sans carte.</figcaption>
       </figure>
     </div>
     <div class="container">
@@ -78,12 +78,13 @@
     <div class="container">
       <div class="head">
         <h2>Ce qui est livré</h2>
-        <p class="lead">Un pilote, deux applications de contrôle et un installeur qui fonctionne sur n’importe quelle distribution.</p>
+        <p class="lead">Un pilote, trois applications de contrôle et un installeur qui fonctionne sur n’importe quelle distribution.</p>
       </div>
       <ul class="rows">
         <li><h3>Module ALSA</h3><span class="kind">Noyau</span><p>Découpage net en trois couches, entièrement géré par devm/pcim, empaqueté en DKMS pour se recompiler à chaque mise à jour du noyau.</p></li>
         <li><h3><code>motu424-ctl</code></h3><span class="kind">Contrôle, CLI</span><p>Le CueMix FX version Linux, sur alsa-lib : source d’horloge, fréquence d’échantillonnage, gain/atténuation/phase par entrée et la matrice d’écoute entrées×bus.</p></li>
         <li><h3><code>motu424-gui</code></h3><span class="kind">Contrôle, GUI</span><p>Une console de mixage GTK4 façon CueMix : tranches avec faders, vumètres à maintien de crête et panoramiques rotatifs, scènes, snapshots, annulation, visible sans carte avec --demo.</p></li>
+        <li><h3><code>cuemix-studio</code></h3><span class="kind">Contrôle, console</span><p>Un seul binaire Rust pour Linux, macOS et Windows : pilote la carte via motu424-ctl sous Linux, simule un rig ailleurs, et ajoute les pages EQ, dynamique et réverb de la 828mk3.</p></li>
         <li><h3>Toute distribution</h3><span class="kind">Installation</span><p>Détecte pacman/apt/dnf/zypper/apk/xbps, installe les dépendances puis le module via DKMS. Non interactif sous curl | sh.</p></li>
         <li><h3>RE clean-room</h3><span class="kind">Outillage</span><p>Un analyseur de références croisées capstone et un résolveur de vtables C++ ; chaque fait reconstitué est consigné avec sa preuve.</p></li>
         <li><h3>Faits seuls, GPL</h3><span class="kind">Licence</span><p>Seuls les décalages, formats et séquences entrent dans les sources GPL-2.0. Les binaires du constructeur ne sont jamais redistribués.</p></li>
@@ -95,22 +96,24 @@
     <div class="container">
       <div class="head">
         <h2>La console, onglet par onglet</h2>
-        <p class="lead">motu424-gui en mode démo, tel qu’il tourne sans carte.</p>
+        <p class="lead">cuemix-studio avec son rig simulé, tel qu’il tourne sans carte.</p>
       </div>
       <div class="switch" data-switch>
-        <div class="seg" role="tablist" aria-label="Onglets de motu424-gui">
+        <div class="seg" role="tablist" aria-label="Onglets de cuemix-studio">
           <button type="button" role="tab" id="t-in" aria-controls="p-in" aria-selected="true">Inputs</button>
           <button type="button" role="tab" id="t-out" aria-controls="p-out" aria-selected="false" tabindex="-1">Outputs</button>
-          <button type="button" role="tab" id="t-patch" aria-controls="p-patch" aria-selected="false" tabindex="-1">Patchbay</button>
           <button type="button" role="tab" id="t-clock" aria-controls="p-clock" aria-selected="false" tabindex="-1">Clock &amp; format</button>
-          <button type="button" role="tab" id="t-diag" aria-controls="p-diag" aria-selected="false" tabindex="-1">Diagnostics</button>
+          <button type="button" role="tab" id="t-chan" aria-controls="p-chan" aria-selected="false" tabindex="-1">Canal</button>
+          <button type="button" role="tab" id="t-eq" aria-controls="p-eq" aria-selected="false" tabindex="-1">EQ</button>
+          <button type="button" role="tab" id="t-rev" aria-controls="p-rev" aria-selected="false" tabindex="-1">Réverb</button>
         </div>
         <div class="panes">
-          <figure class="shot" role="tabpanel" id="p-in" aria-labelledby="t-in"><div class="shot__frame" data-kind="product"><img src="screenshots/inputs-1-slot-a.png" width="1600" height="959" loading="lazy" alt="Onglet Inputs, emplacement A"></div><figcaption>Inputs, emplacement A.</figcaption></figure>
-          <figure class="shot" role="tabpanel" id="p-out" aria-labelledby="t-out"><div class="shot__frame" data-kind="product"><img src="screenshots/outputs-2.png" width="1600" height="959" loading="lazy" alt="Onglet Outputs, deuxième banque"></div><figcaption>Outputs, deuxième banque.</figcaption></figure>
-          <figure class="shot" role="tabpanel" id="p-patch" aria-labelledby="t-patch"><div class="shot__frame" data-kind="product"><img src="screenshots/patchbay.png" width="1600" height="959" loading="lazy" alt="Onglet Patchbay"></div><figcaption>Patchbay.</figcaption></figure>
-          <figure class="shot" role="tabpanel" id="p-clock" aria-labelledby="t-clock"><div class="shot__frame" data-kind="product"><img src="screenshots/clock-format.png" width="1600" height="959" loading="lazy" alt="Onglet Clock & format"></div><figcaption>Clock &amp; format.</figcaption></figure>
-          <figure class="shot" role="tabpanel" id="p-diag" aria-labelledby="t-diag"><div class="shot__frame" data-kind="product"><img src="screenshots/diagnostics.png" width="1600" height="959" loading="lazy" alt="Onglet Diagnostics"></div><figcaption>Diagnostics.</figcaption></figure>
+          <figure class="shot" role="tabpanel" id="p-in" aria-labelledby="t-in"><div class="shot__frame" data-kind="product"><img src="screenshots/cuemix-inputs.png" width="1600" height="950" loading="lazy" alt="cuemix-studio, onglet Inputs : vumètres avant et après, trim, pad, phase, stéréo et mute par entrée"></div><figcaption>Inputs, 24I/O dans l’emplacement A.</figcaption></figure>
+          <figure class="shot" role="tabpanel" id="p-out" aria-labelledby="t-out"><div class="shot__frame" data-kind="product"><img src="screenshots/cuemix-outputs.png" width="1600" height="950" loading="lazy" alt="cuemix-studio, onglet Outputs : un fader, un vumètre, un mute et un lien stéréo par sortie, l’interrupteur du patchbay au-dessus"></div><figcaption>Outputs, avec l’interrupteur du patchbay.</figcaption></figure>
+          <figure class="shot" role="tabpanel" id="p-clock" aria-labelledby="t-clock"><div class="shot__frame" data-kind="product"><img src="screenshots/cuemix-clock.png" width="1600" height="950" loading="lazy" alt="cuemix-studio, onglet Clock et format : source d’horloge, fréquence, emplacements AudioWire et liaison avec la carte"></div><figcaption>Clock &amp; format, emplacements AudioWire.</figcaption></figure>
+          <figure class="shot" role="tabpanel" id="p-chan" aria-labelledby="t-chan"><div class="shot__frame" data-kind="product"><img src="screenshots/cuemix-828mk3-channel.png" width="1600" height="950" loading="lazy" alt="cuemix-studio en 828mk3, onglet canal et dynamique : largeur stéréo, compresseur et leveler"></div><figcaption>828mk3 : canal et dynamique.</figcaption></figure>
+          <figure class="shot" role="tabpanel" id="p-eq" aria-labelledby="t-eq"><div class="shot__frame" data-kind="product"><img src="screenshots/cuemix-828mk3-eq.png" width="1600" height="950" loading="lazy" alt="cuemix-studio en 828mk3, onglet EQ : la courbe de réponse sur sept bandes"></div><figcaption>828mk3 : EQ sept bandes.</figcaption></figure>
+          <figure class="shot" role="tabpanel" id="p-rev" aria-labelledby="t-rev"><div class="shot__frame" data-kind="product"><img src="screenshots/cuemix-828mk3-reverb.png" width="1600" height="950" loading="lazy" alt="cuemix-studio en 828mk3, onglet Reverb : temps de réverbération, premières réflexions et crossover"></div><figcaption>828mk3 : réverbération.</figcaption></figure>
         </div>
       </div>
     </div>

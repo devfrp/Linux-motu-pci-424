@@ -1,5 +1,5 @@
 /* Hallmark · shape: Stat-Led · genre: modern-minimal · theme: Rim (deal 2/3) · redesign: full · job: try · draw: 9be938
- * hero: Stage (swapped from Corridor: the GUI screenshot is the strongest thing the repo has) · nav: edge-aligned (swapped from search-led: the page has no search) · footer: mast · imagery: screenshots 5 (docs/screenshots, the GTK console in demo mode) · signature: the real motu424-gui console, its five tabs switchable on the page · rim: night, station on the toggle
+ * hero: Stage (swapped from Corridor: the GUI screenshot is the strongest thing the repo has) · nav: edge-aligned (swapped from search-led: the page has no search) · footer: mast · imagery: screenshots 7 (docs/screenshots/cuemix-*, cuemix-studio on its simulated rig) · signature: the real cuemix-studio console, its tabs switchable on the page · rim: night, station on the toggle
  * axes: dark/grotesk-sans/warm · posture: restrained · contrast: pass · fold: pass · v2.0.0 */
 /* Hallmark · pre-emit critique: P4 H4 E4 S5 R4 V4 · weakest: H, the findings table is dense; its values are set in mono at the title size so the eye lands on the evidence first */
 /* Hallmark · dropped #scope · the drawn oscilloscope was an endless decorative loop; the real console screenshots replace it */
@@ -68,7 +68,7 @@ body { color: var(--color-ink); }
 
 /* screenshots */
 .shot { position: relative; margin: 0; }
-.shot__frame { aspect-ratio: 1600 / 959; outline: var(--rule-hair) solid color-mix(in oklab, var(--color-ink) 8%, transparent); outline-offset: -1px; }
+.shot__frame { aspect-ratio: 1600 / 950; outline: var(--rule-hair) solid color-mix(in oklab, var(--color-ink) 8%, transparent); outline-offset: -1px; }
 .shot__frame > img { filter: none; mix-blend-mode: normal; }
 .shot__frame:has(> img)::before { content: none; }
 .shot figcaption { margin-top: var(--space-sm); font-size: var(--text-sm); color: var(--color-muted); }

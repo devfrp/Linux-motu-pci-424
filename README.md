@@ -162,27 +162,44 @@ kcontrols are Phase 5 (card-gated): with no MOTU card the console has nothing
 to populate — preview it with `--demo`; on real hardware it fills in
 automatically once the driver registers its controls.
 
+#### Cross-platform console (cuemix-studio)
+
+[`tools/cuemix-studio`](tools/cuemix-studio/README.md) is the same console as
+a single Rust/egui binary for Linux, macOS and Windows. On Linux with the
+driver it drives the card through `motu424-ctl`; anywhere else, or with no
+card, it runs a simulated PCI-424 rig (24I/O in slot A, 1224 in slot B). A
+second device, the 828mk3, adds the channel/dynamics, EQ and reverb pages.
+
+```sh
+cd tools/cuemix-studio && cargo build --release
+./target/release/cuemix-studio              # the card if motu424-ctl finds one, else simulated
+./target/release/cuemix-studio --simulate   # never touch the card
+./target/release/cuemix-studio --828mk3     # the effects-capable device
+```
+
 ##### Screenshots
 
-`--demo` against the synthetic 24I/O + 1224 rig, one tab at a time:
+The simulated rig, one tab at a time (taken with `--screenshot`).
 
-**Inputs** — channel strips scrolled from slot A (24I/O, analog) into slot B
-(1224, AES/EBU), with the mix master pinned on the right:
+**Mixes**: pan, solo, mute and fader per input for the selected mix bus, its
+master on the right:
 
-<img src="docs/screenshots/inputs-1-slot-a.png" width="49%"> <img src="docs/screenshots/inputs-2-slot-b.png" width="49%">
+![Mixes tab](docs/screenshots/cuemix-mixes.png)
 
-**Outputs** — mono monitor strips, scrolled across the 24I/O's analog outs:
+**Inputs** and **Outputs**: pre/post meters, trim, pad, phase and stereo per
+input; one fader, meter, mute and stereo link per output, under the patchbay
+switch:
 
-<img src="docs/screenshots/outputs-1.png" width="49%"> <img src="docs/screenshots/outputs-2.png" width="49%">
+<img src="docs/screenshots/cuemix-inputs.png" width="49%"> <img src="docs/screenshots/cuemix-outputs.png" width="49%">
 
-**Patchbay** — no cords by default; every jack sits at its normal:
+**Clock & format**: clock source, sample rate, AudioWire slots and the card
+link:
 
-![Patchbay tab](docs/screenshots/patchbay.png)
+![Clock & format tab](docs/screenshots/cuemix-clock.png)
 
-**Clock & format** and **Diagnostics** (the latter works with no card and no
-driver loaded — this is a real report from the machine these were taken on):
+**828mk3**: channel and dynamics, the seven-band EQ, and the reverb:
 
-<img src="docs/screenshots/clock-format.png" width="49%"> <img src="docs/screenshots/diagnostics.png" width="49%">
+<img src="docs/screenshots/cuemix-828mk3-channel.png" width="32%"> <img src="docs/screenshots/cuemix-828mk3-eq.png" width="32%"> <img src="docs/screenshots/cuemix-828mk3-reverb.png" width="32%">
 
 ## Firmware
 
