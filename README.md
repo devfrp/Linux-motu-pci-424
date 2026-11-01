@@ -40,6 +40,7 @@ Installs on any distro (deps + DKMS module + tools). Details and options under
 | `tools/motu424-bringup.c` | **Bring-up replay** (dry-run by default): FPGA load via DSP GPIO, DSP program load, DSPINT, mailbox poll |
 | `tools/motu424-ctl.c` | **CueMix-style management CLI** (clock/format + monitor mixer) over alsa-lib |
 | `tools/motu424-gui` | **GTK4 mixing console** in the CueMix FX style (a front-end over `motu424-ctl`) |
+| `tools/cuemix-studio` | **Cross-platform console** (Rust/egui, Linux/macOS/Windows): drives the card via `motu424-ctl` on Linux, simulated rig elsewhere; adds the 828mk3 EQ/dynamics/reverb pages |
 | `tools/re/` | Static-RE helpers (`vtable-scan.py`, capstone `xref.py`, `extract-firmware.py`, C64x `dis-c64x.py`) |
 | `get.sh` | **`curl \| sh` bootstrap** — fetch sources + run the installer |
 | `install.sh` | **Cross-distro installer** (deps + DKMS + tools) |

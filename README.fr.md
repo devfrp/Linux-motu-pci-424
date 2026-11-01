@@ -41,6 +41,7 @@ Détails et options dans [Installation](#installation-toute-distro).
 | `tools/motu424-probe.c` | Énumérateur/dumpeur de BARs (modèle fenêtré) en espace utilisateur pour la rétro-ingénierie |
 | `tools/motu424-ctl.c` | **CLI de gestion façon CueMix** (horloge/format + mixeur de monitoring) via alsa-lib |
 | `tools/motu424-gui` | **Console de mixage GTK4** façon CueMix FX (front-end de `motu424-ctl`) |
+| `tools/cuemix-studio` | **Console multiplateforme** (Rust/egui, Linux/macOS/Windows) : pilote la carte via `motu424-ctl` sous Linux, rig simulé ailleurs ; ajoute les pages EQ/dynamique/réverb de la 828mk3 |
 | `tools/re/` | Aides à la RE statique (`vtable-scan.py`, `xref.py` basé sur capstone, `extract-firmware.py`, `dis-c64x.py` pour le C64x) |
 | `get.sh` | **Bootstrap `curl \| sh`** — récupère les sources + lance l'installeur |
 | `install.sh` | **Installeur multi-distro** (dépendances + DKMS + outils) |

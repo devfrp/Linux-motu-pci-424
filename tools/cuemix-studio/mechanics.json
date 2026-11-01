@@ -1,0 +1,420 @@
+{
+ "version": 1,
+ "values": [
+  {
+   "name": "fader gain law",
+   "group": "fader",
+   "value": "gain = position squared",
+   "source": "function 0x44f0b0"
+  },
+  {
+   "name": "fader hardware unity word",
+   "group": "fader",
+   "value": 32768,
+   "source": "function 0x44f0d0 (0x9af270)"
+  },
+  {
+   "name": "fader -inf threshold",
+   "group": "fader",
+   "value": -90.0,
+   "unit": "dB",
+   "source": "function 0x5a7250 (0x9af410)"
+  },
+  {
+   "name": "fader top position",
+   "group": "fader",
+   "value": 1.0,
+   "source": "functions 0x472b20 (range 0…1) and 0x44efd0 (fader keeps it)"
+  },
+  {
+   "name": "fader default",
+   "group": "fader",
+   "value": 0.0,
+   "unit": "dB",
+   "estimated": true
+  },
+  {
+   "name": "pan min",
+   "group": "pan",
+   "value": -1.0,
+   "source": "function 0x4751e0 (0x9af118)"
+  },
+  {
+   "name": "pan max",
+   "group": "pan",
+   "value": 1.0,
+   "source": "function 0x4751e0"
+  },
+  {
+   "name": "pan hardware steps",
+   "group": "pan",
+   "value": 128,
+   "source": "function 0x475280 (0x9ade60)"
+  },
+  {
+   "name": "pan law",
+   "group": "pan",
+   "value": "equal power",
+   "estimated": true
+  },
+  {
+   "name": "trim hardware low word",
+   "group": "trim",
+   "value": 64,
+   "source": "function 0x44f1d0 (0x9af3e0)"
+  },
+  {
+   "name": "trim hardware span",
+   "group": "trim",
+   "value": 191,
+   "source": "function 0x44f1d0 (0x9af3d8)"
+  },
+  {
+   "name": "mic trim max",
+   "group": "trim",
+   "value": 53.0,
+   "unit": "dB",
+   "estimated": true
+  },
+  {
+   "name": "line trim min",
+   "group": "trim",
+   "value": -96.0,
+   "unit": "dB",
+   "estimated": true
+  },
+  {
+   "name": "line trim max",
+   "group": "trim",
+   "value": 22.0,
+   "unit": "dB",
+   "estimated": true
+  },
+  {
+   "name": "eq freq min",
+   "group": "eq",
+   "value": 20.0,
+   "unit": "Hz",
+   "source": "function 0x474e70 (0x9970dc)"
+  },
+  {
+   "name": "eq freq max",
+   "group": "eq",
+   "value": 20000.0,
+   "unit": "Hz",
+   "source": "function 0x474e70 (0x997ea0)"
+  },
+  {
+   "name": "eq gain min",
+   "group": "eq",
+   "value": -20.0,
+   "unit": "dB",
+   "source": "function 0x474fa0 (0x9af398)"
+  },
+  {
+   "name": "eq gain max",
+   "group": "eq",
+   "value": 20.0,
+   "unit": "dB",
+   "source": "function 0x474fe0"
+  },
+  {
+   "name": "eq q min",
+   "group": "eq",
+   "value": 0.01,
+   "source": "function 0x4750f0 (0x9af0f0)"
+  },
+  {
+   "name": "eq q max",
+   "group": "eq",
+   "value": 3.0,
+   "source": "function 0x4750f0 (0x9af390)"
+  },
+  {
+   "name": "comp threshold min",
+   "group": "dynamics",
+   "value": -48.0,
+   "unit": "dB",
+   "source": "function 0x4746c0 (0x9af3a8)"
+  },
+  {
+   "name": "comp threshold max",
+   "group": "dynamics",
+   "value": 0.0,
+   "unit": "dB",
+   "source": "function 0x4746c0"
+  },
+  {
+   "name": "comp ratio min",
+   "group": "dynamics",
+   "value": 1.0,
+   "source": "function 0x474650"
+  },
+  {
+   "name": "comp ratio max",
+   "group": "dynamics",
+   "value": 10.0,
+   "source": "function 0x474650 (0x9af3b0)"
+  },
+  {
+   "name": "comp attack min",
+   "group": "dynamics",
+   "value": 10.0,
+   "unit": "ms",
+   "source": "function 0x44ec75 (0x997ecc)"
+  },
+  {
+   "name": "comp attack max",
+   "group": "dynamics",
+   "value": 100.0,
+   "unit": "ms",
+   "source": "function 0x44ec75 (0x997e90)"
+  },
+  {
+   "name": "comp release min",
+   "group": "dynamics",
+   "value": 10.0,
+   "unit": "ms",
+   "source": "function 0x44ed45 (0x997ecc)"
+  },
+  {
+   "name": "comp release max",
+   "group": "dynamics",
+   "value": 2000.0,
+   "unit": "ms",
+   "source": "function 0x44ed45 (0x9980e8)"
+  },
+  {
+   "name": "comp trim min",
+   "group": "dynamics",
+   "value": -6.0,
+   "unit": "dB",
+   "source": "function 0x44ee0f (0x9980f0)"
+  },
+  {
+   "name": "comp trim max",
+   "group": "dynamics",
+   "value": 0.0,
+   "unit": "dB",
+   "source": "function 0x44ee0f"
+  },
+  {
+   "name": "leveler max",
+   "group": "dynamics",
+   "value": 100.0,
+   "unit": "%",
+   "source": "function 0x456693 (0x997e90)"
+  },
+  {
+   "name": "reverb predelay max",
+   "group": "reverb",
+   "value": 100.0,
+   "unit": "ms",
+   "source": "function 0x4546da"
+  },
+  {
+   "name": "reverb shelf freq min",
+   "group": "reverb",
+   "value": 1000.0,
+   "unit": "Hz",
+   "source": "function 0x4547e8"
+  },
+  {
+   "name": "reverb shelf freq max",
+   "group": "reverb",
+   "value": 20000.0,
+   "unit": "Hz",
+   "source": "function 0x4547d6"
+  },
+  {
+   "name": "reverb shelf freq default",
+   "group": "reverb",
+   "value": 16000.0,
+   "unit": "Hz",
+   "source": "function 0x454820"
+  },
+  {
+   "name": "reverb shelf cut min",
+   "group": "reverb",
+   "value": -40.0,
+   "unit": "dB",
+   "source": "function 0x4548e6"
+  },
+  {
+   "name": "reverb time min",
+   "group": "reverb",
+   "value": 100.0,
+   "unit": "ms",
+   "source": "function 0x4768d0 (0x996f50)"
+  },
+  {
+   "name": "reverb time max",
+   "group": "reverb",
+   "value": 60000.0,
+   "unit": "ms",
+   "source": "function 0x4768e5 (0x9af698)"
+  },
+  {
+   "name": "reverb time centre",
+   "group": "reverb",
+   "value": 2000.0,
+   "unit": "ms",
+   "source": "function 0x4768f4 (0x9af690)"
+  },
+  {
+   "name": "reverb reflections size min",
+   "group": "reverb",
+   "value": 50.0,
+   "unit": "%",
+   "source": "function 0x454acd"
+  },
+  {
+   "name": "reverb reflections size max",
+   "group": "reverb",
+   "value": 400.0,
+   "unit": "%",
+   "source": "function 0x454aad"
+  },
+  {
+   "name": "reverb time low default",
+   "group": "reverb",
+   "value": 100.0,
+   "unit": "%",
+   "source": "function 0x454cd0"
+  },
+  {
+   "name": "reverb time mid default",
+   "group": "reverb",
+   "value": 50.0,
+   "unit": "%",
+   "source": "function 0x454db7"
+  },
+  {
+   "name": "reverb time high default",
+   "group": "reverb",
+   "value": 25.0,
+   "unit": "%",
+   "source": "function 0x454e9e"
+  },
+  {
+   "name": "reverb crossover low min",
+   "group": "reverb",
+   "value": 100.0,
+   "unit": "Hz",
+   "source": "function 0x454f66"
+  },
+  {
+   "name": "reverb crossover low default",
+   "group": "reverb",
+   "value": 500.0,
+   "unit": "Hz",
+   "source": "function 0x454f99"
+  },
+  {
+   "name": "reverb crossover high min",
+   "group": "reverb",
+   "value": 1000.0,
+   "unit": "Hz",
+   "source": "function 0x455061"
+  },
+  {
+   "name": "reverb crossover high default",
+   "group": "reverb",
+   "value": 2000.0,
+   "unit": "Hz",
+   "source": "function 0x455094"
+  },
+  {
+   "name": "reverb width min",
+   "group": "reverb",
+   "value": -1.0,
+   "source": "function 0x455160"
+  },
+  {
+   "name": "reverb width default",
+   "group": "reverb",
+   "value": 1.0,
+   "source": "function 0x45519a"
+  },
+  {
+   "name": "meter led split",
+   "group": "meters",
+   "value": "0.25 / 0.5 / 0.75 / 0.95",
+   "source": "TouchOSC mk3 layout"
+  },
+  {
+   "name": "peak hold choices",
+   "group": "meters",
+   "value": "Off, 2 s, 4 s, 10 s, 1 min, 5 min, Infinite",
+   "source": "strings near 'Peak Hold Time'"
+  },
+  {
+   "name": "mix buses",
+   "group": "routing",
+   "value": 8,
+   "estimated": true
+  },
+  {
+   "name": "PCI-424 trim range max",
+   "group": "pci-424",
+   "value": 60.0,
+   "unit": "dB",
+   "source": "person's motu424-gui demo_controls (Input NN Trim Volume 0..60)"
+  },
+  {
+   "name": "PCI-424 volume steps",
+   "group": "pci-424",
+   "value": 127,
+   "source": "person's docs/cuemix-control-map.md and motu424-gui (Volume 0..127)"
+  },
+  {
+   "name": "PCI-424 pan range",
+   "group": "pci-424",
+   "value": 100,
+   "source": "person's docs/cuemix-control-map.md (Pan -100..+100)"
+  },
+  {
+   "name": "PCI-424 default rig",
+   "group": "pci-424",
+   "value": "A 24I/O, B 1224",
+   "source": "person's motu424-gui DEMO_RIG"
+  },
+  {
+   "name": "PCI-424 patchbay factory default",
+   "group": "pci-424",
+   "value": false,
+   "source": "person's docs/cuemix-control-map.md (Patchbay Switch)"
+  },
+  {
+   "name": "hardware connection",
+   "group": "device",
+   "value": "motu424-ctl on Linux, simulated elsewhere",
+   "source": "person's Linux-motu-pci-424 tools/motu424-ctl.c"
+  },
+  {
+   "name": "fader readout format",
+   "group": "fader",
+   "value": "%0.1f dB, -inf dB",
+   "source": "functions 0x4770c0 and 0x422fa0"
+  },
+  {
+   "name": "pan readout format",
+   "group": "pan",
+   "value": "%0.2f",
+   "source": "function 0x475650"
+  },
+  {
+   "name": "time readout seconds threshold",
+   "group": "reverb",
+   "value": 1000.0,
+   "unit": "ms",
+   "source": "function 0x4769d0 (0x9af1a8)"
+  },
+  {
+   "name": "PCI-424 top volume step = 0 dB",
+   "group": "pci-424",
+   "value": 127,
+   "estimated": true
+  }
+ ]
+}
