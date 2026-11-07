@@ -209,8 +209,9 @@ What follows for the configure path:
   (`+0x88`, `+0x9c..+0xa4`, `+0xb0..+0xbc`, `+0xdc..+0xe4`, `+0xf0`) and the
   relock words `+0x70`/`+0x78` is load-only, and all of them read 0 on Linux
   after a stream: the host has to write them. The DSP also stores `+0x114`
-  (routine `0x45e0`) and `+0xf8..+0x100`, so those are not write-once
-  parameters.
+  (routine `0x45e0`) and `+0xf8..+0x100`. It does not clear `+0x114` (it
+  still reads 1 on Windows long after the last host write); it clears
+  `+0x118`.
 - `+0xf4` is store-only: the DSP publishes the stop acknowledge and never
   reads back the host's `+0xf4 ← 0` before a stop.
 - `+0x84`, `+0xa8`, `+0xc0`, `+0xc8..+0xd8`, `+0xe8`, `+0xec` are load-only

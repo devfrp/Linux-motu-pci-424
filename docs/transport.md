@@ -125,6 +125,18 @@ after bring-up beyond the stream start, and when. The RAM diff in
   area at `0x7648..` is presumably maintained by the DSP once the clock runs;
   nothing on the host writes it.
 
+- **At driver start** (live dumps of a Windows card, issue #2,
+  2026-11-06): both interfaces lock during the Windows boot screen, before
+  any application, and the vendor starts an **idle zero-channel stream**
+  at load: `+0x58 = 1`, `+0x68 = +0x6c = 0`, `+0x64 = 4`, `+0x60` at the
+  rate's value. The Linux driver starts no stream until ALSA opens one.
+- **`+0x80` composition** (`0x2a820`): `table[rate] | settled | term`, with
+  `term = 0x80000000` at 1x and `0x80001000 | mask << 24 | (mask ^ 0xf) <<
+  20` at 2x/4x, where `mask` is the set of AudioWire ports marked absent
+  (100 absent ticks per port, from the card's status response). The ISR
+  ORs in `settled = 0xf0000` once 40000 frames have passed since the last
+  change. At 48 kHz the settled word is the firmware's own `0x800f0200`.
+
 ### The relock sequence
 
 The host keeps a ping-pong index starting at 0; `n` is the dword count of
@@ -138,10 +150,13 @@ the mixer program.
 5. `+0x74 ← 1`;
 6. poll `+0x100 == 0`, 20 µs apart, at most 10000 times;
 7. `+0x74 ← 0`; on timeout, stop here;
-8. poll `+0x108 != 0`, 5 µs apart;
+8. poll `+0x108 != 0`, 5 µs apart, for 3 to 4 ticks of 1/60 s (50 to
+   67 ms); the firmware's init stores `+0x108 = 1`, so the first relock
+   does not wait;
 9. `+0x108 ← 0`, `+0x78 ← dst`, `+0x70 ← (q << 16) | (u16)-q` with
    `q = 0x10000 / (mult × 0x1e0)` (1x `0x0088ff78`, 2x `0x0044ffbc`, the
-   Windows value), `+0x104 ← 1`.
+   Windows value), `+0x104 ← 1`, then wait for `+0x108` again (only
+   needed once relock is repeated).
 
 The DSP copies the program from `+0xf8` to `+0xfc` in chunks, reading host
 memory only. On `+0x104` its main loop takes `+0x78` as the mixer-program
@@ -181,7 +196,8 @@ with a 2408mk3 and a 24I/O (issue #2, 2026-10-20):
   DSP with the relock sequence once, after bus mastering is on. It must be a
   multiple of 4 bytes, at most 0x2800, and end with the trailer above. It is
   never shipped. Without it, the DSP runs with no mixer program, as before.
-- The stream start writes the channel map before `+0x58/+0x68/+0x6c`:
+- The stream start writes the channel map after `+0x58/+0x68/+0x6c`, in
+  the vendor's order:
   `0x191a1b1c 0x1d1e1f20 0x21222324 0x25260000` and 20 zeros. These are the
   14 (= `+0x68`) playback channels 24..37, one byte each as `ch + ch/24` at
   byte index `i ^ 3`, as the Windows image held them at `0x8348`. `+0x6c =
