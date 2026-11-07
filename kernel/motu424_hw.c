@@ -632,8 +632,8 @@ void motu424_hw_shutdown(struct motu424 *chip)
 
 /*
  * Start playback from the host ring at bus address @ring: what the vendor's
- * configure path (0x26760) writes at every stream start, the channel map and
- * fetch geometry, then ring base, size code, frames per interrupt and
+ * configure path (0x26760) writes at every stream start, the fetch geometry
+ * and the channel map, then ring base, size code, frames per interrupt and
  * periods per wrap, then enable; clear any stale interrupt request and
  * unmask PINTA#. Called from the atomic trigger.
  */
@@ -643,13 +643,13 @@ void motu424_hw_stream_start(struct motu424 *chip, dma_addr_t ring)
 	unsigned int i;
 
 	spin_lock_irqsave(&chip->lock, flags);
+	motu424_awr(chip, MOTU424_AREG_CFG_C, MOTU424_CFG_C);
+	motu424_awr(chip, MOTU424_AREG_XFER_A, MOTU424_XFER_A);
+	motu424_awr(chip, MOTU424_AREG_XFER_B, MOTU424_XFER_B);
 	if (configure)
 		for (i = 0; i < MOTU424_CHMAP_DWORDS; i++)
 			motu424_wr32(chip, chip->chmap_base + 4 * i,
 				     motu424_chmap[i]);
-	motu424_awr(chip, MOTU424_AREG_CFG_C, MOTU424_CFG_C);
-	motu424_awr(chip, MOTU424_AREG_XFER_A, MOTU424_XFER_A);
-	motu424_awr(chip, MOTU424_AREG_XFER_B, MOTU424_XFER_B);
 	motu424_awr(chip, MOTU424_AREG_RING_BASE, lower_32_bits(ring));
 	motu424_awr(chip, MOTU424_AREG_RING_SIZE, MOTU424_RING_BYTES);
 	motu424_awr(chip, MOTU424_AREG_IRQ_FRAMES, chip->irq_frames);
