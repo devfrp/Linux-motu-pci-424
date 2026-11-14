@@ -203,6 +203,17 @@ with a 2408mk3 and a 24I/O (issue #2, 2026-10-20):
   byte index `i ^ 3`, as the Windows image held them at `0x8348`. `+0x6c =
   0x10` is the input count.
 - `configure=0` skips the parameter group and the channel map.
+- `idle_stream=1` (off by default, for the lock tests) starts the vendor's
+  idle zero-channel stream from probe, on its own zeroed 512 KB ring:
+  `+0x58 = 1`, `+0x68 = +0x6c = 0`, `+0x60 = 0x100`, `+0x64 = 4`, `+0x5c`,
+  `+0x8c = 0x80000`, `+0x54 ← 1`, then INTRST and PINTA# unmasked, as
+  Windows does at load. `+0x60` is `0x200` on Windows at 96 kHz; `0x100` is
+  the vendor formula's value at 1x. `.prepare` stops it and waits for
+  `+0xf4` before a PCM stream starts, and `.close` restarts it. Per the DSP
+  program, `+0x58` is read in one place only, after the tick, where it
+  makes the per-frame routine (`0x5f60`) treat the stream as disabled; the
+  FPGA side (TOUT1, both QDMA transfers, the `+0x80` forwarding) runs on
+  every GPINT5 tick with or without a stream.
 
 Only playback at 48 kHz (1x, the state the program boots into) is exposed.
 Rate changes go through the relock sequence with a different `+0x70` and the
@@ -220,7 +231,16 @@ parameter group per rate, not implemented.
   96 kHz). Whether `+0x60` sets the period or the DSP picks it per rate is
   not split yet: a 48 kHz run with `irq_frames=0x80` does it (half the
   interrupt rate and `0x3000` steps in `+0x2c` if `+0x60` drives it).
-- **Device configure (blocked audio; now written, not yet run).** A 48 kHz
+- **Interface lock (blocks audio).** With the configure written, every
+  DSP-consumed word, `+0x80` and its history, window A, the port BAR, PCI
+  config and the FPGA load match a locked Windows card, and the 2408mk3 and
+  24I/O still do not lock (issue #2, 2026-11-06). Bring-up timing is ruled
+  out: the Linux interval from the FPGA load to `+0x50 ← 1` is 10 to 20 ms
+  longer, never shorter, and the vendor waits only between mailbox polls.
+  One host-state difference: the vendor unmasks PINTA# (`HSR ← 0`) during
+  bring-up, and Linux only at stream start (`idle_stream=1` covers it).
+  Remaining test: `idle_stream=1`.
+- **Device configure (now written, run on a card, no lock yet).** A 48 kHz
   Linux stream ran cleanly, but nothing reached the outputs and the
   interfaces never locked. The parameter group, the mixer program and the
   channel map were the missing pieces (Device configure, above); the driver

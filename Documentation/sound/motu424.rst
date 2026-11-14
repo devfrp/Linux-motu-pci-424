@@ -111,6 +111,10 @@ Module parameters
    configure=<bool>  Write the vendor's 48 kHz parameter group at load and
                      the channel map at stream start. Y (the default);
                      N restores the earlier behaviour for comparison.
+   idle_stream=<bool> Start the vendor's idle zero-channel stream at
+                     load, and again whenever no PCM stream is open,
+                     as Windows does from driver start. N (the
+                     default). Diagnostic, for the interface-lock tests.
 
 Current status and limitations
 ===============================
