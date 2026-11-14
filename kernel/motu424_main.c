@@ -184,11 +184,13 @@ static int motu424_probe(struct pci_dev *pci, const struct pci_device_id *ent)
 		return err;
 
 	/*
-	 * The mixer-program handover makes the DSP read host memory, so it
-	 * needs bus mastering and must come after the shutdown action, which
-	 * resets the DSP before that buffer is freed.
+	 * The mixer-program handover and the idle stream make the DSP read
+	 * host memory, so they need bus mastering and must come after the
+	 * shutdown action, which resets the DSP before those buffers are
+	 * freed.
 	 */
 	motu424_hw_relock(chip);
+	motu424_hw_idle_start(chip);
 
 	err = motu424_pcm_create(chip);
 	if (err < 0)

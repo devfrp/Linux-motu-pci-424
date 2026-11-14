@@ -57,6 +57,11 @@ module_param(configure, bool, 0444);
 MODULE_PARM_DESC(configure,
 		 "Write the vendor's 48 kHz parameter group at load and the channel map at stream start (default Y)");
 
+static bool idle_stream;
+module_param(idle_stream, bool, 0444);
+MODULE_PARM_DESC(idle_stream,
+		 "Start the vendor's idle zero-channel stream at load and whenever no PCM stream is open (default N; diagnostic)");
+
 MODULE_FIRMWARE(MOTU424_FW_FPGA);
 MODULE_FIRMWARE(MOTU424_FW_PROG);
 
@@ -528,6 +533,19 @@ int motu424_hw_init(struct motu424 *chip)
 	motu424_dsp_init(chip);
 	motu424_mixer_get(chip);
 
+	/*
+	 * The idle stream's ring, allocated here so that, like the mixer
+	 * buffer, it is freed only after the shutdown action has reset the
+	 * DSP. Zeroed; with no channels the DSP should fetch nothing from it.
+	 */
+	if (idle_stream) {
+		chip->idle_ring = dmam_alloc_coherent(dev, MOTU424_RING_BYTES,
+						      &chip->idle_bus,
+						      GFP_KERNEL);
+		if (!chip->idle_ring)
+			dev_warn(dev, "no memory for the idle-stream ring; idle stream disabled\n");
+	}
+
 	chip->frame_bytes = frame_bytes;
 	chip->period_bytes = period_bytes;
 	chip->irq_frames = irq_frames;
@@ -607,6 +625,54 @@ void motu424_hw_relock(struct motu424 *chip)
 }
 
 /*
+ * The idle zero-channel stream Windows runs from driver start (issue #2):
+ * +0x58 = 1 makes the DSP's per-frame routine treat the stream as disabled,
+ * +0x68 = +0x6c = 0 fetches no channels, and the tick runs over the idle
+ * ring with 4 periods per wrap. PINTA# is unmasked as on Windows; the IRQ
+ * handler acks these interrupts without signalling ALSA. Probe starts it
+ * after bus mastering, the IRQ and the shutdown action; .close restarts it.
+ */
+void motu424_hw_idle_start(struct motu424 *chip)
+{
+	unsigned long flags;
+
+	if (!chip->idle_ring || !chip->audio_base || chip->idle_running)
+		return;
+
+	spin_lock_irqsave(&chip->lock, flags);
+	motu424_awr(chip, MOTU424_AREG_CFG_C, MOTU424_IDLE_CFG_C);
+	motu424_awr(chip, MOTU424_AREG_XFER_A, 0);
+	motu424_awr(chip, MOTU424_AREG_XFER_B, 0);
+	motu424_awr(chip, MOTU424_AREG_IRQ_FRAMES, MOTU424_IDLE_IRQ_FRAMES);
+	motu424_awr(chip, MOTU424_AREG_RING_PERIODS, MOTU424_IDLE_PERIODS);
+	motu424_awr(chip, MOTU424_AREG_RING_BASE, lower_32_bits(chip->idle_bus));
+	motu424_awr(chip, MOTU424_AREG_RING_SIZE, MOTU424_RING_BYTES);
+	motu424_awr(chip, MOTU424_AREG_ENABLE, 1);
+	motu424_wr32(chip, MOTU424_PCI_RSTSRC, MOTU424_RSTSRC_INTRST);
+	motu424_port_wr(chip, MOTU424_PORT_HSR, 0);
+	chip->idle_running = true;
+	spin_unlock_irqrestore(&chip->lock, flags);
+	dev_info(&chip->pci->dev, "idle stream running\n");
+}
+
+/* Stop the idle stream and wait for the DSP's acknowledge; sleeps. */
+void motu424_hw_idle_stop(struct motu424 *chip)
+{
+	unsigned long flags;
+
+	if (!chip->idle_running)
+		return;
+
+	spin_lock_irqsave(&chip->lock, flags);
+	chip->idle_running = false;
+	motu424_awr(chip, MOTU424_AREG_STOP_ACK, 0);
+	motu424_awr(chip, MOTU424_AREG_ENABLE, 0);
+	motu424_port_wr(chip, MOTU424_PORT_HSR, MOTU424_PORT_HSR_INTAM);
+	spin_unlock_irqrestore(&chip->lock, flags);
+	motu424_hw_stream_sync_stop(chip);
+}
+
+/*
  * Quiesce the card before its IRQ and the host ring go away: stop the
  * stream, mask PINTA# and warm-reset the DSP, which also ends its bus-master
  * accesses to host memory.
@@ -627,6 +693,7 @@ void motu424_hw_shutdown(struct motu424 *chip)
 	motu424_port_wr(chip, MOTU424_PORT_HDCR, MOTU424_PORT_HDCR_WARMRESET);
 	chip->audio_base = 0;
 	chip->playback.running = false;
+	chip->idle_running = false;
 	spin_unlock_irqrestore(&chip->lock, flags);
 }
 

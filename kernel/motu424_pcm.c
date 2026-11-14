@@ -77,11 +77,16 @@ static int motu424_pcm_close(struct snd_pcm_substream *substream)
 	struct motu424 *chip = snd_pcm_substream_chip(substream);
 
 	chip->playback.substream = NULL;
+	/* ALSA has run .sync_stop by now: back to the idle stream, if enabled. */
+	motu424_hw_idle_start(chip);
 	return 0;
 }
 
 static int motu424_pcm_prepare(struct snd_pcm_substream *substream)
 {
+	/* The trigger is atomic: leave the idle stream here, where we can sleep. */
+	motu424_hw_idle_stop(snd_pcm_substream_chip(substream));
+
 	/* Start the DSP on silence; ALSA fills the buffer before START. */
 	return snd_pcm_format_set_silence(substream->runtime->format,
 					  substream->runtime->dma_area,

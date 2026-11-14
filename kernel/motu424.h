@@ -216,6 +216,16 @@
 #define MOTU424_XFER_A		0xeu
 #define MOTU424_XFER_B		0x10u
 #define MOTU424_CFG_C		0u
+
+/*
+ * The idle zero-channel stream the vendor starts at load (issue #2,
+ * 2026-11-13): +0x58 = 1, no channels, 4 periods per wrap. +0x60 is 0x200
+ * on a Windows card at 96 kHz; the vendor formula 0x10 << (2 * 2), doubled
+ * only above 1x, gives 0x100 at 48 kHz.
+ */
+#define MOTU424_IDLE_CFG_C	1u
+#define MOTU424_IDLE_PERIODS	4
+#define MOTU424_IDLE_IRQ_FRAMES	0x100u
 #define MOTU424_RATE		48000
 
 struct motu424;
@@ -260,6 +270,11 @@ struct motu424 {
 	size_t mixer_len;		/* 0 = none loaded               */
 	unsigned int mixer_idx;		/* DSP program buffer last used  */
 
+	/* Optional idle stream at load (idle_stream=1), on its own ring. */
+	void *idle_ring;		/* coherent, MOTU424_RING_BYTES  */
+	dma_addr_t idle_bus;
+	bool idle_running;
+
 	unsigned int frame_bytes;	/* host-ring bytes per frame, 0 = unknown */
 	unsigned int period_bytes;	/* bytes the DSP fetches per interrupt    */
 	unsigned int irq_frames;	/* frames per interrupt written to +0x60  */
@@ -273,6 +288,8 @@ struct motu424 {
 /* --- motu424_hw.c : the only file that touches real register semantics --- */
 int  motu424_hw_init(struct motu424 *chip);
 void motu424_hw_relock(struct motu424 *chip);
+void motu424_hw_idle_start(struct motu424 *chip);
+void motu424_hw_idle_stop(struct motu424 *chip);
 void motu424_hw_shutdown(struct motu424 *chip);
 void motu424_hw_stream_start(struct motu424 *chip, dma_addr_t ring);
 void motu424_hw_stream_stop(struct motu424 *chip);
