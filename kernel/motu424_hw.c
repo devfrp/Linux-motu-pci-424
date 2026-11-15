@@ -536,7 +536,8 @@ int motu424_hw_init(struct motu424 *chip)
 	/*
 	 * The idle stream's ring, allocated here so that, like the mixer
 	 * buffer, it is freed only after the shutdown action has reset the
-	 * DSP. Zeroed; with no channels the DSP should fetch nothing from it.
+	 * DSP. Zeroed: with no channels the DSP still fetches 0x600-byte
+	 * periods from it (measured on a card), and finds silence.
 	 */
 	if (idle_stream) {
 		chip->idle_ring = dmam_alloc_coherent(dev, MOTU424_RING_BYTES,

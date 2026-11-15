@@ -40,7 +40,7 @@ in the rate/mode path with `+0x88`/`+0x90`.
 |---|---|---|
 | `+0x5c` | W | host ring **bus address** (vendor writes `[this+0x10]`, `0x29840`) |
 | `+0x8c` | W | ring **size code** in bytes (`0x80000` = 512 KB on Windows); rate/mode path only |
-| `+0x60` | W | **frames per interrupt** (`0x80` at 96 kHz on Windows); host bookkeeping, the DSP loads it once in the tick and does not appear to use it |
+| `+0x60` | W | **frames per interrupt** (`0x80` at 96 kHz on Windows); **consumed by the DSP** (issue #2, 2026-11-14): interrupts every `+0x60` frames with 24 channels (`0x40`: 750/s at 48 kHz), every `+0x60 / 2` with zero channels (`0x100`: 374/s, period `0x600` bytes) |
 | `+0x64` | W | **periods per ring wrap** (`8` on Windows; `fn 0x13c30` uses `4`). `0` after bring-up, which makes the DSP replay the first period |
 | `+0x58/+0x68/+0x6c` | W | fetch geometry from the vendor configure path `0x29930(a, b, c)`: `+0x68 ← a`, `+0x6c ← b`, `+0x58 ← c`, then the 24-dword channel map at `[+0x14]`. Windows: `a = 0xe`, `b = 0x10`, `c = 0`. The DSP's per-pass fetch is `0x30 × +0x68` bytes |
 | `+0x54` | W | `1` = start, `0` = stop |
@@ -213,7 +213,9 @@ with a 2408mk3 and a 24I/O (issue #2, 2026-10-20):
   program, `+0x58` is read in one place only, after the tick, where it
   makes the per-frame routine (`0x5f60`) treat the stream as disabled; the
   FPGA side (TOUT1, both QDMA transfers, the `+0x80` forwarding) runs on
-  every GPINT5 tick with or without a stream.
+  every GPINT5 tick with or without a stream. On the card (2026-11-14) the
+  DSP still fetches from the idle ring: `+0x2c` cycles through four
+  `0x600`-byte periods and it interrupts 374 times a second.
 
 Only playback at 48 kHz (1x, the state the program boots into) is exposed.
 Rate changes go through the relock sequence with a different `+0x70` and the
@@ -239,7 +241,15 @@ parameter group per rate, not implemented.
   longer, never shorter, and the vendor waits only between mailbox polls.
   One host-state difference: the vendor unmasks PINTA# (`HSR ← 0`) during
   bring-up, and Linux only at stream start (`idle_stream=1` covers it).
-  Remaining test: `idle_stream=1`.
+  `idle_stream=1` ran on 2026-11-14: no lock either, although DSP RAM
+  then matches a live 48 kHz Windows card in every DSP-consumed word while
+  running the same stream (the only differences: host addresses, `+0x80`
+  before its settle, the per-period statistics, and `+0xf4`, which stays 1
+  on Windows because the vendor stops and restarts its stream once at
+  load). The idle stop and restart around a PCM stream work on the card.
+  Still differing: the interface-state area at `0x7648..`, which holds
+  live box status on Windows and the defaults on Linux, while Windows runs
+  the metering mailbox exchange continuously.
 - **Device configure (now written, run on a card, no lock yet).** A 48 kHz
   Linux stream ran cleanly, but nothing reached the outputs and the
   interfaces never locked. The parameter group, the mixer program and the
