@@ -160,7 +160,7 @@ does not:
 | `+0xf4` | `1` | 0 | stop acknowledge / parameter group |
 | `+0xf8/+0xfc` | host address / `0x32cfc` | 0 | `+0x100` copy (host source, card destination) |
 | `+0x114` | `1` | 0 | commit of the parameter group |
-| `0x7648..0x7984` | live box status | `ff000000` defaults | presumably the DSP once the clock runs; no host writer |
+| `0x7648..0x7984` | incoming box samples | `ff000000`/`0` fill, a few live words | **FPGA input block**: the per-frame QDMA in from CE0 (raw incoming AudioWire frames, 24-bit samples sign-extended, fill where no box answers). No DSP or host store; the difference is the boxes' silence, a symptom (corrected 2026-11-16) |
 | `0x7c68..0x7c84`, `0x7ca4..0x7cb8` | channel lists `0x27..0x2e`, `0x10..0x17`, `0x19..0x26` | 0 | metering requests `[+0x24]/[+0x28]` (`0x24960`, host-chosen; metering only) |
 | `0x8348..0x8355` (`[+0x14]`) | 14 bytes `0x19..0x26` (14 = `+0x68`) | 0 | channel map, configure step `0x26760` at stream start |
 | `0x8d40..0x8e04`, `0x8ff0..0x8ffc` | structured non-zero tables | 0 | not attributed yet |

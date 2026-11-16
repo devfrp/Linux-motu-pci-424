@@ -117,13 +117,16 @@ after bring-up beyond the stream start, and when. The RAM diff in
   not.
 - **Configure** (`0x26760`: channel map, `+0x58/+0x68/+0x6c`): at every
   stream start (`0x13b30`), then `+0x60`, `+0x64`, the ring, `+0x54 ← 1`.
-- **Mailbox** (`0x2a190`): **metering only**, never needed for clock or
-  audio. `0x24960` sends the channels the host has meters open for (the
-  channel-map byte encoding, at most 0x30 bytes = hw slot `+0x34`),
-  bank-selects with `+0x7c`, polls `+0x30 == 0` and reads 26 dwords of
-  peaks; `0x24420` resets it. The lists are host-chosen. The interface-state
-  area at `0x7648..` is presumably maintained by the DSP once the clock runs;
-  nothing on the host writes it.
+- **Metering** (`0x2a190`, `0x24960`): **not a mailbox**, and never needed
+  for clock or audio. The DSP runs its peak-meter section every frame,
+  request or not: `+0x30` is a busy flag set and cleared around it, and
+  `+0x7c` only picks the bank the results land in. The host's "poll
+  `+0x30 == 0`" is a double-buffer wait before it reads the 26-dword bank.
+  The DSP never reads `+0x30`, `+0x34` or `+0x1c..+0x28`, and the section
+  stores nothing outside the meter area: a Windows card running the
+  metering exchange sends the boxes exactly what an idle Linux card sends.
+  `0x7648..` is the FPGA's input block (`register-map.md`), not state the
+  DSP maintains.
 
 - **At driver start** (live dumps of a Windows card, issue #2,
   2026-11-06): both interfaces lock during the Windows boot screen, before
@@ -247,9 +250,11 @@ parameter group per rate, not implemented.
   before its settle, the per-period statistics, and `+0xf4`, which stays 1
   on Windows because the vendor stops and restarts its stream once at
   load). The idle stop and restart around a PCM stream work on the card.
-  Still differing: the interface-state area at `0x7648..`, which holds
-  live box status on Windows and the defaults on Linux, while Windows runs
-  the metering mailbox exchange continuously.
+  A first load after a full power-off (2026-11-16) does not lock either,
+  and the out-frame block the DSP sends the FPGA (`0x7308..0x7648`)
+  matches Windows apart from a counter and a transient per-period control
+  flag. The host side looks exhausted; what remains is what the FPGA puts
+  on the AudioWire cable.
 - **Device configure (now written, run on a card, no lock yet).** A 48 kHz
   Linux stream ran cleanly, but nothing reached the outputs and the
   interfaces never locked. The parameter group, the mixer program and the
