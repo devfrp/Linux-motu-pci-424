@@ -13,9 +13,13 @@ and its AudioWire breakout interfaces (2408, 24I/O, 828, HD192, 896HD, …).
 > sequence (FPGA image through the DSP's GPIO, DSP program, mailbox) has been
 > run with `tools/motu424-bringup`, and the driver now does the same when it binds
 > with `request_firmware()` (see [Firmware](#firmware)). Audio is DSP
-> bus-master DMA from a host ring. The stream path has run on a card, but the
-> outputs were silent until the vendor's device configure, which is now written
-> and not yet tested. Streaming stays off unless `motu424.frame_bytes=96`.
+> bus-master DMA from a host ring. On a real card the load, the vendor's
+> device configure and the stream all run, and the card detects its AudioWire
+> interfaces, but the interfaces never lock to it, so nothing plays. Every
+> host-visible register and DSP word now matches a locked Windows card; the
+> missing piece is in the card-to-interface direction and needs a scope or a
+> traced Windows VM to find ([`docs/transport.md`](docs/transport.md), Open).
+> Streaming stays off unless `motu424.frame_bytes=96`.
 > Playback only, 48 kHz only, PCI-424 (`137a:0004`) only for now.
 
 ## Quick start

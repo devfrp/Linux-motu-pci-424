@@ -93,7 +93,9 @@ has passed (`vendor-driver-map.md`, devext `+0x1f0`).
 - Window B `0x30000/0x32800` (`+0x0c/+0x10`): the DSP's two 0x2800-byte
   **mixer-program buffers**, not PCM. The Windows-configured card held two
   generations: 0x5bc bytes at `0x30000` and 0x4fc bytes at `0x32800`, the one
-  in use (`+0x78 = 0x32800`).
+  in use (`+0x78 = 0x32800`). That image followed a desktop session with
+  CueMix; after a plain boot `0x30000` is all zeros, so the driver start
+  hands over one program.
 
 ## Device configure (issue #2, 2026-10-20)
 
@@ -253,8 +255,30 @@ parameter group per rate, not implemented.
   A first load after a full power-off (2026-11-16) does not lock either,
   and the out-frame block the DSP sends the FPGA (`0x7308..0x7648`)
   matches Windows apart from a counter and a transient per-period control
-  flag. The host side looks exhausted; what remains is what the FPGA puts
-  on the AudioWire cable.
+  flag (`0x1000` at `0x7378 + n*0x64`, set from the incoming slot word's
+  dispatch entry, never by the host; Linux images show it too). Windows
+  hands over exactly one mixer program at driver start, the one Linux
+  replays.
+- **Where the hardware work stops (2026-11-17).** With both AudioWire
+  cables unplugged, the status word at words 1 and 3 of each 104-word
+  input half (`0x764c/0x7654`, `0x77ec/0x77f4`) drops from `ff000bc3` to
+  `ff000bc0`: its low nibble is the mask of ports with a box present (`3` =
+  the 2408mk3 and the 24I/O), on Linux exactly as on Windows. The per-port
+  control-slot words (slots 28 and 53, an `f7` byte) also arrive on Linux
+  and vanish unplugged. So the **receive side of the link is up on a
+  Linux-started card**: both boxes are detected and their slot words are
+  decoded. The status header carries no lock bit (locked Windows and
+  unlocked Linux both read `0bc3` at 48 kHz); the slot words' upper bytes
+  differ and are not decoded. What fails is the card-to-box direction:
+  the Linux-started FPGA does not transmit, or transmits something the
+  boxes will not slave to, or does not answer something in their slot
+  words. Every DSP-visible input to the FPGA (image, EMIF, CE1 words,
+  `+0x80`, the out-frames, QDMA, TOUT1) matches Windows, so none of that is
+  visible from the host. Next steps need new instruments: a scope or
+  logic analyzer on the cable or the FPGA's transmit pins, a Windows VM
+  with the card passed through (VFIO, with QEMU tracing every BAR access,
+  including those during the lock at driver start), or a KDNET kernel-debug
+  session on Windows.
 - **Device configure (now written, run on a card, no lock yet).** A 48 kHz
   Linux stream ran cleanly, but nothing reached the outputs and the
   interfaces never locked. The parameter group, the mixer program and the

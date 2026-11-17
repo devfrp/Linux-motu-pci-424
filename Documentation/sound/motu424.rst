@@ -124,9 +124,12 @@ Current status and limitations
   pointer) has run on a card: interrupts, wrap and position are right, but
   the outputs stayed silent and the interfaces did not lock without the
   vendor's device configure. That configure (parameter group, optional
-  mixer program, channel map) is now written as reversed from the vendor
-  driver, but has not run on a card yet. The channel map is the one Windows
-  used for a 2408mk3 and a 24I/O.
+  mixer program, channel map, optional idle stream) has since run on a
+  card and matches a locked Windows card in every DSP-consumed word, and
+  the card detects its interfaces, but they still do not lock: the
+  remaining difference is in the card-to-interface direction, out of the
+  host's sight. The channel map is the one Windows used for a 2408mk3 and
+  a 24I/O.
 - Only the PCI-424 (``0x0004``) is supported. The PCI-324 loads its FPGA
   through different registers, and the PCIe-424 has not been checked on a
   card.

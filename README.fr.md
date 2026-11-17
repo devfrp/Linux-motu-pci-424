@@ -13,9 +13,14 @@ et ses interfaces de sortie AudioWire (2408, 24I/O, 828, HD192, 896HD, …).
 > aux lettres) a tourné avec `tools/motu424-bringup`, et le pilote fait
 > désormais la même chose quand il s'attache à la carte, avec `request_firmware()`
 > (voir [Firmware](#firmware)). L'audio passe par le DMA du DSP depuis un anneau
-> en mémoire hôte. Le chemin de flux a tourné sur une carte, mais les sorties
-> restaient muettes faute de la configuration constructeur, désormais écrite et
-> pas encore testée. Le flux reste coupé sauf avec `motu424.frame_bytes=96`.
+> en mémoire hôte. Sur une vraie carte, le chargement, la configuration
+> constructeur et le flux tournent, et la carte détecte ses interfaces
+> AudioWire, mais celles-ci ne se verrouillent jamais sur elle : rien ne sort.
+> Tous les registres et mots du DSP visibles depuis l'hôte correspondent
+> désormais à une carte Windows verrouillée ; la pièce manquante est dans le
+> sens carte vers interfaces, et il faut un oscilloscope ou une VM Windows
+> tracée pour la trouver ([`docs/transport.md`](docs/transport.md), Open).
+> Le flux reste coupé sauf avec `motu424.frame_bytes=96`.
 > Lecture seule, 48 kHz seulement, PCI-424
 > (`137a:0004`) seulement pour l'instant.
 
