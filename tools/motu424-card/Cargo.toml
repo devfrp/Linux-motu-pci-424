@@ -1,0 +1,10 @@
+[package]
+name = "motu424-card"
+description = "Find a MOTU PCI-324/424 in sysfs and reach its BARs from userspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+libc.workspace = true
+sha2.workspace = true

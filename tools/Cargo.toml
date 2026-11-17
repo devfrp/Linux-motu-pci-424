@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# The userspace tools for the motu424 driver, one Cargo workspace.
+# Build them all with `cargo build --release` from this directory; the
+# binaries land in tools/target/release/.
+
+[workspace]
+resolver = "2"
+members = ["motu424-card", "cuemix-studio"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+rust-version = "1.87"
+
+[workspace.dependencies]
+motu424-card = { path = "motu424-card" }
+libc = "0.2"
+sha2 = "0.10"
+
+[profile.release]
+opt-level = 3

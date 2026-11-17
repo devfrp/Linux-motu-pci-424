@@ -12,9 +12,8 @@
 modules.order
 Module.symvers
 
-# Userspace tools
-tools/motu424-probe
-tools/motu424-ctl
+# Userspace tools (Cargo workspace in tools/)
+tools/target/
 __pycache__/
 
 # Local test captures (tools/stream-run.sh); attach them to issues instead
