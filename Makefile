@@ -41,7 +41,7 @@ unload:
 	sudo rmmod $(MODNAME)
 
 probe: tools
-	./tools/motu424-probe
+	./tools/target/release/motu424-probe
 
 ctl: tools
 	-./tools/motu424-ctl

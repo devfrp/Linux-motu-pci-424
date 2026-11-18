@@ -161,7 +161,7 @@ build_tools() {
 	log "building userspace tools"
 	make tools
 	log "installing tools to /usr/local/bin"
-	$SUDO install -m0755 tools/motu424-probe /usr/local/bin/ 2>/dev/null || \
+	$SUDO install -m0755 tools/target/release/motu424-probe /usr/local/bin/ 2>/dev/null || \
 		warn "motu424-probe not installed"
 	if [ -x tools/motu424-ctl ]; then
 		$SUDO install -m0755 tools/motu424-ctl /usr/local/bin/

@@ -1,0 +1,9 @@
+[package]
+name = "motu424-probe"
+description = "Enumerate and dump the BARs of a MOTU PCI-324/424 for reverse engineering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+motu424-card.workspace = true
