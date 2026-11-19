@@ -4,7 +4,7 @@ CFLAGS  ?= -O2 -Wall -Wextra
 CARGO   ?= cargo
 
 # The Rust tools build with Cargo into target/release/.
-RUST_TOOLS := motu424-probe
+RUST_TOOLS := motu424-probe motu424-portregs
 
 # motu424-ctl needs alsa-lib (libasound + headers). Detect it so a machine
 # without the ALSA dev package still builds the other tools.

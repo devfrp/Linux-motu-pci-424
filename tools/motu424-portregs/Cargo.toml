@@ -1,0 +1,9 @@
+[package]
+name = "motu424-portregs"
+description = "Read and decode the PCI-424's three HPI port registers (read-only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+motu424-card.workspace = true

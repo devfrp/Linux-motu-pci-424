@@ -6,7 +6,7 @@
 
 [workspace]
 resolver = "2"
-members = ["motu424-card", "motu424-probe", "cuemix-studio"]
+members = ["motu424-card", "motu424-probe", "motu424-portregs", "cuemix-studio"]
 
 [workspace.package]
 version = "0.1.0"
