@@ -1,0 +1,9 @@
+[package]
+name = "motu424-bringup"
+description = "Replay the vendor bring-up of a MOTU PCI-424 from userspace (dry run by default)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+motu424-card.workspace = true

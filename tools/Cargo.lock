@@ -1386,6 +1386,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "motu424-bringup"
+version = "0.1.0"
+dependencies = [
+ "motu424-card",
+]
+
+[[package]]
 name = "motu424-card"
 version = "0.1.0"
 dependencies = [
