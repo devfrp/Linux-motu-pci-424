@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Scripted stream test on the PCI-424: load the module, sample the DSP's ring
-# position with motu424-ringwatch.py before, during and after a 12 s
+# position with motu424-ringwatch before, during and after a 12 s
 # speaker-test, unload, and diff lspci.  Run from a terminal, from the repo
 # root, with the firmware images installed under /lib/firmware/motu424/:
 #
@@ -14,6 +14,11 @@
 set -u
 cd "$(dirname "$0")/.."
 RUN=${RUN:-run1}
+RINGWATCH=tools/target/release/motu424-ringwatch
+if [ ! -x "$RINGWATCH" ]; then
+    echo "$RINGWATCH not built; run: make tools" >&2
+    exit 1
+fi
 ARGS=${ARGS:-"frame_bytes=96"}
 OUT=reports/$(date +%Y-%m-%d)-stream-$RUN
 if [ -e "$OUT" ]; then
@@ -66,10 +71,10 @@ fi
 log "ALSA card $CARD"
 
 log "idle sample (2 s, DSP running, no stream)"
-python3 tools/motu424-ringwatch.py $WATCHARGS --duration 2 2>&1 | tee "$OUT/ringwatch-idle.txt"
+"$RINGWATCH" $WATCHARGS --duration 2 2>&1 | tee "$OUT/ringwatch-idle.txt"
 
 log "stream: speaker-test 24ch 48k S32_LE sine (channels 0-3 get signal in 12 s), 15 s sampler"
-python3 tools/motu424-ringwatch.py $WATCHARGS --duration 15 --interval 0.05 \
+"$RINGWATCH" $WATCHARGS --duration 15 --interval 0.05 \
     > "$OUT/ringwatch-stream.txt" 2>&1 &
 WATCH=$!
 # Snapshot the negotiated hw_params and the PCM status while the stream is open.
@@ -90,7 +95,7 @@ grep -E 'motu424|firewire' /proc/interrupts > "$OUT/irq-after.txt" 2>/dev/null |
 dmesg -T | grep -i motu424 | tail -20 > "$OUT/dmesg-stream.txt"
 
 log "post-stream sample (2 s)"
-python3 tools/motu424-ringwatch.py $WATCHARGS --duration 2 2>&1 | tee "$OUT/ringwatch-after.txt"
+"$RINGWATCH" $WATCHARGS --duration 2 2>&1 | tee "$OUT/ringwatch-after.txt"
 
 log "unload module"
 rmmod motu424 2>&1 | tee -a "$OUT/run.log"

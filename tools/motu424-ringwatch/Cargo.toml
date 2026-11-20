@@ -1,0 +1,9 @@
+[package]
+name = "motu424-ringwatch"
+description = "Sample the DSP's published ring position while the motu424 driver streams (read-only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+motu424-card.workspace = true
