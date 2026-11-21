@@ -163,8 +163,8 @@ build_tools() {
 	log "installing tools to /usr/local/bin"
 	$SUDO install -m0755 tools/target/release/motu424-probe /usr/local/bin/ 2>/dev/null || \
 		warn "motu424-probe not installed"
-	if [ -x tools/motu424-ctl ]; then
-		$SUDO install -m0755 tools/motu424-ctl /usr/local/bin/
+	if [ -x tools/target/release/motu424-ctl ]; then
+		$SUDO install -m0755 tools/target/release/motu424-ctl /usr/local/bin/
 	else
 		warn "motu424-ctl not built (alsa-lib dev missing) - mixer app unavailable"
 	fi

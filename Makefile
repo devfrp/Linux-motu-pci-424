@@ -44,4 +44,4 @@ probe: tools
 	./tools/target/release/motu424-probe
 
 ctl: tools
-	-./tools/motu424-ctl
+	-./tools/target/release/motu424-ctl

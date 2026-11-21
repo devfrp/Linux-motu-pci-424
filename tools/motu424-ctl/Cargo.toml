@@ -1,0 +1,10 @@
+[package]
+name = "motu424-ctl"
+description = "CueMix-style management CLI for the motu424 ALSA driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+alsa-sys = "0.3"
+motu424-card.workspace = true
