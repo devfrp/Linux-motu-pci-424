@@ -46,6 +46,7 @@ fn run() -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    motu424_card::restore_sigpipe();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

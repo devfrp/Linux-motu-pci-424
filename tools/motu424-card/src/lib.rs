@@ -40,6 +40,13 @@ pub const PORT_HSR: u64 = 0x0;
 pub const PORT_HDCR: u64 = 0x4;
 pub const PORT_DSPP: u64 = 0x8;
 
+/// Die quietly on a closed pipe (`tool | head`) like a C tool, instead of
+/// panicking on the next print. Call first thing in `main`.
+pub fn restore_sigpipe() {
+    // SAFETY: resets one signal disposition to the default before any thread starts.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+}
+
 /// Human name of a MOTU device ID.
 pub fn model_name(device: u32) -> &'static str {
     match device {

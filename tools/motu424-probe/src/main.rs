@@ -121,6 +121,7 @@ fn handle(dev: &Device, target: Option<(u64, u64)>) {
 }
 
 fn main() -> ExitCode {
+    motu424_card::restore_sigpipe();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let want = args.first().map(String::as_str);
     let target = args.get(1).map(|o| {

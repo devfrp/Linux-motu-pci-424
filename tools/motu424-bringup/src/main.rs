@@ -429,6 +429,7 @@ fn load_fw(path: &str, want: usize, sha: &str) -> Vec<u8> {
 }
 
 fn main() {
+    motu424_card::restore_sigpipe();
     let mut dry = true;
     let mut yes = false;
     let mut unmask = false;

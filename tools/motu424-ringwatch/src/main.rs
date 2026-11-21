@@ -105,6 +105,7 @@ fn irq_count() -> Option<u64> {
 }
 
 fn main() {
+    motu424_card::restore_sigpipe();
     let o = parse_opts();
     let dev = find_card(o.bdf.as_deref()).unwrap_or_else(|e| die(e));
     let ab = o.audio_base.or_else(audio_base_from_dmesg).unwrap_or(0x6fac);
