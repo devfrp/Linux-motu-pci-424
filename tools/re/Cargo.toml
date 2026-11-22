@@ -1,0 +1,9 @@
+[package]
+name = "motu424-re"
+description = "Static reverse-engineering helpers for the MOTU PCI-424 (vendor driver and DSP program)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+motu424-card.workspace = true

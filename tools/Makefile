@@ -2,7 +2,7 @@
 CARGO   ?= cargo
 
 # The Rust tools build with Cargo into target/release/.
-RUST_TOOLS := motu424-probe motu424-portregs motu424-bringup motu424-ringwatch
+RUST_TOOLS := motu424-probe motu424-portregs motu424-bringup motu424-ringwatch motu424-re
 
 # motu424-ctl links alsa-lib (libasound + headers, found by pkg-config).
 # Detect it so a machine without the ALSA dev package still builds the rest.

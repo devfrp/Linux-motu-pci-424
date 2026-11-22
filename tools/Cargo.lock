@@ -1433,6 +1433,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "motu424-re"
+version = "0.1.0"
+dependencies = [
+ "motu424-card",
+]
+
+[[package]]
 name = "motu424-ringwatch"
 version = "0.1.0"
 dependencies = [
