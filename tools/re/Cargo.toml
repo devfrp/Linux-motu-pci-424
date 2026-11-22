@@ -7,3 +7,4 @@ license.workspace = true
 
 [dependencies]
 motu424-card.workspace = true
+capstone = { version = "0.14", default-features = false, features = ["full", "arch_tms320c64x", "arch_x86"] }
