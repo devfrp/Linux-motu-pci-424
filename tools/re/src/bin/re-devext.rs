@@ -17,6 +17,7 @@
 //!
 //!     re-devext [--detail OFFSET]
 
+use capstone::arch::x86::X86Reg;
 use motu424_re::{parse_int, pe_sections, read_or_exit, x86_capstone, x86_sweep, Operand, X86Insn};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,7 +25,7 @@ const PATH: &str = "vendor/MOTUAW.sys";
 
 /// Capstone x86 register IDs of the stack registers. Accesses relative to
 /// them are locals and arguments, not device-extension fields.
-const STACK_REGS: [u16; 2] = [4, 5];
+const STACK_REGS: [u16; 2] = [X86Reg::X86_REG_ESP as u16, X86Reg::X86_REG_EBP as u16];
 
 /// Crude read/write classification of an instruction's memory operand.
 fn classify_rw(i: &X86Insn) -> &'static str {
