@@ -15,7 +15,7 @@
 #   ./install.sh --no-dkms       # plain `make install` instead of DKMS
 #   ./install.sh --no-load       # do not modprobe/insmod at the end
 #   ./install.sh --tools-only    # just build the userspace tools
-#   ./install.sh --gui           # also install the GTK GUI + its runtime deps
+#   ./install.sh --gui           # also build + install the GUI (cuemix-studio)
 #   ./install.sh --uninstall     # remove the module + tools
 #   ./install.sh -h              # help
 #
@@ -123,15 +123,14 @@ detect_pm() {
 
 	KH=$(kernel_headers_pkg "$PM")
 	case "$PM" in
-	pacman) DEPS="base-devel dkms alsa-lib $KH";   GUI_DEPS="python-gobject gtk4" ;;
-	apt)    DEPS="build-essential dkms pkg-config libasound2-dev $KH"; GUI_DEPS="python3-gi gir1.2-gtk-4.0" ;;
-	dnf|yum) DEPS="gcc make dkms pkgconf-pkg-config alsa-lib-devel $KH"; GUI_DEPS="python3-gobject gtk4" ;;
-	zypper) DEPS="gcc make dkms pkg-config alsa-devel $KH"; GUI_DEPS="python3-gobject typelib-1_0-Gtk-4_0" ;;
-	apk)    DEPS="build-base dkms pkgconf alsa-lib-dev $KH"; GUI_DEPS="py3-gobject3 gtk4.0" ;;
-	xbps)   DEPS="base-devel dkms pkg-config alsa-lib-devel $KH"; GUI_DEPS="python3-gobject gtk4" ;;
-	unknown) DEPS=""; GUI_DEPS="" ;;
+	pacman) DEPS="base-devel dkms alsa-lib $KH" ;;
+	apt)    DEPS="build-essential dkms pkg-config libasound2-dev $KH" ;;
+	dnf|yum) DEPS="gcc make dkms pkgconf-pkg-config alsa-lib-devel $KH" ;;
+	zypper) DEPS="gcc make dkms pkg-config alsa-devel $KH" ;;
+	apk)    DEPS="build-base dkms pkgconf alsa-lib-dev $KH" ;;
+	xbps)   DEPS="base-devel dkms pkg-config alsa-lib-devel $KH" ;;
+	unknown) DEPS="" ;;
 	esac
-	if [ "$WANT_GUI" -eq 1 ]; then DEPS="$DEPS $GUI_DEPS"; fi
 }
 
 install_deps() {
@@ -168,13 +167,17 @@ build_tools() {
 	else
 		warn "motu424-ctl not built (alsa-lib dev missing) - mixer app unavailable"
 	fi
-	# GUI launcher (a Python/GTK4 script - no build). Installed always; it
-	# self-reports if its runtime deps are missing. `--gui` pulls those deps.
-	$SUDO install -m0755 tools/motu424-gui /usr/local/bin/ 2>/dev/null && {
-		$SUDO install -Dm0644 tools/motu424-gui.desktop \
-			/usr/local/share/applications/motu424-gui.desktop 2>/dev/null || true
-		[ "$WANT_GUI" -eq 1 ] || log "GUI installed: run 'motu424-gui' (needs python-gobject+gtk4; ./install.sh --gui adds them)"
-	} || warn "motu424-gui not installed"
+	# The GUI (cuemix-studio, Rust/egui) takes a few minutes to compile, so
+	# it is only built with --gui.
+	if [ "$WANT_GUI" -eq 1 ]; then
+		log "building the GUI (cuemix-studio)"
+		make gui
+		$SUDO install -m0755 tools/target/release/cuemix-studio /usr/local/bin/
+		$SUDO install -Dm0644 tools/cuemix-studio/cuemix-studio.desktop \
+			/usr/local/share/applications/cuemix-studio.desktop 2>/dev/null || true
+	else
+		log "GUI not built: ./install.sh --gui builds and installs cuemix-studio"
+	fi
 }
 
 install_dkms() {
@@ -216,6 +219,8 @@ uninstall() {
 	if have dkms; then $SUDO dkms remove "$PKG/$VER" --all 2>/dev/null || true; fi
 	$SUDO rm -rf "/usr/src/$PKG-$VER"
 	$SUDO rm -f /usr/local/bin/motu424-probe /usr/local/bin/motu424-ctl \
+		/usr/local/bin/cuemix-studio \
+		/usr/local/share/applications/cuemix-studio.desktop \
 		/usr/local/bin/motu424-gui \
 		/usr/local/share/applications/motu424-gui.desktop
 	$SUDO depmod -a || true
@@ -248,8 +253,7 @@ Next steps:
   • List the card:      aplay -l  /  arecord -l
   • Manage (CLI):       motu424-ctl            (CueMix-style status)
                         motu424-ctl list
-  • Manage (GUI):       motu424-gui            (needs python-gobject+gtk4;
-                        re-run with --gui to install those)
+  • Manage (GUI):       cuemix-studio          (built with --gui)
   • Remove everything:  ./install.sh --uninstall
 
 Firmware: the PCI-424 needs two MOTU images the driver loads at every start.

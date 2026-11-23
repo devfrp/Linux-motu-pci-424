@@ -1,8 +1,9 @@
 # cuemix-studio
 
 A cross-platform (Linux / macOS / Windows) CueMix FX-style mixing console written
-in Rust with egui. It is a sibling of `tools/motu424-gui`: same control contract,
-but a single native binary that also runs where GTK4 and the driver don't.
+in Rust with egui. It is the project's GUI: it replaced the Python/GTK4
+`motu424-gui`, with the same control contract, as a single native binary that
+also runs where the driver doesn't.
 
 - **On Linux with the `motu424` driver**, it drives the card through
   `motu424-ctl list` / `motu424-ctl set` (found in `PATH`, or set
@@ -28,13 +29,15 @@ link status). Undo/redo per gesture, copy/paste mix bus, named configurations
 ## Build & run
 
 ```sh
-cd tools/cuemix-studio
-cargo build --release
-./target/release/cuemix-studio              # real card if motu424-ctl finds one, else simulated
-./target/release/cuemix-studio --simulate   # never touch the card
-./target/release/cuemix-studio --828mk3     # the effects-capable device
-./target/release/cuemix-studio --screenshot out.png [--tab mixes|inputs|outputs|clock|channel|eq|reverb]
+make gui                                    # or: cd tools && cargo build --release -p cuemix-studio
+tools/target/release/cuemix-studio              # real card if motu424-ctl finds one, else simulated
+tools/target/release/cuemix-studio --simulate   # never touch the card
+tools/target/release/cuemix-studio --828mk3     # the effects-capable device
+tools/target/release/cuemix-studio --screenshot out.png [--tab mixes|inputs|outputs|clock|channel|eq|reverb]
 ```
+
+`./install.sh --gui` builds it and installs it with a desktop entry
+(`cuemix-studio.desktop`).
 
 ## Open points
 

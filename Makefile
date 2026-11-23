@@ -4,7 +4,8 @@
 #
 #   make            - build the kernel module (and userspace tools)
 #   make module     - build only the kernel module
-#   make tools      - build the userspace tools (probe + motu424-ctl mixer app)
+#   make tools      - build the userspace tools (Rust, Cargo workspace in tools/)
+#   make gui        - build the GUI (tools/cuemix-studio)
 #   make load       - insmod the freshly built module
 #   make unload     - rmmod the module
 #   make install    - install + depmod (needs root)
@@ -16,7 +17,7 @@ KDIR    ?= /lib/modules/$(KVER)/build
 PWD     := $(shell pwd)
 MODNAME := motu424
 
-.PHONY: all module tools clean load unload install probe ctl
+.PHONY: all module tools gui clean load unload install probe ctl
 
 all: module tools
 
@@ -25,6 +26,9 @@ module:
 
 tools:
 	$(MAKE) -C tools
+
+gui:
+	cd tools && cargo build --release -p cuemix-studio
 
 clean:
 	-$(MAKE) -C $(KDIR) M=$(PWD)/kernel clean
