@@ -4,10 +4,11 @@
 # install.sh - build & install the motu424 ALSA driver + tools on any distro.
 #
 # Detects the package manager (pacman/apt/dnf/yum/zypper/apk/xbps), installs the
-# build dependencies (kernel headers, gcc/make, alsa-lib dev, dkms), then installs
-# the kernel module via DKMS (so it survives kernel upgrades) and the userspace
-# tools (motu424-probe, motu424-ctl). Falls back to a plain in-tree build+insmod
-# when DKMS is unavailable.
+# build dependencies (kernel headers, gcc/make, alsa-lib dev, dkms, and Cargo
+# when it is missing), then installs the kernel module via DKMS (so it survives
+# kernel upgrades) and the userspace tools, written in Rust (motu424-probe,
+# motu424-ctl). Falls back to a plain in-tree build+insmod when DKMS is
+# unavailable.
 #
 #   ./install.sh                 # deps + DKMS install + tools + load
 #   ./install.sh -y              # assume "yes" for package installs
@@ -131,13 +132,21 @@ detect_pm() {
 	xbps)   DEPS="base-devel dkms pkg-config alsa-lib-devel $KH" ;;
 	unknown) DEPS="" ;;
 	esac
+	# The tools are Rust. Keep an existing toolchain (rustup's included,
+	# which the distro package would conflict with); otherwise add Cargo.
+	if ! have cargo; then
+		case "$PM" in
+		pacman) DEPS="$DEPS rust" ;;
+		apt|dnf|yum|zypper|apk|xbps) DEPS="$DEPS cargo" ;;
+		esac
+	fi
 }
 
 install_deps() {
 	[ "$DO_DEPS" -eq 1 ] || { log "skipping dependency install (--no-deps)"; return; }
 	if [ "$PM" = unknown ]; then
 		warn "unrecognised distro: install these yourself, then rerun with --no-deps:"
-		warn "  a C toolchain (gcc/make), kernel headers for $KREL, alsa-lib dev, dkms, pkg-config"
+		warn "  a C toolchain (gcc/make), kernel headers for $KREL, alsa-lib dev, dkms, pkg-config, Cargo (Rust)"
 		return
 	fi
 	[ "$NONINTERACTIVE" -eq 1 ] && \
@@ -157,7 +166,8 @@ install_deps() {
 
 # --------------------------------------------------------------------- actions
 build_tools() {
-	log "building userspace tools"
+	have cargo || die "cargo not found: the tools are Rust. Install Cargo (or rustup) and re-run"
+	log "building userspace tools (Rust)"
 	make tools
 	log "installing tools to /usr/local/bin"
 	$SUDO install -m0755 tools/target/release/motu424-probe /usr/local/bin/ 2>/dev/null || \
@@ -258,7 +268,7 @@ Next steps:
 
 Firmware: the PCI-424 needs two MOTU images the driver loads at every start.
 They are not shipped. Extract them from your own MOTUAW.sys and install them:
-    python3 tools/re/extract-firmware.py path/to/MOTUAW.sys
+    tools/target/release/extract-firmware path/to/MOTUAW.sys
     sudo install -Dm644 vendor/firmware/pci424-serial-container.bin \\
         /lib/firmware/motu424/pci424-serial-container.bin
     sudo install -Dm644 vendor/firmware/pci424-program.bin \\
