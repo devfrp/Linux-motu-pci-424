@@ -47,7 +47,7 @@ bytes. The `DEV_0004` path (shared with `DEV_0005`) uploads the first two; the
 | PCI-324 program → RAM 0 | `0x58c10` | `0x9340` = 37,696 | `1eae8bad11249f94` |
 | PCI-324 data → `0x80000000` | `0x55590` | `0x3680` = 13,952 | `02b75d8d65e0a192` |
 
-`tools/re/extract-firmware.py` cuts all of them out of a user-supplied
+`extract-firmware` (`tools/re/`) cuts all of them out of a user-supplied
 `MOTUAW.sys`, verifies the hashes, and writes them to `vendor/firmware/`
 (git-ignored). The image bytes are MOTU's and are **never committed or
 redistributed**.
@@ -144,7 +144,7 @@ no firmware IOCTL, because the driver needs none.
   `motu424/pci424-program.bin` (the extractor's names, under
   `/lib/firmware/motu424/`).
 - The user extracts the files from their own installer with
-  `tools/re/extract-firmware.py`. The images are MOTU's; they are **not**
+  `extract-firmware` (`tools/re/`). The images are MOTU's; they are **not**
   shipped with the driver and not committed to this repository.
 - Replay steps 1–5 in `motu424_hw_init()`, then take `audio_base`,
   `mix_base` and the rest from the published block; the `audio_base=` /
@@ -207,7 +207,7 @@ product rather than to any AudioWire card, and is out of scope here.
 
 ## IOCTL interface — fully mapped (CONFIRMED, no card)
 
-Traced the whole `IRP_MJ_DEVICE_CONTROL` path with `tools/re/xref.py`:
+Traced the whole `IRP_MJ_DEVICE_CONTROL` path with `xref` (`tools/re/`):
 
 ```
 DriverEntry (init sec, VA 0x63000)

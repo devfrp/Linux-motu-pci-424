@@ -115,8 +115,9 @@ The talkback rows map the layout's `ATTEN`/`TALK`/`LISTEN` labels; which input
 feeds the talkback circuit (a CueMix FX settings dialog on Windows/macOS) is
 still an open question.
 
-These names are the contract between the kernel driver and `motu424-ctl`; keep
-them in sync with `tools/motu424-ctl.c` (`KNOWN_*` tables) if either changes.
+These names are the contract between the kernel driver, `motu424-ctl` and
+cuemix-studio, which parses them (`tools/cuemix-studio/src/hw.rs`); keep them
+in sync if either side changes.
 
 ### Hardware sink (recovered)
 

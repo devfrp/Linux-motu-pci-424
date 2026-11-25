@@ -34,7 +34,7 @@ Recorded in `kernel/motu424.h` and the README; see also the RE memory notes.
   PCI-424 is **host-loaded at every device start**: a 37,177-byte serial FPGA
   image through the C6412's GPIO, then a 28,272-byte C64x program into DSP
   RAM at 0. Both images are embedded in `MOTUAW.sys` (extract with
-  `tools/re/extract-firmware.py`; never redistributed). The PCI-324 path has
+  `extract-firmware` (`tools/re/`); never redistributed). The PCI-324 path has
   its own images. `HDExpress_FullImageRun.bin` (ARM SoC + Xilinx Virtex) is
   most likely the HD Express video product's, not an AudioWire card's. See
   `docs/fpga-upload.md`.
@@ -46,15 +46,15 @@ Everything below turns these shapes into exact, implementable semantics.
 ## Phase 0 — Tooling & ground truth (no card)
 
 - [x] **0.1 Better disassembler.** **[DONE]** Started lightweight with
-  `tools/re/xref.py` (capstone-based, runs in a venv): a resume-past-data linear
+  `xref` (`tools/re/`, capstone-based; Python at the time, Rust since 2026-11): a resume-past-data linear
   sweep of `.text` answering `callers <va>`, `fn <va>`, `imm <val>`,
   `mem <disp>`, and `vcalls` — enough to list direct callers of any VA and
   locate virtual-dispatch sites by slot, but with **no type recovery**, so C++
   object identity/layout (which vtable a `this` holds) had to be inferred by
   hand. **Update (2026-07-11): `rz-ghidra` is in fact available** (Arch
   `extra/rizin` + `extra/rz-ghidra`); its `pdg` decompiler *does* the type
-  recovery `xref.py` lacked and resolved the interface-object dispatch that
-  closed Phase 3.5. Both tools are now in play — `xref.py` for fast callers/xref
+  recovery `xref` lacked and resolved the interface-object dispatch that
+  closed Phase 3.5. Both tools are now in play — `xref` for fast callers/xref
   queries, `rz-ghidra` when a function's C++ object graph must be decompiled.
 - [x] **0.2 Symbol/type recovery.** **[CLOSED — top-level struct + all three
   sub-objects identified]** MOTUAW.sys is C++ with RTTI-ish strings and source
@@ -95,7 +95,7 @@ Everything below turns these shapes into exact, implementable semantics.
   register encodings remain OPEN (behind C++ vtables; need a card or xref RE).
 - [x] **1.2 Reset / init sequence.** **[DONE for statics]** Traced the
   `IRP_MN_START_DEVICE` resource-list translator (`fn 0x28ee0`, via
-  `xref.py`): Port resource → port-BAR base (a zero base aborts the parse
+  `xref`): Port resource → port-BAR base (a zero base aborts the parse
   loop early, WMI-logged as event `0x7a` — mandatory in practice, exact
   return status not pinned); Interrupt resource → Level/Vector/Affinity/mode
   (boilerplate);
@@ -138,7 +138,7 @@ The single biggest unknown that gates *any* audio.
   characterised as a 24-byte-header container = **ARM firmware + Xilinx Virtex
   bitstream + config records**, sum32 payload checksum verified. Resolved:
   `altera424b.rbf` is embedded in `MOTUAW.sys` as the data fork of an
-  AppleSingle container; `tools/re/extract-firmware.py` cuts it out.
+  AppleSingle container; `extract-firmware` (`tools/re/`) cuts it out.
 
 ## Phase 3 — Audio transport, clock & IRQ semantics (no card)
 
@@ -290,7 +290,7 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
 **Update (2026-07-11): `rz-ghidra` was available after all** (Arch
 `extra/rizin` + `extra/rz-ghidra`; the earlier "not installable" note was
 wrong). Its decompiler (`pdg`) resolved the C++ virtual dispatch that
-`objdump`/`xref.py` could not, closing **Phase 3.5** (breakout channel
+`objdump`/`xref` could not, closing **Phase 3.5** (breakout channel
 enumeration = descriptor deserialization, not a static table — see above and
 `vendor-driver-map.md`). What remains open needs one of:
 

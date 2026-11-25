@@ -87,10 +87,12 @@ There is no unit-test harness (kernel module). Verification is empirical:
 
 ## Reverse-engineering workflow
 
-`tools/motu424-probe.c` (plain userspace C, no kernel headers) scans
-`/sys/bus/pci` for vendor `0x137A` and dumps BAR0 via `resource0`. Use it with
-the driver **unbound** to locate registers by diffing idle vs. streaming dumps.
-`tools/re/` holds the static-RE helpers (`vtable-scan.py`, `xref.py`). Record
+The userspace tools are Rust, one Cargo workspace in `tools/` (`make tools`).
+`motu424-probe` scans `/sys/bus/pci` for vendor `0x137A`, classifies the BARs
+and dumps them through the sysfs `resourceN` files. Use it with the driver
+**unbound** to locate registers by diffing idle vs. streaming dumps;
+`motu424-ringwatch` reads the DSP's ring position while the driver streams.
+`tools/re/` holds the static-RE helpers (`vtable-scan`, `xref`, `dis-c64x`). Record
 confirmed offsets in `motu424.h` and the docs as they are established. Vendor ID
 `0x137A` = Mark of the Unicorn; the register semantics recovered so far are
 documented in `docs/`.

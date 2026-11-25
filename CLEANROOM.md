@@ -25,9 +25,9 @@ driver `MOTUAW.sys` (and, for the FPGA question, the shipped installer images).
 The methods, all read-only and non-executing:
 
 - disassembly with `objdump` (the binary is never run);
-- `tools/re/vtable-scan.py` — resolves C++ vtable slots to function addresses by
-  scanning read-only data for pointer runs into `.text`;
-- `tools/re/xref.py` — a capstone-based cross-referencer (callers, function
+- `vtable-scan` (`tools/re/`) — resolves C++ vtable slots to function
+  addresses by scanning read-only data for pointer runs into `.text`;
+- `xref` (`tools/re/`) — a capstone-based cross-referencer (callers, function
   bodies, immediate/displacement uses, indirect-call sites);
 - `strings` for human-readable markers (debug format strings, filenames).
 

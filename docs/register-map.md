@@ -173,7 +173,7 @@ are in the write list below and in `transport.md` (Device configure).
 
 ### Which offsets the DSP program loads and stores (`--fields`, issue #2)
 
-Audiosyncrasy's `tools/re/dis-c64x.py --fields --dp 0x6e70 --ab 0x6fac` over
+Audiosyncrasy's `dis-c64x --fields --dp 0x6e70 --ab 0x6fac` (`tools/re/`) over
 the program, after the load/store fixes of PR #9: 211 access sites at 93
 offsets (summary attached to issue #2, 2026-10-17). The fixes corrected the
 offset of eight byte and halfword sites and left the others unchanged:
@@ -364,7 +364,7 @@ writes, the driver classifies the requested Hz into per-object state bytes:
   1x/2x/4x **clock-source/rate-mode selector**. Mapping each enum value to the
   concrete `base+0x64` dword needs the virtual dispatch traced or a card.
 
-**Partial trace (via `tools/re/xref.py`, LOW confidence).** A transport-arm
+**Partial trace (via `xref`, LOW confidence).** A transport-arm
 routine `fn 0x13c30` (12 callers) dispatches, on a hardware object held at
 `driver+0x16884`: slot `0x0`(increment/family) ← **2**, slot `0x8`(param →
 `base+0x64`) ← **4**, then slot `0x4`(enable) ← **1**, and calls a DMA-setup

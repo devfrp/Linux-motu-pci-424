@@ -78,15 +78,14 @@
     <div class="container">
       <div class="head">
         <h2>What ships</h2>
-        <p class="lead">A driver, three control apps, and an installer that works on any distribution.</p>
+        <p class="lead">A driver, two control apps and the RE tools, all the userspace in Rust, and an installer that works on any distribution.</p>
       </div>
       <ul class="rows">
         <li><h3>ALSA module</h3><span class="kind">Kernel</span><p>Clean three-layer split, fully devm/pcim-managed, DKMS-packaged so it rebuilds itself across kernel upgrades.</p></li>
-        <li><h3><code>motu424-ctl</code></h3><span class="kind">Control, CLI</span><p>The Linux CueMix FX over alsa-lib: clock source, sample rate, per-input trim/pad/phase, and the input×bus monitor matrix.</p></li>
-        <li><h3><code>motu424-gui</code></h3><span class="kind">Control, GUI</span><p>A GTK4 CueMix-style mixing console: channel strips with faders, peak-hold meters and rotary pan pots, snapshots, undo, a virtual FX insert preview, previewable card-less with --demo.</p></li>
-        <li><h3><code>cuemix-studio</code></h3><span class="kind">Control, console</span><p>One Rust binary for Linux, macOS and Windows: drives the card through motu424-ctl on Linux, runs a simulated rig anywhere else, and adds the 828mk3 EQ, dynamics and reverb pages.</p></li>
+        <li><h3><code>motu424-ctl</code></h3><span class="kind">Control, CLI</span><p>The Linux CueMix FX over alsa-lib, in Rust like every tool here: clock source, sample rate, per-input trim/pad/phase, and the input×bus monitor matrix.</p></li>
+        <li><h3><code>cuemix-studio</code></h3><span class="kind">Control, GUI</span><p>The mixing console, one Rust binary for Linux, macOS and Windows: drives the card through motu424-ctl on Linux, runs a simulated rig anywhere else, and adds the 828mk3 EQ, dynamics and reverb pages.</p></li>
         <li><h3>Any distro</h3><span class="kind">Install</span><p>Detects pacman/apt/dnf/zypper/apk/xbps, pulls deps, installs via DKMS. Non-interactive under curl | sh.</p></li>
-        <li><h3>Clean-room RE</h3><span class="kind">Toolkit</span><p>A capstone cross-referencer and a C++ vtable resolver; every recovered fact is written down with its evidence.</p></li>
+        <li><h3>Clean-room RE</h3><span class="kind">Toolkit</span><p>A capstone cross-referencer, a C++ vtable resolver and a C64x disassembler, all Rust; every recovered fact is written down with its evidence.</p></li>
         <li><h3>Facts-only, GPL</h3><span class="kind">License</span><p>Only offsets, formats and sequences enter the GPL-2.0 sources. Vendor binaries are never redistributed.</p></li>
       </ul>
     </div>
@@ -160,7 +159,7 @@
     <div class="container">
       <div class="head">
         <h2>Install</h2>
-        <p class="lead">The one-liner fetches the sources and runs the installer: dependencies, DKMS module, tools. Add --gui for the graphical panel.</p>
+        <p class="lead">The one-liner fetches the sources and runs the installer: dependencies, DKMS module, tools. Add --gui to build the console.</p>
       </div>
       <div class="install">
         <figure class="code">
@@ -168,7 +167,7 @@
 <pre><span class="c"># deps + DKMS module + tools + load</span>
 curl -fsSL https://raw.githubusercontent.com/<span class="f">devfrp/Linux-motu-pci-424</span>/main/get.sh | sh
 
-<span class="c"># with the GTK GUI</span>
+<span class="c"># with the console (cuemix-studio)</span>
 curl -fsSL …/get.sh | sh -s -- <span class="f">--gui</span></pre>
         </figure>
         <figure class="code">
@@ -178,7 +177,7 @@ cd motu-pci-424
 ./install.sh            <span class="c"># or: make &amp;&amp; make load</span>
 
 motu424-ctl             <span class="c"># CueMix status (CLI)</span>
-motu424-gui             <span class="c"># graphical panel</span></pre>
+cuemix-studio           <span class="c"># mixing console (--gui)</span></pre>
         </figure>
       </div>
     </div>

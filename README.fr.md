@@ -41,13 +41,16 @@ Détails et options dans [Installation](#installation-toute-distro).
 | `kernel/motu424_main.c` | Attach/detach PCI, gestion des ressources + IRQ, gestionnaire d'interruption |
 | `kernel/motu424_hw.c` | **Abstraction matérielle — le seul fichier avec la vraie sémantique des registres** |
 | `kernel/motu424_pcm.c` | Callbacks PCM ALSA (lecture ; capture quand le format de l'anneau sera connu) |
-| `tools/motu424-portregs.py` | Décodage en lecture seule des trois registres du port d'E/S (HSR/HDCR/DSPP, TI SPRU581C) |
-| `tools/motu424-bringup.c` | **Rejeu du démarrage** (simulation par défaut) : chargement du FPGA via le GPIO du DSP, chargement du programme DSP, DSPINT, lecture de la boîte aux lettres |
-| `tools/motu424-probe.c` | Énumérateur/dumpeur de BARs (modèle fenêtré) en espace utilisateur pour la rétro-ingénierie |
-| `tools/motu424-ctl.c` | **CLI de gestion façon CueMix** (horloge/format + mixeur de monitoring) via alsa-lib |
-| `tools/motu424-gui` | **Console de mixage GTK4** façon CueMix FX (front-end de `motu424-ctl`) |
-| `tools/cuemix-studio` | **Console multiplateforme** (Rust/egui, Linux/macOS/Windows) : pilote la carte via `motu424-ctl` sous Linux, rig simulé ailleurs ; ajoute les pages EQ/dynamique/réverb de la 828mk3 |
-| `tools/re/` | Aides à la RE statique (`vtable-scan.py`, `xref.py` basé sur capstone, `extract-firmware.py`, `dis-c64x.py` pour le C64x) |
+| `tools/` | **Les outils en espace utilisateur, tous en Rust** : un workspace Cargo, `make tools` les compile dans `tools/target/release/` |
+| `tools/motu424-ctl` | **CLI de gestion façon CueMix** (horloge/format + mixeur de monitoring) via alsa-lib |
+| `tools/cuemix-studio` | **Console de mixage** (Rust/egui, Linux/macOS/Windows) : pilote la carte via `motu424-ctl` sous Linux, rig simulé ailleurs ; ajoute les pages EQ/dynamique/réverb de la 828mk3 |
+| `tools/motu424-probe` | Énumérateur/dumpeur de BARs (modèle fenêtré) pour la rétro-ingénierie |
+| `tools/motu424-portregs` | Décodage en lecture seule des trois registres du port d'E/S (HSR/HDCR/DSPP, TI SPRU581C) |
+| `tools/motu424-bringup` | **Rejeu du démarrage** (simulation par défaut) : chargement du FPGA via le GPIO du DSP, chargement du programme DSP, DSPINT, lecture de la boîte aux lettres |
+| `tools/motu424-ringwatch` | Échantillonneur en lecture seule de la position du DSP dans l'anneau pendant un flux ; `--dump` sauvegarde la RAM du DSP |
+| `tools/stream-run.sh` | Test de flux scripté autour de `motu424-ringwatch` (chargement, 12 s de `speaker-test`, déchargement) |
+| `tools/motu424-card` | La bibliothèque partagée par les outils de la carte (recherche sysfs, mappage des BAR, E/S de port) |
+| `tools/re/` | Aides à la RE statique : `extract-firmware`, `dis-c64x` (C64x), `xref`, `vtable-scan`, `re-devext`, `disasm-va`, `ram-diff` |
 | `get.sh` | **Bootstrap `curl \| sh`** — récupère les sources + lance l'installeur |
 | `install.sh` | **Installeur multi-distro** (dépendances + DKMS + outils) |
 | `ARCHITECTURE.md` | Notes de conception : la séparation en 3 couches + la règle de confinement matériel |
@@ -108,88 +111,38 @@ d'échantillonnage, trim/pad/phase par entrée, et la matrice de monitoring
 entrées×bus). Jeu de contrôles + nommage : [`docs/cuemix-control-map.md`](docs/cuemix-control-map.md).
 
 ```sh
-make tools                              # compile motu424-ctl si alsa-lib est présent
-./tools/motu424-ctl                     # aperçu d'état façon CueMix
-./tools/motu424-ctl list                # tous les contrôles
-./tools/motu424-ctl set 'Clock Source' Internal
-./tools/motu424-ctl set 'Mix 00 Input 03 Volume' 92
+make tools                                      # nécessite Cargo ; motu424-ctl nécessite alsa-lib
+tools/target/release/motu424-ctl                # aperçu d'état façon CueMix
+tools/target/release/motu424-ctl list           # tous les contrôles
+tools/target/release/motu424-ctl set 'Clock Source' Internal
+tools/target/release/motu424-ctl set 'Mix 00 Input 03 Volume' 92
 ```
 
 Les contrôles du mixeur relèvent de la Phase 5 (dépendante de la carte) ; l'appli
 est écrite pour s'activer automatiquement dès que le pilote les enregistre, et se
 dégrade proprement en leur absence.
 
-#### Console graphique
+#### Console graphique (cuemix-studio)
 
-`tools/motu424-gui` est une **console de mixage GTK4 façon CueMix FX** — un
-front-end au-dessus de `motu424-ctl`, de sorte que la CLI testée reste la
-source de vérité unique. Elle reconstruit le modèle CueMix à partir des noms de
-kcontrols et le rend comme la vraie console : un onglet par bus de mix
-(tranches avec fader d'envoi, vumètre à maintien de crête, potentiomètre de
-panoramique rotatif, mute/solo/gang, le master du bus épinglé à droite), un
-onglet Entrées (gain, pad, phase, paires stéréo), un onglet Sorties (tranches
-de monitoring mono, liables en paires stéréo comme les entrées), un onglet
-Patchbay (optionnel, sans cordons d'origine — dessiné comme une vraie baie de
-brassage normalisée : chaque sortie est à son « normal », les main out étant
-normalisées sur le programme stéréo du système pour que le son du PC sorte sur
-les moniteurs sans configuration ; on tire des câbles virtuels à la souris
-pour patcher le reste ; survoler un jack montre ce qu'il porte, « Unpatch
-all » retire tous les cordons en une seule étape annulable, et un
-interrupteur global contourne la baie en retombant sur ces normals), un
-onglet Horloge & format, et un onglet Diagnostics qui fonctionne même sans
-carte ni pilote chargé.
-
-Toute la disposition s'adapte aux convertisseurs reliés aux slots AudioWire de
-la PCI-424 : le pilote nomme chaque canal par slot et par banque (analogique,
-ADAT, TDIF, AES/EBU, main out, casque — voir `docs/cuemix-control-map.md`), et
-la console regroupe ses tranches et les jacks du patchbay sous des en-têtes
-« slot · modèle — banque ». Une 24I/O apporte 24 entrées/sorties analogiques,
-une 1224 apporte 8 entrées/sorties analogiques plus une paire AES/EBU et des
-sorties main — c'est exactement la combinaison que simule `--demo`, et
-`--rig 24io,2408` accroche d'autres convertisseurs (24io, 1224, 2408, hd192)
-aux quatre slots AudioWire à la place. La console
-suit aussi la carte dans le temps : quand le jeu de contrôles enregistrés
-change (chargement/déchargement du module, boîtiers branchés à chaud, nombre
-de canaux qui rétrécit aux familles 2x/4x), elle se reconstruit au poll
-suivant en conservant l'onglet actif — changez la fréquence dans `--demo`
-pour voir le rétrécissement en direct.
-
-Au-delà des bases : liaison paires stéréo et gangs, scènes A/B, boutons
-TALK / LISTEN (talkback) dans l'en-tête (maintenir = momentané, clic bref =
-verrouillé), copie/reset de mix par bus, snapshots
-de mix en JSON (Ctrl+S / Ctrl+O), annulation Ctrl+Z des
-opérations globales, noms de canaux éditables, et un dialogue « Shortcuts &
-tips » sur F1. Les écritures de contrôles sont regroupées dans un thread de
-travail et le matériel est re-sondé en arrière-plan : la console suit les
-changements faits ailleurs (alsamixer, une seconde instance) sans se battre
-avec le contrôle que vous manipulez.
+[`tools/cuemix-studio`](tools/cuemix-studio/README.md) est une console de
+mixage façon CueMix FX, un seul binaire Rust/egui pour Linux, macOS et
+Windows. Sous Linux avec le pilote, elle pilote la carte via `motu424-ctl`,
+de sorte que la CLI testée reste la source de vérité unique ; ailleurs, ou
+sans carte, elle simule un rig PCI-424 (24I/O dans l'emplacement A, 1224 dans
+le B). Un second appareil, la 828mk3, ajoute les pages canal/dynamique, EQ et
+réverb. Elle remplace l'ancienne `motu424-gui` en Python/GTK4.
 
 ```sh
-./install.sh --gui        # installe le lanceur + ses dépendances d'exécution
-motu424-gui               # ou depuis le menu d'applications (« MOTU CueMix »)
-motu424-gui --demo        # console complète sur un rig 24I/O + 1224 synthétique
+./install.sh --gui                              # compile + installe, avec une entrée de menu
+make gui                                        # ou seulement la compiler
+tools/target/release/cuemix-studio              # la carte si motu424-ctl en trouve une, sinon simulée
+tools/target/release/cuemix-studio --simulate   # ne touche jamais la carte
+tools/target/release/cuemix-studio --828mk3     # l'appareil avec effets
 ```
 
-Nécessite `python-gobject` + `gtk4` (ajoutés automatiquement par `--gui`). Les
-kcontrols du mixeur relèvent de la Phase 5 (dépendante de la carte) : sans carte
-MOTU la console n'a rien à afficher — prévisualisez-la avec `--demo` ; sur du
-vrai matériel elle se remplit automatiquement dès que le pilote enregistre ses
-contrôles.
-
-#### Console multiplateforme (cuemix-studio)
-
-[`tools/cuemix-studio`](tools/cuemix-studio/README.md) est la même console en
-un seul binaire Rust/egui pour Linux, macOS et Windows. Sous Linux avec le
-pilote, elle pilote la carte via `motu424-ctl` ; ailleurs, ou sans carte, elle
-simule un rig PCI-424 (24I/O dans l'emplacement A, 1224 dans le B). Un second
-appareil, la 828mk3, ajoute les pages canal/dynamique, EQ et réverb.
-
-```sh
-cd tools/cuemix-studio && cargo build --release
-./target/release/cuemix-studio              # la carte si motu424-ctl en trouve une, sinon simulée
-./target/release/cuemix-studio --simulate   # ne touche jamais la carte
-./target/release/cuemix-studio --828mk3     # l'appareil avec effets
-```
+Les kcontrols du mixeur relèvent de la Phase 5 (dépendante de la carte) : sans
+carte MOTU la console tourne sur son rig simulé ; sur du vrai matériel elle se
+remplit dès que le pilote enregistre ses contrôles.
 
 ##### Captures d'écran
 
@@ -224,7 +177,8 @@ fournies ici. Extrayez-les de votre propre copie du pilote constructeur et
 installez-les :
 
 ```sh
-python3 tools/re/extract-firmware.py chemin/vers/MOTUAW.sys   # pilote 32 bits ; écrit vendor/firmware/ (ignoré par git)
+make tools                                               # compile extract-firmware (Rust)
+tools/target/release/extract-firmware chemin/vers/MOTUAW.sys # pilote 32 bits ; écrit vendor/firmware/ (ignoré par git)
 sudo install -Dm644 vendor/firmware/pci424-serial-container.bin \
     /lib/firmware/motu424/pci424-serial-container.bin
 sudo install -Dm644 vendor/firmware/pci424-program.bin \
@@ -239,7 +193,7 @@ affiche `DSP running: audio_base=0x6fac ...`.
 Facultatif, pour les testeurs : `/lib/firmware/motu424/pci424-mixer.bin`, un
 programme de mixage CueMix récupéré sur une carte configurée par Windows.
 Redémarrez à chaud depuis Windows, videz la RAM du DSP avec `sudo
-tools/motu424-ringwatch.py --dump ram.bin` avant de charger le pilote, puis
+tools/target/release/motu424-ringwatch --dump ram.bin` avant de charger le pilote, puis
 découpez le programme pointé par `+0x78`, jusqu'à sa signature de fin
 `e2 00 1c 00 e2 03 98 07 00 80 00 00` incluse. Sur la carte de test, c'était
 0x4fc octets à `0x32800` :
@@ -251,8 +205,8 @@ Device configure).
 ## Rétro-ingénierie
 
 Le modèle matériel vient du pilote Windows constructeur `MOTUAW.sys` (RE
-statique avec `objdump`, `tools/re/vtable-scan.py`, `tools/re/xref.py`), du
-programme du DSP de la carte (`tools/re/dis-c64x.py`) et d'essais sur une vraie
+statique avec `objdump` et les aides `vtable-scan` et `xref` de `tools/re/`),
+du programme du DSP de la carte (`dis-c64x`) et d'essais sur une vraie
 PCI-424 dans l'issue #2 :
 
 - **La carte** est un **DSP TI TMS320C6412** en mode de boot PCI, plus un FPGA

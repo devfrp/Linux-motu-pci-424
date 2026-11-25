@@ -37,7 +37,7 @@ hand: the hardware class vtable is at `.rdata` `0x30cc0`, and slot `0x28` =
 ack, enable and audio-register block). Vtable resolution was done with a small
 Python helper over the raw section bytes, since objdump gives no xrefs.
 
-### StartDevice resource parsing (Phase 1.2, RE'd via `xref.py`)
+### StartDevice resource parsing (Phase 1.2, RE'd via `xref`)
 
 Located the IRP_MN_START_DEVICE resource-list translator: `fn 0x28ee0` walks
 the raw `CM_PARTIAL_RESOURCE_DESCRIPTOR` array (16-byte stride) handed in by
@@ -65,7 +65,7 @@ independent confirmation that the audio path is not host bus-mastered.
   — cache type is hard-coded to **non-cached** on both windows (no
   write-combining anywhere on the register/aperture path). This is an exact
   ground-truth confirmation of the two MMIO window sizes already assumed in
-  `motu424.h`/`tools/motu424-probe.c`; our `motu424_assign_windows()` uses
+  `motu424.h`/`motu424-probe`; our `motu424_assign_windows()` uses
   `>=` thresholds rather than an exact match, which is deliberately more
   permissive and still correct against this evidence.
 - A separate helper (`fn 0x20100`) builds a `DEVICE_DESCRIPTION` (via

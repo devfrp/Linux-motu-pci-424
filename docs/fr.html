@@ -78,15 +78,14 @@
     <div class="container">
       <div class="head">
         <h2>Ce qui est livré</h2>
-        <p class="lead">Un pilote, trois applications de contrôle et un installeur qui fonctionne sur n’importe quelle distribution.</p>
+        <p class="lead">Un pilote, deux applications de contrôle et les outils de RE, tout l’espace utilisateur en Rust, et un installeur qui fonctionne sur n’importe quelle distribution.</p>
       </div>
       <ul class="rows">
         <li><h3>Module ALSA</h3><span class="kind">Noyau</span><p>Découpage net en trois couches, entièrement géré par devm/pcim, empaqueté en DKMS pour se recompiler à chaque mise à jour du noyau.</p></li>
-        <li><h3><code>motu424-ctl</code></h3><span class="kind">Contrôle, CLI</span><p>Le CueMix FX version Linux, sur alsa-lib : source d’horloge, fréquence d’échantillonnage, gain/atténuation/phase par entrée et la matrice d’écoute entrées×bus.</p></li>
-        <li><h3><code>motu424-gui</code></h3><span class="kind">Contrôle, GUI</span><p>Une console de mixage GTK4 façon CueMix : tranches avec faders, vumètres à maintien de crête et panoramiques rotatifs, scènes, snapshots, annulation, visible sans carte avec --demo.</p></li>
-        <li><h3><code>cuemix-studio</code></h3><span class="kind">Contrôle, console</span><p>Un seul binaire Rust pour Linux, macOS et Windows : pilote la carte via motu424-ctl sous Linux, simule un rig ailleurs, et ajoute les pages EQ, dynamique et réverb de la 828mk3.</p></li>
+        <li><h3><code>motu424-ctl</code></h3><span class="kind">Contrôle, CLI</span><p>Le CueMix FX version Linux, sur alsa-lib, en Rust comme tous les outils du projet : source d’horloge, fréquence d’échantillonnage, gain/atténuation/phase par entrée et la matrice d’écoute entrées×bus.</p></li>
+        <li><h3><code>cuemix-studio</code></h3><span class="kind">Contrôle, GUI</span><p>La console de mixage, un seul binaire Rust pour Linux, macOS et Windows : pilote la carte via motu424-ctl sous Linux, simule un rig ailleurs, et ajoute les pages EQ, dynamique et réverb de la 828mk3.</p></li>
         <li><h3>Toute distribution</h3><span class="kind">Installation</span><p>Détecte pacman/apt/dnf/zypper/apk/xbps, installe les dépendances puis le module via DKMS. Non interactif sous curl | sh.</p></li>
-        <li><h3>RE clean-room</h3><span class="kind">Outillage</span><p>Un analyseur de références croisées capstone et un résolveur de vtables C++ ; chaque fait reconstitué est consigné avec sa preuve.</p></li>
+        <li><h3>RE clean-room</h3><span class="kind">Outillage</span><p>Un analyseur de références croisées capstone, un résolveur de vtables C++ et un désassembleur C64x, tous en Rust ; chaque fait reconstitué est consigné avec sa preuve.</p></li>
         <li><h3>Faits seuls, GPL</h3><span class="kind">Licence</span><p>Seuls les décalages, formats et séquences entrent dans les sources GPL-2.0. Les binaires du constructeur ne sont jamais redistribués.</p></li>
       </ul>
     </div>
@@ -160,7 +159,7 @@
     <div class="container">
       <div class="head">
         <h2>Installation</h2>
-        <p class="lead">La commande unique récupère les sources et lance l’installeur : dépendances, module DKMS, outils. Ajoute --gui pour le panneau graphique.</p>
+        <p class="lead">La commande unique récupère les sources et lance l’installeur : dépendances, module DKMS, outils. Ajoute --gui pour compiler la console.</p>
       </div>
       <div class="install">
         <figure class="code">
@@ -168,7 +167,7 @@
 <pre><span class="c"># dépendances + module DKMS + outils + chargement</span>
 curl -fsSL https://raw.githubusercontent.com/<span class="f">devfrp/Linux-motu-pci-424</span>/main/get.sh | sh
 
-<span class="c"># avec l’interface GTK</span>
+<span class="c"># avec la console (cuemix-studio)</span>
 curl -fsSL …/get.sh | sh -s -- <span class="f">--gui</span></pre>
         </figure>
         <figure class="code">
@@ -178,7 +177,7 @@ cd motu-pci-424
 ./install.sh            <span class="c"># ou : make &amp;&amp; make load</span>
 
 motu424-ctl             <span class="c"># état CueMix (CLI)</span>
-motu424-gui             <span class="c"># panneau graphique</span></pre>
+cuemix-studio           <span class="c"># console de mixage (--gui)</span></pre>
         </figure>
       </div>
     </div>

@@ -63,7 +63,8 @@ reads the audio block address the program publishes in its mailbox.
 
 Both images belong to MOTU and are not distributed with the driver. Users
 extract them from their own copy of the vendor driver with
-``tools/re/extract-firmware.py`` and install them as::
+``extract-firmware`` (``tools/re/``, built by ``make tools``) and install
+them as::
 
    /lib/firmware/motu424/pci424-serial-container.bin
    /lib/firmware/motu424/pci424-program.bin
@@ -137,7 +138,7 @@ Current status and limitations
   a frame is not mapped yet, so samples are exposed as ``frame_bytes / 4`` raw ``S32_LE`` words. Capture
   and rate changes (the vendor relock sequence) are not implemented.
 - No mixer (CueMix) kcontrols are registered yet; a companion userspace tool
-  (``tools/motu424-ctl``, ``tools/motu424-gui``) implements the control
+  (``tools/motu424-ctl``, ``tools/cuemix-studio``) implements the control
   surface against the planned kcontrol names in
   ``docs/cuemix-control-map.md``.
 - AudioWire breakout interface enumeration is not implemented.
