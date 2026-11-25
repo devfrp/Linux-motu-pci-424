@@ -115,9 +115,9 @@
  * Host-loaded firmware - CONFIRMED on hardware (docs/fpga-upload.md)
  * --------------------------------------------------------------------------
  * Both images are MOTU's and are not shipped: the user extracts them from
- * their own MOTUAW.sys with tools/re/extract-firmware.py and installs them
- * under /lib/firmware/motu424/. Lengths and SHA-256 are checked before any
- * byte reaches the card.
+ * their own MOTUAW.sys with extract-firmware (tools/re/, built by make tools)
+ * and installs them under /lib/firmware/motu424/. Lengths and SHA-256 are
+ * checked before any byte reaches the card.
  */
 #define MOTU424_FW_FPGA		"motu424/pci424-serial-container.bin"
 #define MOTU424_FW_FPGA_LEN	37177

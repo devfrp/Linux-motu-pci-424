@@ -263,7 +263,7 @@ static int motu424_fw_get(struct motu424 *chip, const struct firmware **fw,
 	err = request_firmware(fw, name, dev);
 	if (err < 0) {
 		dev_err(dev,
-			"cannot load %s (%d): extract it from your own MOTUAW.sys with tools/re/extract-firmware.py and install it under /lib/firmware/motu424/\n",
+			"cannot load %s (%d): extract it from your own MOTUAW.sys with extract-firmware (make tools) and install it under /lib/firmware/motu424/\n",
 			name, err);
 		return err;
 	}
