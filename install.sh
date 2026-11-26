@@ -17,6 +17,9 @@
 #   ./install.sh --no-load       # do not modprobe/insmod at the end
 #   ./install.sh --tools-only    # just build the userspace tools
 #   ./install.sh --gui           # also build + install the GUI (cuemix-studio)
+#   ./install.sh --rust          # install the Rust kernel module instead of
+#                                # the C one (no DKMS; needs a CONFIG_RUST
+#                                # kernel and the rustc that built it)
 #   ./install.sh --uninstall     # remove the module + tools
 #   ./install.sh -h              # help
 #
@@ -25,7 +28,7 @@ set -eu
 
 # --------------------------------------------------------------------- options
 ASSUME_YES=0; DO_DEPS=1; USE_DKMS=1; DO_LOAD=1; TOOLS_ONLY=0; UNINSTALL=0
-NONINTERACTIVE=0; WANT_GUI=0
+NONINTERACTIVE=0; WANT_GUI=0; WANT_RUST=0
 for arg in "$@"; do
 	case "$arg" in
 	-y|--yes)        ASSUME_YES=1 ;;
@@ -34,8 +37,9 @@ for arg in "$@"; do
 	--no-load)       DO_LOAD=0 ;;
 	--tools-only)    TOOLS_ONLY=1 ;;
 	--gui)           WANT_GUI=1 ;;
+	--rust)          WANT_RUST=1; USE_DKMS=0 ;;
 	--uninstall)     UNINSTALL=1 ;;
-	-h|--help)       sed -n '4,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-h|--help)       sed -n '4,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "unknown option: $arg (try -h)" >&2; exit 2 ;;
 	esac
 done
@@ -80,6 +84,20 @@ require_headers() {
 Install the headers for your running kernel ($KREL) and re-run. Expected package:
   $(kernel_headers_pkg "$PM")
 If you just declined the dependency prompt, re-run and accept it (or pass -y)."
+}
+
+# The Rust module builds only against a kernel with CONFIG_RUST, and only with
+# the exact rustc that built that kernel (Rust has no stable ABI): say which
+# one instead of failing deep inside kbuild.
+require_rust_kernel() {
+	grep -q '^CONFIG_RUST=y' "$KBUILD/.config" 2>/dev/null || \
+		die "the running kernel ($KREL) has no Rust support (CONFIG_RUST); use the C module (drop --rust)"
+	want=$(sed -n 's/^CONFIG_RUSTC_VERSION_TEXT="\(.*\)"/\1/p' "$KBUILD/.config")
+	got=$(rustc --version 2>/dev/null || true)
+	[ "$got" = "$want" ] || die "the Rust module needs the rustc that built your kernel:
+  kernel built with: $want
+  rustc in PATH:     ${got:-none}
+Install that compiler (on Arch: the 'rust' package, which replaces rustup), or use the C module."
 }
 
 # --------------------------------------------------------------- distro detect
@@ -207,6 +225,13 @@ install_dkms() {
 
 install_intree() {
 	require_headers
+	if [ "$WANT_RUST" -eq 1 ]; then
+		require_rust_kernel
+		log "building + installing the Rust module (no DKMS)"
+		make module-rust
+		$SUDO make install-rust    # modules_install + depmod
+		return
+	fi
 	log "building + installing module in-tree (no DKMS)"
 	make module
 	$SUDO make install    # modules_install + depmod
@@ -218,7 +243,8 @@ load_module() {
 	log "loading module"
 	if $SUDO modprobe "$PKG" 2>/dev/null; then :; else
 		warn "modprobe failed (module may not be in the modules tree); trying insmod"
-		[ -f "kernel/$PKG.ko" ] && $SUDO insmod "kernel/$PKG.ko" || \
+		ko="kernel/$PKG.ko"; [ "$WANT_RUST" -eq 1 ] && ko="kernel/rust/$PKG.ko"
+		[ -f "$ko" ] && $SUDO insmod "$ko" || \
 			warn "could not load $PKG; check 'dmesg'"
 	fi
 }
@@ -228,6 +254,8 @@ uninstall() {
 	$SUDO modprobe -r "$PKG" 2>/dev/null || $SUDO rmmod "$PKG" 2>/dev/null || true
 	if have dkms; then $SUDO dkms remove "$PKG/$VER" --all 2>/dev/null || true; fi
 	$SUDO rm -rf "/usr/src/$PKG-$VER"
+	# A --no-dkms or --rust install: kbuild puts external modules in updates/.
+	$SUDO rm -f "/lib/modules/$KREL/updates/$PKG.ko" "/lib/modules/$KREL/updates/$PKG.ko".*
 	$SUDO rm -f /usr/local/bin/motu424-probe /usr/local/bin/motu424-ctl \
 		/usr/local/bin/cuemix-studio \
 		/usr/local/share/applications/cuemix-studio.desktop \
