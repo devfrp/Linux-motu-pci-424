@@ -139,14 +139,14 @@ no firmware IOCTL, because the driver needs none.
 
 - Load both images with `request_firmware()` and declare them with
   `MODULE_FIRMWARE()`; fail device start loudly in `dmesg` if either is
-  missing or its hash is wrong. Done in `motu424_hw_init()` (2026-10-16): the
+  missing or its hash is wrong. Done in the driver (2026-10-16; now `hw::boot()`): the
   driver asks for `motu424/pci424-serial-container.bin` and
   `motu424/pci424-program.bin` (the extractor's names, under
   `/lib/firmware/motu424/`).
 - The user extracts the files from their own installer with
   `extract-firmware` (`tools/re/`). The images are MOTU's; they are **not**
   shipped with the driver and not committed to this repository.
-- Replay steps 1–5 in `motu424_hw_init()`, then take `audio_base`,
+- Replay steps 1–5 in `hw::boot()`, then take `audio_base`,
   `mix_base` and the rest from the published block; the `audio_base=` /
   `mix_base=` module parameters become unnecessary.
 - Re-run the upload on resume from suspend: the FPGA has no PROM and loses
@@ -255,7 +255,7 @@ that was the misreading behind the old verdict.
   EP1K30 image, two RAM images); needs a card.
 - **PCIe-424 (`DEV_0005`)**: expected to be the `0004` sequence behind a
   XIO2000 bridge; needs a card (one exists in issue #1).
-- Driver side: `request_firmware()` + the sequence in `motu424_hw_init()`
+- Driver side: `request_firmware()` + the sequence in `hw::boot()`
   (Phase 4.2).
 - Curiosity, not a blocker: the format/compression of the 0004 `.rbf` data
   fork, which would identify the FPGA part. The sticker has not been lifted.

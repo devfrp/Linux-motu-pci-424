@@ -78,10 +78,10 @@
     <div class="container">
       <div class="head">
         <h2>What ships</h2>
-        <p class="lead">A driver, two control apps and the RE tools, all the userspace in Rust, and an installer that works on any distribution.</p>
+        <p class="lead">A driver, two control apps and the RE tools, all of it in Rust, and an installer that works on any distribution.</p>
       </div>
       <ul class="rows">
-        <li><h3>ALSA module</h3><span class="kind">Kernel</span><p>Clean three-layer split, fully devm/pcim-managed, DKMS-packaged so it rebuilds itself across kernel upgrades. A Rust version, for kernels built with Rust support, is in <code>kernel/rust/</code>; it has not run on a card yet.</p></li>
+        <li><h3>ALSA module</h3><span class="kind">Kernel</span><p>Written in Rust, with no C: the ALSA bindings are generated from the kernel’s own headers at build time. Clean three-layer split, DKMS-packaged so it rebuilds itself across kernel upgrades. Needs a kernel built with Rust support. Ported from the C driver that ran on a card; the port has not run on one yet.</p></li>
         <li><h3><code>motu424-ctl</code></h3><span class="kind">Control, CLI</span><p>The Linux CueMix FX over alsa-lib, in Rust like every tool here: clock source, sample rate, per-input trim/pad/phase, and the input×bus monitor matrix.</p></li>
         <li><h3><code>cuemix-studio</code></h3><span class="kind">Control, GUI</span><p>The mixing console, one Rust binary for Linux, macOS and Windows: drives the card through motu424-ctl on Linux, runs a simulated rig anywhere else, and adds the 828mk3 EQ, dynamics and reverb pages.</p></li>
         <li><h3>Any distro</h3><span class="kind">Install</span><p>Detects pacman/apt/dnf/zypper/apk/xbps, pulls deps, installs via DKMS. Non-interactive under curl | sh.</p></li>
@@ -145,12 +145,12 @@
     <div class="container">
       <div class="head">
         <h2>Signal path</h2>
-        <p class="lead">The PCI and PCM layers stay hardware-agnostic; every register offset and encoding lives only in the bottom node. The Rust module in <code>kernel/rust/</code> keeps the same split: <code>motu424_main.rs</code>, <code>hw.rs</code>, and a small C file for the ALSA card.</p>
+        <p class="lead">The PCI and ALSA layers stay hardware-agnostic; every register offset and encoding lives only in the bottom node. All three are Rust.</p>
       </div>
       <ol class="path">
-        <li><code>motu424_main.c</code><p>PCI attach, BAR map, IRQ vector, ALSA card create. The interrupt calls motu424_hw_irq_ack().</p></li>
-        <li><code>motu424_pcm.c</code><p>ALSA PCM ops: translates open/prepare/trigger/pointer into motu424_hw_* calls.</p></li>
-        <li><code>motu424_hw.c</code><p>Registers, clock/rate, DMA ring, IRQ ack. The hardware truth lives here.</p></li>
+        <li><code>motu424_main.rs</code><p>PCI attach, BAR roles, DMA mask, IRQ vector, and the teardown order.</p></li>
+        <li><code>alsa.rs</code><p>ALSA card and PCM ops, over bindings generated from the kernel headers: open/prepare/trigger/pointer become hw.rs calls.</p></li>
+        <li><code>hw.rs</code><p>Registers, firmware load, DMA ring, IRQ ack. The hardware truth lives here.</p></li>
       </ol>
     </div>
   </section>
@@ -175,7 +175,6 @@ curl -fsSL …/get.sh | sh -s -- <span class="f">--gui</span></pre>
 <pre>git clone https://github.com/devfrp/Linux-motu-pci-424
 cd motu-pci-424
 ./install.sh            <span class="c"># or: make &amp;&amp; make load</span>
-./install.sh --rust     <span class="c"># Rust module, CONFIG_RUST kernels</span>
 
 motu424-ctl             <span class="c"># CueMix status (CLI)</span>
 cuemix-studio           <span class="c"># mixing console (--gui)</span></pre>
@@ -191,7 +190,7 @@ cuemix-studio           <span class="c"># mixing console (--gui)</span></pre>
         <p class="lead">The card boots under Linux. What remains is the format of the audio on the host ring, then playback, capture and rate changes on a real card.</p>
       </div>
       <ol class="road">
-        <li><span><span class="state state--ok">Done</span></span><h3>Framework &amp; tooling</h3><p>PCI/DMA/IRQ/ALSA scaffolding, cross-distro installer, CLI + GUI, RE toolchain. Every tool is Rust, and the kernel module has a Rust version, not yet run on a card.</p></li>
+        <li><span><span class="state state--ok">Done</span></span><h3>Framework &amp; tooling</h3><p>PCI/DMA/IRQ/ALSA scaffolding, cross-distro installer, CLI + GUI, RE toolchain. The driver and every tool are Rust; the Rust driver has not run on a card yet.</p></li>
         <li><span><span class="state state--ok">Done</span></span><h3>Register, IRQ &amp; transport model</h3><p>DSP windows, IRQ ack, bus-master ring, the full IOCTL interface.</p></li>
         <li><span><span class="state state--ok">Done</span></span><h3>Firmware load on a real card</h3><p>FPGA image and DSP program loaded, audio block published; the driver now does it with request_firmware().</p></li>
         <li><span><span class="state state--ok">Done</span></span><h3>Device model &amp; bring-up path</h3><p>The whole device-extension struct, the audio object &amp; sub-objects, and the handshake that publishes the runtime audio base.</p></li>

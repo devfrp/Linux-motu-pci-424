@@ -51,8 +51,8 @@ so any claim in the driver can be traced back to its origin in the binary.
 ## Boundary between confirmed and unconfirmed
 
 The card is not present on the development machine. The driver deliberately
-confines every unverified assumption to `kernel/motu424.h` and
-`kernel/motu424_hw.c`, tagged `TODO: verify`, and **refuses to stream** until the
+confines every unverified assumption to `kernel/hw.rs`, tagged `TODO: verify`,
+and **refuses to stream** until the
 card-reported runtime addresses are supplied (see the README bring-up flow).
 This keeps speculative behaviour out of the hardware-agnostic layers and ensures
 the driver never writes to addresses that were guessed rather than observed.

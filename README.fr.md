@@ -23,6 +23,12 @@ et ses interfaces de sortie AudioWire (2408, 24I/O, 828, HD192, 896HD, …).
 > Le flux reste coupé sauf avec `motu424.frame_bytes=96`.
 > Lecture seule, 48 kHz seulement, PCI-424
 > (`137a:0004`) seulement pour l'instant.
+>
+> **Le pilote est maintenant écrit en Rust** (26/11/2026). Les résultats
+> ci-dessus viennent du pilote C qu'il remplace ; le portage Rust n'a pas
+> encore tourné sur une carte. Pour le compiler il faut un noyau avec le
+> support Rust, le `rustc` qui a compilé ce noyau, et bindgen : voir
+> [Build](#build-manuel).
 
 ## Démarrage rapide
 
@@ -37,11 +43,12 @@ Détails et options dans [Installation](#installation-toute-distro).
 
 | Chemin | Rôle |
 |--------|------|
-| `kernel/motu424.h` | Définitions partagées + le **modèle matériel rétro-conçu** (source de vérité unique) |
-| `kernel/motu424_main.c` | Attach/detach PCI, gestion des ressources + IRQ, gestionnaire d'interruption |
-| `kernel/motu424_hw.c` | **Abstraction matérielle — le seul fichier avec la vraie sémantique des registres** |
-| `kernel/motu424_pcm.c` | Callbacks PCM ALSA (lecture ; capture quand le format de l'anneau sera connu) |
-| `kernel/rust/` | **Le même pilote en Rust** (`hw.rs` suit `motu424_hw.c`) : demande un noyau `CONFIG_RUST`, pas encore lancé sur une carte. Voir [Module noyau Rust](#module-noyau-rust) |
+| `kernel/` | **Le module noyau, en Rust** (sans C) : voir [Build](#build-manuel) pour ce qu'il demande |
+| `kernel/motu424_main.rs` | Pilote PCI : attach/detach, rôle des BAR, DMA, IRQ, ordre d'arrêt |
+| `kernel/hw.rs` | **Le modèle matériel rétro-conçu, seul fichier avec la vraie sémantique des registres** |
+| `kernel/alsa.rs` | Carte ALSA + callbacks PCM (lecture ; capture quand le format de l'anneau sera connu), sur une interface que bindgen génère depuis les en-têtes du noyau |
+| `kernel/params.rs` | Les paramètres du module (`frame_bytes`, `configure`, `index`…) |
+| `kernel/sha256.rs` | Vérification SHA-256 des deux images firmware |
 | `tools/` | **Les outils en espace utilisateur, tous en Rust** : un workspace Cargo, `make tools` les compile dans `tools/target/release/` |
 | `tools/motu424-ctl` | **CLI de gestion façon CueMix** (horloge/format + mixeur de monitoring) via alsa-lib |
 | `tools/cuemix-studio` | **Console de mixage** (Rust/egui, Linux/macOS/Windows) : pilote la carte via `motu424-ctl` sous Linux, rig simulé ailleurs ; ajoute les pages EQ/dynamique/réverb de la 828mk3 |
@@ -59,10 +66,8 @@ Détails et options dans [Installation](#installation-toute-distro).
 | `docs/index.html` | Site du projet (page GitHub Pages) |
 | `dkms.conf` | Empaquetage DKMS pour la reconstruction automatique à chaque noyau |
 
-Objectif de conception : **toute l'incertitude est confinée à `motu424.h` +
-`motu424_hw.c`.** Une fois la vraie disposition des registres connue, seuls ces
-deux fichiers changent, plus `kernel/rust/hw.rs`, leur portage dans le module
-Rust.
+Objectif de conception : **toute l'incertitude est confinée à `kernel/hw.rs`.**
+Une fois la vraie disposition des registres connue, seul ce fichier change.
 
 ## Installation (toute distro)
 
@@ -83,7 +88,6 @@ installe les outils :
 ./install.sh              # deps + DKMS + outils + chargement (utilise sudo au besoin)
 ./install.sh -y           # installation de paquets non interactive
 ./install.sh --no-dkms    # build in-tree + install au lieu de DKMS
-./install.sh --rust       # le module Rust au lieu du C (noyaux CONFIG_RUST)
 ./install.sh --uninstall  # retire le module + les outils
 ./install.sh -h           # toutes les options
 ```
@@ -94,8 +98,21 @@ demande son mot de passe via le terminal comme d'habitude.
 
 ## Build (manuel)
 
-Nécessite les en-têtes du noyau en cours (Arch : `linux-rt-headers` pour un
-noyau RT, sinon `linux-headers`) et `alsa-lib` pour `motu424-ctl`.
+Le module noyau est en Rust. Il faut :
+
+- les en-têtes du noyau en cours (Arch : `linux-rt-headers` pour un noyau RT,
+  sinon `linux-headers`), compilé avec le support Rust (`CONFIG_RUST=y` ; les
+  noyaux `linux` et `linux-rt` d'Arch le sont) ;
+- exactement le `rustc` qui a compilé ce noyau : Rust n'a pas d'ABI stable.
+  `grep RUSTC_VERSION_TEXT /lib/modules/$(uname -r)/build/.config` indique
+  lequel ; sous Arch c'est le paquet `rust`, pas rustup ;
+- `bindgen` avec libclang (Arch : `rust-bindgen`, `clang`) : le noyau n'a pas
+  d'interface Rust pour ALSA, donc la compilation la génère depuis les
+  `<sound/core.h>` et `<sound/pcm.h>` du noyau, avec les options que le noyau
+  utilise pour ses propres interfaces.
+
+`./install.sh` installe bindgen et vérifie le noyau et le compilateur avant de
+compiler. Les outils demandent Cargo, et `alsa-lib` pour `motu424-ctl`.
 
 ```sh
 make            # build module + outils
@@ -105,29 +122,10 @@ aplay -l        # la carte devrait apparaître
 make unload
 ```
 
-### Module noyau Rust
-
-`kernel/rust/` est le même pilote écrit en Rust : le pilote PCI, le chargement
-du FPGA et du programme DSP (avec sa vérification SHA-256), le flux audio,
-l'IRQ et l'ordre d'arrêt sont en Rust, et `hw.rs` suit `motu424_hw.c` étape
-par étape. La carte ALSA et les paramètres du module restent dans un petit
-fichier C (`motu424_alsa.c`), car le noyau n'a pas d'interface Rust pour ALSA
-et les paramètres de module Rust ne sont que des entiers. Il produit le même
-`motu424.ko`, avec les mêmes paramètres, identifiants PCI et noms de firmware :
-on charge l'un ou l'autre, pas les deux.
-
-**Il n'a pas encore tourné sur une carte.** Le module C de `kernel/` est celui
-testé sur une vraie PCI-424 et reste celui par défaut.
-
-Il faut un noyau compilé avec `CONFIG_RUST`, et exactement le `rustc` qui a
-compilé ce noyau (`grep RUSTC_VERSION_TEXT /lib/modules/$(uname -r)/build/.config`
-l'affiche ; sous Arch c'est le paquet `rust`, pas rustup) :
-
-```sh
-make module-rust   # compile kernel/rust/motu424.ko
-make load-rust     # le charge (insmod)
-./install.sh --rust   # ou l'installe (sans DKMS) à la place du module C
-```
+Le module Rust est un portage du pilote C qui a tourné sur une vraie PCI-424
+(dans l'historique jusqu'au commit `1cb25bb`). Il garde le même `motu424.ko`,
+les mêmes identifiants PCI, paramètres et noms de firmware. **Le portage
+lui-même n'a pas encore tourné sur une carte.**
 
 ### Gérer la carte (CueMix pour Linux)
 

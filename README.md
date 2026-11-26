@@ -21,6 +21,11 @@ and its AudioWire breakout interfaces (2408, 24I/O, 828, HD192, 896HD, …).
 > traced Windows VM to find ([`docs/transport.md`](docs/transport.md), Open).
 > Streaming stays off unless `motu424.frame_bytes=96`.
 > Playback only, 48 kHz only, PCI-424 (`137a:0004`) only for now.
+>
+> **The driver is now written in Rust** (2026-11-26). The results above come
+> from the C driver it replaces; the Rust port has not run on a card yet.
+> Building it needs a kernel with Rust support, the `rustc` that built that
+> kernel, and bindgen: see [Build](#build-manual).
 
 ## Quick start
 
@@ -35,11 +40,12 @@ Installs on any distro (deps + DKMS module + tools). Details and options under
 
 | Path | Role |
 |------|------|
-| `kernel/motu424.h` | Shared defs + the **RE'd hardware model** (single source of truth) |
-| `kernel/motu424_main.c` | PCI attach/detach, resource + IRQ management, interrupt handler |
-| `kernel/motu424_hw.c` | **Hardware abstraction — the only file with real register semantics** |
-| `kernel/motu424_pcm.c` | ALSA PCM callbacks (playback; capture once the ring layout is known) |
-| `kernel/rust/` | **The same driver in Rust** (`hw.rs` mirrors `motu424_hw.c`): needs a `CONFIG_RUST` kernel, not yet run on a card. See [Rust kernel module](#rust-kernel-module) |
+| `kernel/` | **The kernel module, in Rust** (no C): see [Build](#build-manual) for what it needs |
+| `kernel/motu424_main.rs` | PCI driver: attach/detach, BAR roles, DMA, IRQ, teardown order |
+| `kernel/hw.rs` | **The RE'd hardware model and the only file with real register semantics** |
+| `kernel/alsa.rs` | ALSA card + PCM callbacks (playback; capture once the ring layout is known), over bindings bindgen generates from the kernel's headers |
+| `kernel/params.rs` | The module parameters (`frame_bytes`, `configure`, `index`, …) |
+| `kernel/sha256.rs` | SHA-256 check of the two firmware images |
 | `tools/` | **The userspace tools, all Rust**: one Cargo workspace, `make tools` builds them into `tools/target/release/` |
 | `tools/motu424-ctl` | **CueMix-style management CLI** (clock/format + monitor mixer) over alsa-lib |
 | `tools/cuemix-studio` | **Mixing console** (Rust/egui, Linux/macOS/Windows): drives the card via `motu424-ctl` on Linux, simulated rig elsewhere; adds the 828mk3 EQ/dynamics/reverb pages |
@@ -57,9 +63,8 @@ Installs on any distro (deps + DKMS module + tools). Details and options under
 | `docs/index.html` | Project website (GitHub Pages landing page) |
 | `dkms.conf` | DKMS packaging for automatic rebuilds across kernels |
 
-The design goal: **all uncertainty is confined to `motu424.h` + `motu424_hw.c`.**
-Once the true register layout is known, only those two files change, plus
-`kernel/rust/hw.rs`, their port in the Rust module.
+The design goal: **all uncertainty is confined to `kernel/hw.rs`.** Once the
+true register layout is known, only that file changes.
 
 ## Install (any distro)
 
@@ -79,7 +84,6 @@ module via **DKMS** (so it survives kernel upgrades) and installs the tools:
 ./install.sh              # deps + DKMS + tools + load  (uses sudo as needed)
 ./install.sh -y           # non-interactive package installs
 ./install.sh --no-dkms    # plain in-tree build + install instead of DKMS
-./install.sh --rust       # the Rust module instead of the C one (CONFIG_RUST kernels)
 ./install.sh --uninstall  # remove module + tools
 ./install.sh -h           # all options
 ```
@@ -90,8 +94,21 @@ prompts for your password on the terminal as usual.
 
 ## Build (manual)
 
-Requires kernel headers for the running kernel (Arch: `linux-rt-headers` for an
-RT kernel, or `linux-headers` otherwise) and `alsa-lib` for `motu424-ctl`.
+The kernel module is Rust. It needs:
+
+- the headers of the running kernel (Arch: `linux-rt-headers` for an RT
+  kernel, or `linux-headers` otherwise), built with Rust support
+  (`CONFIG_RUST=y`; Arch's `linux` and `linux-rt` are);
+- the exact `rustc` that built that kernel: Rust has no stable ABI.
+  `grep RUSTC_VERSION_TEXT /lib/modules/$(uname -r)/build/.config` shows which
+  one; on Arch it is the `rust` package, not rustup;
+- `bindgen` with libclang (Arch: `rust-bindgen`, `clang`): the kernel has no
+  Rust bindings for ALSA, so the build generates them from the kernel's own
+  `<sound/core.h>` and `<sound/pcm.h>`, with the flags the kernel uses for its
+  own bindings.
+
+`./install.sh` installs bindgen and checks the kernel and the compiler before
+building. The tools need Cargo, and `alsa-lib` for `motu424-ctl`.
 
 ```sh
 make            # build module + tools
@@ -101,28 +118,9 @@ aplay -l        # the card should appear
 make unload
 ```
 
-### Rust kernel module
-
-`kernel/rust/` is the same driver written in Rust: the PCI driver, the FPGA and
-DSP program load (with its SHA-256 check), streaming, the IRQ and the teardown
-order are Rust, and `hw.rs` follows `motu424_hw.c` step for step. The ALSA card
-and the module parameters stay in a small C file (`motu424_alsa.c`), because
-the kernel has no Rust bindings for ALSA and Rust module parameters are
-integers only. It builds to the same `motu424.ko`, with the same parameters,
-PCI IDs and firmware names, so load one or the other, not both.
-
-**It has not run on a card yet.** The C module in `kernel/` is the one tested
-on a real PCI-424 and stays the default.
-
-It needs a kernel built with `CONFIG_RUST`, and the exact `rustc` that built
-that kernel (`grep RUSTC_VERSION_TEXT /lib/modules/$(uname -r)/build/.config`
-shows it; on Arch it is the `rust` package, not rustup):
-
-```sh
-make module-rust   # build kernel/rust/motu424.ko
-make load-rust     # insmod it
-./install.sh --rust   # or install it (no DKMS) instead of the C module
-```
+The Rust module is a port of the C driver that ran on a real PCI-424 (in the
+history up to commit `1cb25bb`). It keeps the same `motu424.ko`, PCI IDs,
+parameters and firmware names. **The port itself has not run on a card yet.**
 
 ### Managing the card (CueMix for Linux)
 

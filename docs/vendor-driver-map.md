@@ -65,7 +65,7 @@ independent confirmation that the audio path is not host bus-mastered.
   — cache type is hard-coded to **non-cached** on both windows (no
   write-combining anywhere on the register/aperture path). This is an exact
   ground-truth confirmation of the two MMIO window sizes already assumed in
-  `motu424.h`/`motu424-probe`; our `motu424_assign_windows()` uses
+  `hw.rs`/`motu424-probe`; our `map_bars()` uses
   `>=` thresholds rather than an exact match, which is deliberately more
   permissive and still correct against this evidence.
 - A separate helper (`fn 0x20100`) builds a `DEVICE_DESCRIPTION` (via

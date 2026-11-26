@@ -179,7 +179,7 @@ driver can only replay a program saved from a Windows-configured card.
 
 ## The Linux driver
 
-`kernel/motu424_hw.c` follows this model: the ring is a `SNDRV_DMA_TYPE_DEV`
+`kernel/hw.rs` follows this model: the ring is a `SNDRV_DMA_TYPE_DEV`
 allocation of 512 KB (32-bit DMA mask), and the ALSA buffer is the first
 `8 × period_bytes` of it (`+0x64 = 8`, `period_bytes` a module parameter,
 `0x1800` by default; `+0x60` is the `irq_frames` parameter, `0x40` by
@@ -191,7 +191,7 @@ frame_bytes`.
 The device configure follows the write list Audiosyncrasy gave for 48 kHz
 with a 2408mk3 and a 24I/O (issue #2, 2026-10-20):
 
-- `motu424_hw_init()` writes the parameter group between the mixer zero and
+- `hw::boot()` writes the parameter group between the mixer zero and
   `+0x50 ← 1`, in the vendor's order (`register-map.md`). Half the values
   derive from the firmware constants `+0x44/+0x48`, so it is skipped with a
   warning unless they read `0x03a89000/0x0009c180`. `+0x80` keeps the

@@ -78,10 +78,10 @@
     <div class="container">
       <div class="head">
         <h2>Ce qui est livré</h2>
-        <p class="lead">Un pilote, deux applications de contrôle et les outils de RE, tout l’espace utilisateur en Rust, et un installeur qui fonctionne sur n’importe quelle distribution.</p>
+        <p class="lead">Un pilote, deux applications de contrôle et les outils de RE, le tout en Rust, et un installeur qui fonctionne sur n’importe quelle distribution.</p>
       </div>
       <ul class="rows">
-        <li><h3>Module ALSA</h3><span class="kind">Noyau</span><p>Découpage net en trois couches, entièrement géré par devm/pcim, empaqueté en DKMS pour se recompiler à chaque mise à jour du noyau. Une version Rust, pour les noyaux compilés avec Rust, est dans <code>kernel/rust/</code> ; elle n’a pas encore tourné sur une carte.</p></li>
+        <li><h3>Module ALSA</h3><span class="kind">Noyau</span><p>Écrit en Rust, sans C : l’interface ALSA est générée à la compilation depuis les en-têtes du noyau. Découpage net en trois couches, empaqueté en DKMS pour se recompiler à chaque mise à jour du noyau. Demande un noyau compilé avec le support Rust. Porté depuis le pilote C qui a tourné sur une carte ; le portage n’y a pas encore tourné.</p></li>
         <li><h3><code>motu424-ctl</code></h3><span class="kind">Contrôle, CLI</span><p>Le CueMix FX version Linux, sur alsa-lib, en Rust comme tous les outils du projet : source d’horloge, fréquence d’échantillonnage, gain/atténuation/phase par entrée et la matrice d’écoute entrées×bus.</p></li>
         <li><h3><code>cuemix-studio</code></h3><span class="kind">Contrôle, GUI</span><p>La console de mixage, un seul binaire Rust pour Linux, macOS et Windows : pilote la carte via motu424-ctl sous Linux, simule un rig ailleurs, et ajoute les pages EQ, dynamique et réverb de la 828mk3.</p></li>
         <li><h3>Toute distribution</h3><span class="kind">Installation</span><p>Détecte pacman/apt/dnf/zypper/apk/xbps, installe les dépendances puis le module via DKMS. Non interactif sous curl | sh.</p></li>
@@ -145,12 +145,12 @@
     <div class="container">
       <div class="head">
         <h2>Chemin du signal</h2>
-        <p class="lead">Les couches PCI et PCM restent indépendantes du matériel ; chaque décalage de registre et chaque encodage résident uniquement dans le nœud du bas. Le module Rust de <code>kernel/rust/</code> garde le même découpage : <code>motu424_main.rs</code>, <code>hw.rs</code>, et un petit fichier C pour la carte ALSA.</p>
+        <p class="lead">Les couches PCI et ALSA restent indépendantes du matériel ; chaque décalage de registre et chaque encodage résident uniquement dans le nœud du bas. Les trois sont en Rust.</p>
       </div>
       <ol class="path">
-        <li><code>motu424_main.c</code><p>Attache PCI, mappe les BAR, vecteur IRQ, création de la carte ALSA. L’interruption appelle motu424_hw_irq_ack().</p></li>
-        <li><code>motu424_pcm.c</code><p>Opérations PCM d’ALSA : traduit open/prepare/trigger/pointer en appels motu424_hw_*.</p></li>
-        <li><code>motu424_hw.c</code><p>Registres, horloge/fréquence, anneau DMA, ack IRQ. La vérité matérielle réside ici.</p></li>
+        <li><code>motu424_main.rs</code><p>Attache PCI, rôle des BAR, masque DMA, vecteur IRQ, et l’ordre d’arrêt.</p></li>
+        <li><code>alsa.rs</code><p>Carte ALSA et opérations PCM, sur une interface générée depuis les en-têtes du noyau : open/prepare/trigger/pointer deviennent des appels à hw.rs.</p></li>
+        <li><code>hw.rs</code><p>Registres, chargement du firmware, anneau DMA, ack IRQ. La vérité matérielle réside ici.</p></li>
       </ol>
     </div>
   </section>
@@ -175,7 +175,6 @@ curl -fsSL …/get.sh | sh -s -- <span class="f">--gui</span></pre>
 <pre>git clone https://github.com/devfrp/Linux-motu-pci-424
 cd motu-pci-424
 ./install.sh            <span class="c"># ou : make &amp;&amp; make load</span>
-./install.sh --rust     <span class="c"># module Rust, noyaux CONFIG_RUST</span>
 
 motu424-ctl             <span class="c"># état CueMix (CLI)</span>
 cuemix-studio           <span class="c"># console de mixage (--gui)</span></pre>
@@ -191,7 +190,7 @@ cuemix-studio           <span class="c"># console de mixage (--gui)</span></pre>
         <p class="lead">La carte démarre sous Linux. Il reste à connaître le format de l’audio dans l’anneau hôte, puis la lecture, la capture et les changements de fréquence sur une vraie carte.</p>
       </div>
       <ol class="road">
-        <li><span><span class="state state--ok">Fait</span></span><h3>Cadre &amp; outillage</h3><p>Ossature PCI/DMA/IRQ/ALSA, installeur multi-distribution, CLI + GUI, chaîne d’outils RE. Tous les outils sont en Rust, et le module noyau a une version Rust, pas encore lancée sur une carte.</p></li>
+        <li><span><span class="state state--ok">Fait</span></span><h3>Cadre &amp; outillage</h3><p>Ossature PCI/DMA/IRQ/ALSA, installeur multi-distribution, CLI + GUI, chaîne d’outils RE. Le pilote et tous les outils sont en Rust ; le pilote Rust n’a pas encore tourné sur une carte.</p></li>
         <li><span><span class="state state--ok">Fait</span></span><h3>Modèle registres, IRQ &amp; transport</h3><p>Fenêtres du DSP, ack IRQ, anneau en DMA bus-master, l’interface IOCTL complète.</p></li>
         <li><span><span class="state state--ok">Fait</span></span><h3>Chargement du firmware sur une vraie carte</h3><p>Image FPGA et programme DSP chargés, bloc audio publié ; le pilote le fait désormais avec request_firmware().</p></li>
         <li><span><span class="state state--ok">Fait</span></span><h3>Modèle d’objets &amp; initialisation</h3><p>Toute la structure d’extension du périphérique, l’objet audio &amp; ses sous-objets, et la séquence qui publie l’adresse de base audio.</p></li>

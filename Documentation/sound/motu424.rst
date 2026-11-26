@@ -30,23 +30,25 @@ card's DSP program, and checked on a real card, for interoperability
 purposes; see ``CLEANROOM.md`` and ``docs/register-map.md``,
 ``docs/transport.md``, ``docs/fpga-upload.md`` and
 ``docs/vendor-driver-map.md`` in the driver's source tree for the full
-evidence trail behind every register access in ``motu424_hw.c``.
+evidence trail behind every register access in ``hw.rs``.
 
 Architecture
 ============
 
-The driver keeps every hardware-specific fact confined to ``motu424.h`` and
-``motu424_hw.c``; the PCI attach path (``motu424_main.c``) and the ALSA PCM
-ops (``motu424_pcm.c``) are hardware-agnostic and never touch a register
-offset directly.
+The driver is written in Rust and keeps every hardware-specific fact
+confined to ``hw.rs``; the PCI attach path (``motu424_main.rs``), the ALSA
+card and PCM ops (``alsa.rs``) and the module parameters (``params.rs``) are
+hardware-agnostic and never touch a register offset directly.
 
-A Rust implementation of the same driver lives in ``kernel/rust/``: the PCI
-driver and the hardware layer (``hw.rs``, a port of ``motu424_hw.c``) are
-Rust, and a small C file registers the ALSA card and declares the module
-parameters, since there are no Rust ALSA bindings. It builds to the same
-``motu424.ko`` with the same parameters and firmware names, needs a kernel
-built with ``CONFIG_RUST`` and the ``rustc`` that built it, and has not been
-run on a card yet; the C driver remains the reference.
+The kernel has no Rust bindings for ALSA, so the build generates them with
+bindgen from the kernel's own ``<sound/core.h>`` and ``<sound/pcm.h>``,
+with the flags the kernel uses for its own bindings. Building the module
+therefore needs a kernel built with ``CONFIG_RUST``, the ``rustc`` that
+built it, and bindgen with libclang.
+
+The Rust driver is a port of the C driver that ran on a real PCI-424 (in
+the source history up to commit 1cb25bb). The port itself has not been run
+on a card yet.
 
 Access model
 ------------
@@ -55,7 +57,7 @@ The card's PCI interface is the PCI port of a TI TMS320C6412 DSP in PCI
 boot mode. The I/O BAR holds the DSP's Host Port Interface registers (HSR,
 HDCR, DSPP); the 8 MiB MMIO BAR (window A) is the DSP peripheral register
 space and the 4 MiB one (window B) the DSP memory page selected by DSPP.
-``motu424_assign_windows()`` classifies the BARs by type and size. Every
+``map_bars()`` classifies the BARs by type and size. Every
 write goes through an allow-list: DSP internal RAM in window B, and only
 EMIF CECTL0, the GPIO registers and RSTSRC in window A, so the DSP EEPROM
 controller that holds the card's PCI identity cannot be written.
@@ -64,7 +66,7 @@ Firmware
 --------
 
 The board's FPGA has no configuration PROM, so the host loads it on every
-start, as the vendor driver does. ``motu424_hw_init()`` warm-resets the
+start, as the vendor driver does. ``hw::boot()`` warm-resets the
 DSP, clocks the FPGA image out through the DSP's GPIO, writes the DSP
 program into internal RAM and checks it, releases the CPU (DSPINT) and
 reads the audio block address the program publishes in its mailbox.

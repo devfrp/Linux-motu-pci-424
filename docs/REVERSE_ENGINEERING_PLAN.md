@@ -11,14 +11,14 @@ binaries in `vendor/` are never redistributed (`.gitignore`).
 
 This plan is phased. Each task lists **method**, **deliverable**, and **exit
 criterion**. Static RE (phases 0–3) needs no hardware; phases 4–6 need a card.
-Tick items as they land and fold confirmed facts into `kernel/motu424.h`,
-`kernel/motu424_hw.c`, and the README RE section.
+Tick items as they land and fold confirmed facts into `kernel/hw.rs` and the
+README RE section.
 
 ---
 
 ## Status snapshot (what is already established)
 
-Recorded in `kernel/motu424.h` and the README; see also the RE memory notes.
+Recorded in `kernel/hw.rs` and the README; see also the RE memory notes.
 
 - **PCI identity — CONFIRMED** (`MOTUAW.inf`): `VEN_137A`, `DEV_0003/0004/0005`
   (PCI-324 / PCI-424 / PCIe-424). `DEV_0006/0007` are out of scope (video/variant).
@@ -188,13 +188,16 @@ The single biggest unknown that gates *any* audio.
 
 ## Phase 4 — Rearchitect the Linux driver to the real model (needs card to verify)
 
-Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
-`motu424_hw.c` (see `ARCHITECTURE.md`).
+Keep the clean 3-layer split; confine all new hardware truth to `hw.rs` (see
+`ARCHITECTURE.md`). The items below were done in the C driver, which ran on a
+card; on 2026-11-26 it was replaced by a Rust port in `kernel/` (the C version
+is in the history up to commit 1cb25bb), and the port has not run on a card
+yet.
 
 - [x] **4.1 Register accessors.** **[DONE, no card]** Windowed
-  `card_addr → (window, masked offset)` dispatch (`motu424_addr()`,
-  `motu424_rd32/wr32`); `main.c` maps all BARs generically,
-  `motu424_assign_windows()` picks A/B/port by BAR type+size. Writes go through
+  `card_addr → (window, masked offset)` dispatch (`Io::rd32/wr32` in
+  `hw.rs`); `map_bars()` in `motu424_main.rs` picks A/B/port by BAR
+  type+size. Writes go through
   an allow-list (DSP RAM in window B; CECTL0, GPIO and RSTSRC in window A).
 - [x] **4.2 Firmware upload.** **[DONE 2026-10-16, PCI-424 only; load sequence
   proven on hardware by `tools/motu424-bringup`, driver version not yet run on
@@ -202,7 +205,7 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
   host-loaded (`docs/fpga-upload.md`, confirmed on hardware 2026-10-07):
   `request_firmware()` for the two user-extracted images
   (`pci424-serial-container.bin`, `pci424-program.bin`, never shipped), the
-  five-step upload in `motu424_hw_init()`, then `audio_base`/`mix_base` from
+  five-step upload in `hw::boot()`, then `audio_base`/`mix_base` from
   the mailbox and the published block instead of module params. Images are
   installed under `/lib/firmware/motu424/` and checked by SHA-256. Still to do:
   re-upload on resume (the FPGA has no PROM), and the PCI-324 load path.
@@ -217,7 +220,7 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
 - [ ] **4.4 Clock/rate.** **[PARTIAL 2026-10-20, not yet run on a card]**
   The driver streams at the 48 kHz / 1x state the DSP program boots into.
   From Audiosyncrasy's write list it now writes the vendor's 48 kHz parameter
-  group in `motu424_hw_init()` and the channel map at stream start. It also
+  group in `hw::boot()` and the channel map at stream start. It also
   runs the relock sequence (`0x2b7f0`, the `+0xf8/+0xfc/+0x100` DSP copy)
   once at load when the user provides a mixer program saved from Windows
   (`transport.md`, Device configure). Still to do: other rates (parameter
@@ -243,7 +246,7 @@ Keep the clean 3-layer split; confine all new hardware truth to `motu424.h` +
   `tools/motu424-ctl` (alsa-lib): auto-finds the MOTU card, `list`/`get`/`set`/
   `status` over the mixer kcontrols; verified end-to-end against a generic card.
   Remaining (card): the driver actually registering those kcontrols in
-  `motu424_hw.c` + the runtime channel/bus enumeration (Phase 3.5).
+  `hw.rs` + the runtime channel/bus enumeration (Phase 3.5).
 - [ ] **5.4** Suspend/resume (re-upload FPGA on resume if needed).
 
 ## Phase 6 — Validation & hardening (needs card)
