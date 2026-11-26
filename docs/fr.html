@@ -145,7 +145,7 @@
     <div class="container">
       <div class="head">
         <h2>Chemin du signal</h2>
-        <p class="lead">Les couches PCI et PCM restent indépendantes du matériel ; chaque décalage de registre et chaque encodage résident uniquement dans le nœud du bas.</p>
+        <p class="lead">Les couches PCI et PCM restent indépendantes du matériel ; chaque décalage de registre et chaque encodage résident uniquement dans le nœud du bas. Le module Rust de <code>kernel/rust/</code> garde le même découpage : <code>motu424_main.rs</code>, <code>hw.rs</code>, et un petit fichier C pour la carte ALSA.</p>
       </div>
       <ol class="path">
         <li><code>motu424_main.c</code><p>Attache PCI, mappe les BAR, vecteur IRQ, création de la carte ALSA. L’interruption appelle motu424_hw_irq_ack().</p></li>
@@ -175,6 +175,7 @@ curl -fsSL …/get.sh | sh -s -- <span class="f">--gui</span></pre>
 <pre>git clone https://github.com/devfrp/Linux-motu-pci-424
 cd motu-pci-424
 ./install.sh            <span class="c"># ou : make &amp;&amp; make load</span>
+./install.sh --rust     <span class="c"># module Rust, noyaux CONFIG_RUST</span>
 
 motu424-ctl             <span class="c"># état CueMix (CLI)</span>
 cuemix-studio           <span class="c"># console de mixage (--gui)</span></pre>
@@ -190,7 +191,7 @@ cuemix-studio           <span class="c"># console de mixage (--gui)</span></pre>
         <p class="lead">La carte démarre sous Linux. Il reste à connaître le format de l’audio dans l’anneau hôte, puis la lecture, la capture et les changements de fréquence sur une vraie carte.</p>
       </div>
       <ol class="road">
-        <li><span><span class="state state--ok">Fait</span></span><h3>Cadre &amp; outillage</h3><p>Ossature PCI/DMA/IRQ/ALSA, installeur multi-distribution, CLI + GUI, chaîne d’outils RE.</p></li>
+        <li><span><span class="state state--ok">Fait</span></span><h3>Cadre &amp; outillage</h3><p>Ossature PCI/DMA/IRQ/ALSA, installeur multi-distribution, CLI + GUI, chaîne d’outils RE. Tous les outils sont en Rust, et le module noyau a une version Rust, pas encore lancée sur une carte.</p></li>
         <li><span><span class="state state--ok">Fait</span></span><h3>Modèle registres, IRQ &amp; transport</h3><p>Fenêtres du DSP, ack IRQ, anneau en DMA bus-master, l’interface IOCTL complète.</p></li>
         <li><span><span class="state state--ok">Fait</span></span><h3>Chargement du firmware sur une vraie carte</h3><p>Image FPGA et programme DSP chargés, bloc audio publié ; le pilote le fait désormais avec request_firmware().</p></li>
         <li><span><span class="state state--ok">Fait</span></span><h3>Modèle d’objets &amp; initialisation</h3><p>Toute la structure d’extension du périphérique, l’objet audio &amp; ses sous-objets, et la séquence qui publie l’adresse de base audio.</p></li>
@@ -205,7 +206,10 @@ cuemix-studio           <span class="c"># console de mixage (--gui)</span></pre>
   <div class="container">
     <p class="foot__mark">motu-pci-424</p>
     <div class="foot__row">
-      <p>GPL-2.0-or-later. Rétro-ingénierie menée pour l’interopérabilité avec du matériel que nous possédons ; seuls des faits entrent dans les sources, les binaires du constructeur ne sont jamais redistribués. Projet ni affilié ni approuvé par Mark of the Unicorn, Inc.</p>
+      <div class="foot__text">
+        <p>GPL-2.0-or-later. Rétro-ingénierie menée pour l’interopérabilité avec du matériel que nous possédons ; seuls des faits entrent dans les sources, les binaires du constructeur ne sont jamais redistribués. Projet ni affilié ni approuvé par Mark of the Unicorn, Inc.</p>
+        <p>Contributeurs : <a href="https://github.com/Audiosyncrasy">Audiosyncrasy</a>, tests sur une vraie PCI-424 ; <a href="https://github.com/samplaman">samplaman</a>, retours sur la PCIe-424.</p>
+      </div>
       <nav class="foot__links" aria-label="Liens">
         <a href="https://github.com/devfrp/Linux-motu-pci-424">GitHub</a>
         <a href="https://github.com/devfrp/Linux-motu-pci-424/blob/main/docs/REVERSE_ENGINEERING_PLAN.md">Plan RE</a>

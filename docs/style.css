@@ -149,6 +149,7 @@ body { color: var(--color-ink); }
 .foot__mark { font: 500 clamp(3.5rem, 10vw, 9rem)/0.9 var(--font-display); letter-spacing: -0.05em; color: var(--color-ink); }
 .foot__row { display: grid; grid-template-columns: minmax(0, 8fr) minmax(0, 4fr); gap: var(--gap-columns); margin-top: var(--space-xl); padding-top: var(--space-lg); border-top: var(--rule-hair) solid var(--color-rule); font-size: var(--text-sm); color: var(--color-muted); }
 .foot__row p { max-width: 70ch; }
+.foot__text p + p { margin-top: var(--space-sm); }
 .foot__links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-lg); }
 .foot a { color: var(--color-ink-2); text-decoration-color: var(--color-rule); transition: color var(--dur-short) var(--ease-out); }
 .foot a:hover { color: var(--color-accent); }

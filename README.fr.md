@@ -61,7 +61,8 @@ Détails et options dans [Installation](#installation-toute-distro).
 
 Objectif de conception : **toute l'incertitude est confinée à `motu424.h` +
 `motu424_hw.c`.** Une fois la vraie disposition des registres connue, seuls ces
-deux fichiers changent.
+deux fichiers changent, plus `kernel/rust/hw.rs`, leur portage dans le module
+Rust.
 
 ## Installation (toute distro)
 
@@ -82,6 +83,7 @@ installe les outils :
 ./install.sh              # deps + DKMS + outils + chargement (utilise sudo au besoin)
 ./install.sh -y           # installation de paquets non interactive
 ./install.sh --no-dkms    # build in-tree + install au lieu de DKMS
+./install.sh --rust       # le module Rust au lieu du C (noyaux CONFIG_RUST)
 ./install.sh --uninstall  # retire le module + les outils
 ./install.sh -h           # toutes les options
 ```
@@ -269,6 +271,10 @@ et les chemins de chargement de la PCI-324 et de la PCIe-424.
 
 La feuille de route complète et par phases, d'ici à un pilote 100 % fonctionnel,
 vit dans [`docs/REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md).
+
+## Contributeurs
+- @Audiosyncrasy : les tests sur une vraie PCI-424 ([issue #2](https://github.com/devfrp/Linux-motu-pci-424/issues/2)) et les outils de suivi de l'anneau ([PR #11](https://github.com/devfrp/Linux-motu-pci-424/pull/11))
+- @samplaman : les retours sur la PCIe-424 ([issue #1](https://github.com/devfrp/Linux-motu-pci-424/issues/1))
 
 ## Licence
 

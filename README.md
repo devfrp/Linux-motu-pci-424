@@ -58,7 +58,8 @@ Installs on any distro (deps + DKMS module + tools). Details and options under
 | `dkms.conf` | DKMS packaging for automatic rebuilds across kernels |
 
 The design goal: **all uncertainty is confined to `motu424.h` + `motu424_hw.c`.**
-Once the true register layout is known, only those two files change.
+Once the true register layout is known, only those two files change, plus
+`kernel/rust/hw.rs`, their port in the Rust module.
 
 ## Install (any distro)
 
@@ -78,6 +79,7 @@ module via **DKMS** (so it survives kernel upgrades) and installs the tools:
 ./install.sh              # deps + DKMS + tools + load  (uses sudo as needed)
 ./install.sh -y           # non-interactive package installs
 ./install.sh --no-dkms    # plain in-tree build + install instead of DKMS
+./install.sh --rust       # the Rust module instead of the C one (CONFIG_RUST kernels)
 ./install.sh --uninstall  # remove module + tools
 ./install.sh -h           # all options
 ```
@@ -258,8 +260,8 @@ The full phased roadmap from here to a 100% working driver lives in
 [`docs/REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md).
 
 ## Contributors
-- @Audiosyncrasy
-- @samplaman
+- @Audiosyncrasy: the tests on a real PCI-424 ([issue #2](https://github.com/devfrp/Linux-motu-pci-424/issues/2)) and the ring-watch tools ([PR #11](https://github.com/devfrp/Linux-motu-pci-424/pull/11))
+- @samplaman: the PCIe-424 reports ([issue #1](https://github.com/devfrp/Linux-motu-pci-424/issues/1))
 
 ## License
 
