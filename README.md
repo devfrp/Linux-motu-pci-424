@@ -233,6 +233,10 @@ format, channel order), where capture lands on the host side, rate changes
 The full phased roadmap from here to a 100% working driver lives in
 [`docs/REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md).
 
+## Contributors
+- @Audiosyncrasy
+- @samplaman
+
 ## License
 
 GPL-2.0-or-later. Kernel modules linking GPL-only ALSA symbols must be GPL.
