@@ -41,6 +41,7 @@ Détails et options dans [Installation](#installation-toute-distro).
 | `kernel/motu424_main.c` | Attach/detach PCI, gestion des ressources + IRQ, gestionnaire d'interruption |
 | `kernel/motu424_hw.c` | **Abstraction matérielle — le seul fichier avec la vraie sémantique des registres** |
 | `kernel/motu424_pcm.c` | Callbacks PCM ALSA (lecture ; capture quand le format de l'anneau sera connu) |
+| `kernel/rust/` | **Le même pilote en Rust** (`hw.rs` suit `motu424_hw.c`) : demande un noyau `CONFIG_RUST`, pas encore lancé sur une carte. Voir [Module noyau Rust](#module-noyau-rust) |
 | `tools/` | **Les outils en espace utilisateur, tous en Rust** : un workspace Cargo, `make tools` les compile dans `tools/target/release/` |
 | `tools/motu424-ctl` | **CLI de gestion façon CueMix** (horloge/format + mixeur de monitoring) via alsa-lib |
 | `tools/cuemix-studio` | **Console de mixage** (Rust/egui, Linux/macOS/Windows) : pilote la carte via `motu424-ctl` sous Linux, rig simulé ailleurs ; ajoute les pages EQ/dynamique/réverb de la 828mk3 |
@@ -100,6 +101,30 @@ make load       # insmod kernel/motu424.ko
 dmesg | tail    # chercher « MOTU PCI-4xx registered as ALSA card N »
 aplay -l        # la carte devrait apparaître
 make unload
+```
+
+### Module noyau Rust
+
+`kernel/rust/` est le même pilote écrit en Rust : le pilote PCI, le chargement
+du FPGA et du programme DSP (avec sa vérification SHA-256), le flux audio,
+l'IRQ et l'ordre d'arrêt sont en Rust, et `hw.rs` suit `motu424_hw.c` étape
+par étape. La carte ALSA et les paramètres du module restent dans un petit
+fichier C (`motu424_alsa.c`), car le noyau n'a pas d'interface Rust pour ALSA
+et les paramètres de module Rust ne sont que des entiers. Il produit le même
+`motu424.ko`, avec les mêmes paramètres, identifiants PCI et noms de firmware :
+on charge l'un ou l'autre, pas les deux.
+
+**Il n'a pas encore tourné sur une carte.** Le module C de `kernel/` est celui
+testé sur une vraie PCI-424 et reste celui par défaut.
+
+Il faut un noyau compilé avec `CONFIG_RUST`, et exactement le `rustc` qui a
+compilé ce noyau (`grep RUSTC_VERSION_TEXT /lib/modules/$(uname -r)/build/.config`
+l'affiche ; sous Arch c'est le paquet `rust`, pas rustup) :
+
+```sh
+make module-rust   # compile kernel/rust/motu424.ko
+make load-rust     # le charge (insmod)
+./install.sh --rust   # ou l'installe (sans DKMS) à la place du module C
 ```
 
 ### Gérer la carte (CueMix pour Linux)

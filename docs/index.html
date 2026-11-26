@@ -81,7 +81,7 @@
         <p class="lead">A driver, two control apps and the RE tools, all the userspace in Rust, and an installer that works on any distribution.</p>
       </div>
       <ul class="rows">
-        <li><h3>ALSA module</h3><span class="kind">Kernel</span><p>Clean three-layer split, fully devm/pcim-managed, DKMS-packaged so it rebuilds itself across kernel upgrades.</p></li>
+        <li><h3>ALSA module</h3><span class="kind">Kernel</span><p>Clean three-layer split, fully devm/pcim-managed, DKMS-packaged so it rebuilds itself across kernel upgrades. A Rust version, for kernels built with Rust support, is in <code>kernel/rust/</code>; it has not run on a card yet.</p></li>
         <li><h3><code>motu424-ctl</code></h3><span class="kind">Control, CLI</span><p>The Linux CueMix FX over alsa-lib, in Rust like every tool here: clock source, sample rate, per-input trim/pad/phase, and the input×bus monitor matrix.</p></li>
         <li><h3><code>cuemix-studio</code></h3><span class="kind">Control, GUI</span><p>The mixing console, one Rust binary for Linux, macOS and Windows: drives the card through motu424-ctl on Linux, runs a simulated rig anywhere else, and adds the 828mk3 EQ, dynamics and reverb pages.</p></li>
         <li><h3>Any distro</h3><span class="kind">Install</span><p>Detects pacman/apt/dnf/zypper/apk/xbps, pulls deps, installs via DKMS. Non-interactive under curl | sh.</p></li>

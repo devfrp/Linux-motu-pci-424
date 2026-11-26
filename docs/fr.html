@@ -81,7 +81,7 @@
         <p class="lead">Un pilote, deux applications de contrôle et les outils de RE, tout l’espace utilisateur en Rust, et un installeur qui fonctionne sur n’importe quelle distribution.</p>
       </div>
       <ul class="rows">
-        <li><h3>Module ALSA</h3><span class="kind">Noyau</span><p>Découpage net en trois couches, entièrement géré par devm/pcim, empaqueté en DKMS pour se recompiler à chaque mise à jour du noyau.</p></li>
+        <li><h3>Module ALSA</h3><span class="kind">Noyau</span><p>Découpage net en trois couches, entièrement géré par devm/pcim, empaqueté en DKMS pour se recompiler à chaque mise à jour du noyau. Une version Rust, pour les noyaux compilés avec Rust, est dans <code>kernel/rust/</code> ; elle n’a pas encore tourné sur une carte.</p></li>
         <li><h3><code>motu424-ctl</code></h3><span class="kind">Contrôle, CLI</span><p>Le CueMix FX version Linux, sur alsa-lib, en Rust comme tous les outils du projet : source d’horloge, fréquence d’échantillonnage, gain/atténuation/phase par entrée et la matrice d’écoute entrées×bus.</p></li>
         <li><h3><code>cuemix-studio</code></h3><span class="kind">Contrôle, GUI</span><p>La console de mixage, un seul binaire Rust pour Linux, macOS et Windows : pilote la carte via motu424-ctl sous Linux, simule un rig ailleurs, et ajoute les pages EQ, dynamique et réverb de la 828mk3.</p></li>
         <li><h3>Toute distribution</h3><span class="kind">Installation</span><p>Détecte pacman/apt/dnf/zypper/apk/xbps, installe les dépendances puis le module via DKMS. Non interactif sous curl | sh.</p></li>

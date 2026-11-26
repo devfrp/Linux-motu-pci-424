@@ -67,6 +67,49 @@ Key facts an implementer must keep consistent:
 - **Locking:** `chip->lock` guards register access + stream state. The IRQ
   handler and the (atomic) PCM trigger both take it.
 
+## The Rust port (`kernel/rust/`)
+
+A second implementation of the same driver, built to the same `motu424.ko`
+(same parameters, PCI IDs and firmware names). It has not run on a card; the
+C driver above is the reference.
+
+```
+motu424_main.rs  pci::Driver: enable, BAR roles, DMA mask, boot, bus master,
+   │             IRQ vector + irq::Registration, teardown order.
+   ▼
+hw.rs            The hardware layer, a port of motu424.h + motu424_hw.c:
+   │             windowed accessors and write allow-list, FPGA + DSP program
+   │             load (sha256.rs checks the images), relock, idle stream,
+   │             stream start/stop/position, IRQ handler.
+   ▼
+alsa.rs          FFI boundary: the motu424_rs_pcm_*() callbacks and the
+   │             declarations of the C side.
+   ▼
+motu424_alsa.c   ALSA card + PCM ops and the module parameters, in C: the
+                 kernel has no Rust ALSA bindings and Rust parameters are
+                 integers only. No register offsets.
+```
+
+- **Change the hardware model in both drivers.** `hw.rs` mirrors
+  `motu424_hw.c` function by function and names the same vendor routines;
+  a fix to one belongs in the other.
+- **Teardown order** is fixed by `PinnedDrop` on the driver data, then its
+  field order: disconnect the ALSA card (`snd_card_disconnect_sync()`, so no
+  PCM callback runs afterwards), quiesce and reset the DSP, free the IRQ,
+  drop the chip with its DMA buffers and BAR mappings, disable the device.
+  The C side never outlives the Rust chip it calls into.
+- **Locking:** the IRQ handler takes no lock (the Rust `SpinLock` does not
+  disable interrupts). It acks RSTSRC and reads an atomic `playing` flag;
+  the lock serialises the start/stop, idle-stream and shutdown sequences.
+- **Where the Rust kernel API stops**, the code says so: the I/O-port BAR is
+  read with `ioread32()` (the `Bar` accessors are MMIO-only), the device is
+  enabled with `pci_enable_device()` (the API only has `enable_device_mem()`),
+  and the PCI IDs are built from `struct pci_device_id` (there is no
+  `pci::Vendor` for MOTU).
+- Build: `make module-rust`; `make -C /lib/modules/$(uname -r)/build
+  M=$PWD/kernel/rust CLIPPY=1 modules` runs Clippy. Needs the exact `rustc`
+  that built the kernel.
+
 ## Build & test
 
 Requires kernel headers for the running kernel (Arch RT kernel:
@@ -76,6 +119,7 @@ is kbuild-only code; trust `make`, not standalone clang.
 ```sh
 make            # build module (kernel/) + userspace tools (tools/)
 make module     # module only
+make module-rust  # the Rust module (kernel/rust/), needs a CONFIG_RUST kernel
 make tools      # userspace tools (probe + motu424-ctl); builds without kernel headers
 make load       # sudo insmod kernel/motu424.ko
 make unload     # sudo rmmod motu424

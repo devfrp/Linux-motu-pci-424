@@ -40,6 +40,14 @@ The driver keeps every hardware-specific fact confined to ``motu424.h`` and
 ops (``motu424_pcm.c``) are hardware-agnostic and never touch a register
 offset directly.
 
+A Rust implementation of the same driver lives in ``kernel/rust/``: the PCI
+driver and the hardware layer (``hw.rs``, a port of ``motu424_hw.c``) are
+Rust, and a small C file registers the ALSA card and declares the module
+parameters, since there are no Rust ALSA bindings. It builds to the same
+``motu424.ko`` with the same parameters and firmware names, needs a kernel
+built with ``CONFIG_RUST`` and the ``rustc`` that built it, and has not been
+run on a card yet; the C driver remains the reference.
+
 Access model
 ------------
 

@@ -39,6 +39,7 @@ Installs on any distro (deps + DKMS module + tools). Details and options under
 | `kernel/motu424_main.c` | PCI attach/detach, resource + IRQ management, interrupt handler |
 | `kernel/motu424_hw.c` | **Hardware abstraction — the only file with real register semantics** |
 | `kernel/motu424_pcm.c` | ALSA PCM callbacks (playback; capture once the ring layout is known) |
+| `kernel/rust/` | **The same driver in Rust** (`hw.rs` mirrors `motu424_hw.c`): needs a `CONFIG_RUST` kernel, not yet run on a card. See [Rust kernel module](#rust-kernel-module) |
 | `tools/` | **The userspace tools, all Rust**: one Cargo workspace, `make tools` builds them into `tools/target/release/` |
 | `tools/motu424-ctl` | **CueMix-style management CLI** (clock/format + monitor mixer) over alsa-lib |
 | `tools/cuemix-studio` | **Mixing console** (Rust/egui, Linux/macOS/Windows): drives the card via `motu424-ctl` on Linux, simulated rig elsewhere; adds the 828mk3 EQ/dynamics/reverb pages |
@@ -96,6 +97,29 @@ make load       # insmod kernel/motu424.ko
 dmesg | tail    # look for "MOTU PCI-4xx registered as ALSA card N"
 aplay -l        # the card should appear
 make unload
+```
+
+### Rust kernel module
+
+`kernel/rust/` is the same driver written in Rust: the PCI driver, the FPGA and
+DSP program load (with its SHA-256 check), streaming, the IRQ and the teardown
+order are Rust, and `hw.rs` follows `motu424_hw.c` step for step. The ALSA card
+and the module parameters stay in a small C file (`motu424_alsa.c`), because
+the kernel has no Rust bindings for ALSA and Rust module parameters are
+integers only. It builds to the same `motu424.ko`, with the same parameters,
+PCI IDs and firmware names, so load one or the other, not both.
+
+**It has not run on a card yet.** The C module in `kernel/` is the one tested
+on a real PCI-424 and stays the default.
+
+It needs a kernel built with `CONFIG_RUST`, and the exact `rustc` that built
+that kernel (`grep RUSTC_VERSION_TEXT /lib/modules/$(uname -r)/build/.config`
+shows it; on Arch it is the `rust` package, not rustup):
+
+```sh
+make module-rust   # build kernel/rust/motu424.ko
+make load-rust     # insmod it
+./install.sh --rust   # or install it (no DKMS) instead of the C module
 ```
 
 ### Managing the card (CueMix for Linux)
