@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Kbuild file for the Rust motu424 out-of-tree module.
+#
+# One module from a Rust crate (motu424_main.rs, with hw.rs, alsa.rs and
+# sha256.rs) and the C ALSA glue. Needs a kernel built with CONFIG_RUST and
+# the exact rustc that built it.
+
+obj-m += motu424.o
+motu424-y := motu424_main.o motu424_alsa.o
+
+ccflags-y += -Wall
