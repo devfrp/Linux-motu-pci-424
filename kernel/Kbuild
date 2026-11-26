@@ -1,7 +1,83 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Kbuild file for the motu424 out-of-tree module.
+# Kbuild file for the motu424 out-of-tree module, written in Rust.
+#
+# Needs a kernel built with CONFIG_RUST, the exact rustc that built it, and
+# bindgen with libclang: the kernel has no Rust bindings for ALSA, so they
+# are generated here from the kernel's own <sound/core.h> and <sound/pcm.h>,
+# with the flags the kernel uses for its own bindings (rust/Makefile). Every
+# ALSA structure the driver touches is laid out by the compiler from the
+# real headers, never by hand.
 
 obj-m += motu424.o
-motu424-y := motu424_main.o motu424_hw.o motu424_pcm.o
+motu424-y := motu424_main.o
 
-ccflags-y += -Wall
+BINDGEN ?= bindgen
+
+ifdef CONFIG_CC_IS_CLANG
+alsa_bindgen_c_flags = $(c_flags)
+else
+# From rust/Makefile: bindgen parses with libclang, so drop the GCC-only flags.
+alsa_bindgen_skip_c_flags := -mno-fp-ret-in-387 -mpreferred-stack-boundary=% \
+	-mskip-rax-setup -mgeneral-regs-only -msign-return-address=% \
+	-mindirect-branch=thunk-extern -mindirect-branch-register \
+	-mfunction-return=thunk-extern -mrecord-mcount -mabi=lp64 \
+	-mindirect-branch-cs-prefix -mstack-protector-guard% -mtraceback=no \
+	-mno-pointers-to-nested-functions -mno-string \
+	-mno-strict-align -mstrict-align -mdirect-extern-access \
+	-mexplicit-relocs -mno-check-zero-division \
+	-fconserve-stack -falign-jumps=% -falign-loops=% \
+	-femit-struct-debug-baseonly -fno-ipa-cp-clone -fno-ipa-sra \
+	-fno-partial-inlining -fplugin-arg-arm_ssp_per_task_plugin-% \
+	-fno-reorder-blocks -fno-allow-store-data-races -fasan-shadow-offset=% \
+	-fzero-call-used-regs=% -fno-stack-clash-protection \
+	-fno-inline-functions-called-once -fsanitize=bounds-strict \
+	-fstrict-flex-arrays=% -fmin-function-alignment=% \
+	-fzero-init-padding-bits=% -mno-fdpic \
+	-fdiagnostics-show-context -fdiagnostics-show-context=% \
+	--param=% --param asan-% -fno-isolate-erroneous-paths-dereference
+alsa_bindgen_target_x86   := x86_64-linux-gnu
+alsa_bindgen_target_arm64 := aarch64-linux-gnu
+alsa_bindgen_c_flags = $(filter-out $(alsa_bindgen_skip_c_flags), $(c_flags)) \
+	-w --target=$(alsa_bindgen_target_$(SRCARCH))
+endif
+
+ifdef CONFIG_LTO
+alsa_bindgen_c_flags_final = $(filter-out $(CC_FLAGS_LTO), $(alsa_bindgen_c_flags))
+else
+alsa_bindgen_c_flags_final = $(alsa_bindgen_c_flags)
+endif
+
+# Only the ALSA entry points and structures the driver uses; whatever they
+# reference comes along, with the kernel's own opaque-type workarounds.
+alsa_bindgen_flags := \
+	--use-core --ctypes-prefix core::ffi --rust-target 1.85 \
+	--no-layout-tests --no-doc-comments --no-debug '.*' \
+	--allowlist-function 'snd_devm_card_new|snd_card_register|snd_card_disconnect_sync' \
+	--allowlist-function 'snd_pcm_new|snd_pcm_set_ops|snd_pcm_set_managed_buffer_all' \
+	--allowlist-function 'snd_pcm_period_elapsed|snd_pcm_hw_constraint_minmax' \
+	--allowlist-function 'snd_pcm_format_set_silence' \
+	--allowlist-type 'snd_card|snd_pcm|snd_pcm_substream|snd_pcm_runtime' \
+	--allowlist-type 'snd_pcm_ops|snd_pcm_hardware' \
+	--allowlist-var 'SNDRV_CARDS|SNDRV_PCM_INFO_.*|SNDRV_PCM_RATE_48000' \
+	--allowlist-var 'SNDRV_PCM_TRIGGER_.*|SNDRV_PCM_HW_PARAM_PERIOD_BYTES' \
+	--allowlist-var 'SNDRV_DMA_TYPE_DEV' \
+	--blocklist-type '__kernel_s?size_t' --blocklist-type '__kernel_ptrdiff_t' \
+	--opaque-type xregs_state --opaque-type desc_struct \
+	--opaque-type arch_lbr_state --opaque-type local_apic \
+	--opaque-type alt_instr --opaque-type x86_msi_data \
+	--opaque-type x86_msi_addr_lo --opaque-type spinlock \
+	--blocklist-function '__list_.*_report'
+
+quiet_cmd_alsa_bindgen = BINDGEN $@
+      cmd_alsa_bindgen = \
+	printf '\#include <sound/core.h>\n\#include <sound/pcm.h>\n' > $@.h && \
+	$(BINDGEN) $@.h $(alsa_bindgen_flags) -o $@ -- \
+		$(alsa_bindgen_c_flags_final) -fno-builtin -D__BINDGEN__ -DMODULE
+
+$(obj)/alsa_generated.rs: FORCE
+	$(call if_changed_dep,alsa_bindgen)
+
+$(obj)/motu424_main.o: $(obj)/alsa_generated.rs
+
+targets += alsa_generated.rs
+clean-files += alsa_generated.rs alsa_generated.rs.h

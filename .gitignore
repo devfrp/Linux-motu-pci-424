@@ -11,6 +11,9 @@
 .tmp_versions/
 modules.order
 Module.symvers
+# bindgen output (kernel/Kbuild), generated from the kernel's ALSA headers
+kernel/alsa_generated.rs
+kernel/alsa_generated.rs.h
 
 # Userspace tools (Cargo workspace in tools/)
 tools/target/

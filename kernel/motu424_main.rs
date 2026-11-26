@@ -3,12 +3,13 @@
 //! motu424 - Linux ALSA driver for the MOTU PCI-324 / PCI-424 audio card, in Rust.
 //!
 //! This file is the PCI driver: attach and detach, the BARs, DMA, the IRQ and the teardown
-//! order. All register-level semantics live in `hw.rs`; the ALSA card is registered by
-//! `motu424_alsa.c`, since the kernel has no Rust bindings for ALSA.
+//! order. All register-level semantics live in `hw.rs`; the ALSA card is in `alsa.rs`, over
+//! bindings generated at build time from the kernel's ALSA headers, and the module parameters
+//! in `params.rs`.
 //!
 //! The MOTU PCI-324/424 is undocumented hardware. The model in `hw.rs` comes from static RE of
 //! the vendor Windows driver MOTUAW.sys and of the card's own DSP program, checked on a real
-//! PCI-424 with the C driver in `kernel/` (issue #2). The board is a TI TMS320C6412 DSP (its PCI
+//! PCI-424 with the C driver this one was ported from (issue #2; removed after commit 1cb25bb). The board is a TI TMS320C6412 DSP (its PCI
 //! port is the card's PCI interface) plus an FPGA with no config PROM, so the host loads both on
 //! every start. The DSP is the PCI bus master: it moves audio to and from a host ring by itself.
 
@@ -25,6 +26,7 @@ use kernel::{
 
 mod alsa;
 mod hw;
+mod params;
 mod sha256;
 
 use hw::{Bars, Chip, Io};
@@ -163,10 +165,10 @@ impl PinnedDrop for Motu424 {
 
 /// Mixer handover and idle stream, which make the DSP read host memory, then the ALSA card.
 /// Runs once the IRQ is registered; on failure the DSP is quiesced before the IRQ goes away.
-fn start(chip: &Chip, model: &CStr) -> Result<alsa::Card> {
+fn start(chip: &Chip, model: &CStr, slot: usize, irq: i32) -> Result<alsa::Card> {
     chip.relock();
     chip.idle_start();
-    alsa::Card::new(chip, model).inspect_err(|_| chip.shutdown())
+    alsa::Card::new(chip, model, slot, irq).inspect_err(|_| chip.shutdown())
 }
 
 struct Motu424Driver;
@@ -182,7 +184,7 @@ impl pci::Driver for Motu424Driver {
         _info: &'bound Self::IdInfo,
     ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
         pin_init::pin_init_scope(move || {
-            alsa::slot()?;
+            let slot = alsa::slot()?;
 
             // Only the PCI-424 (0004) load sequence is implemented and tested. The PCI-324
             // (0003) loads its FPGA through different registers, and the PCIe-424 (0005) has
@@ -206,7 +208,14 @@ impl pci::Driver for Motu424Driver {
 
             // Load the FPGA and DSP program; PINTA# stays masked until a stream.
             let dev: &Device<Bound> = pdev.as_ref();
-            let boot = hw::boot(&Io::new(&bars, dev)?, alsa::params())?;
+            let p = hw::Params {
+                frame_bytes: params::frame_bytes.get(),
+                period_bytes: params::period_bytes.get(),
+                irq_frames: params::irq_frames.get(),
+                configure: params::configure.get(),
+                idle_stream: params::idle_stream.get(),
+            };
+            let boot = hw::boot(&Io::new(&bars, dev)?, p)?;
             let chip = Arc::pin_init(Chip::new(dev, bars, boot), GFP_KERNEL)?;
 
             // The DSP is the PCI bus master: it fetches audio from the host ring. Enabled only
@@ -218,10 +227,11 @@ impl pci::Driver for Motu424Driver {
                 .alloc_irq_vectors(1, 1, pci::IrqTypes::all())
                 .inspect_err(|_| dev_err!(pdev, "cannot allocate an IRQ vector\n"))?
                 .start();
+            let sync_irq = alsa::irq_of(raw_pci(pdev));
 
             Ok(try_pin_init!(Motu424 {
                 irq <- pdev.request_irq(vector, irq::Flags::SHARED, NAME, Ok::<_, Error>(chip.clone())),
-                card: start(&chip, model)?,
+                card: start(&chip, model, slot, sync_irq)?,
                 chip,
                 _enabled: enabled,
             }? Error))
@@ -235,4 +245,8 @@ kernel::module_pci_driver! {
     authors: ["motu-pci-424 contributors"],
     description: "MOTU PCI-324/424 audio card driver",
     license: "GPL",
+    firmware: [
+        "motu424/pci424-serial-container.bin",
+        "motu424/pci424-program.bin",
+    ],
 }

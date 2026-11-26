@@ -15,9 +15,9 @@
 //!   an optional mixer program handed over by the relock sequence, and the channel map at every
 //!   stream start.
 //!
-//! Only the PCI-424 (137a:0004) load path is implemented. This is a port of the C driver's
-//! `motu424_hw.c`, which has run on a card; the comments name the vendor routines each step
-//! follows.
+//! Only the PCI-424 (137a:0004) load path is implemented. This is a port of `motu424_hw.c`, the
+//! C driver that ran on a card (removed after commit 1cb25bb, still in the history); the comments
+//! name the vendor routines each step follows.
 
 use core::ffi::c_void;
 
@@ -241,7 +241,7 @@ fn write_allowed(card: u32) -> bool {
     )
 }
 
-/// Module parameters, read once at probe from the C side (Rust parameters are integers only).
+/// The module parameters this layer needs, read once at probe (see `params.rs`).
 #[derive(Clone, Copy)]
 pub(crate) struct Params {
     pub(crate) frame_bytes: u32,
@@ -970,9 +970,9 @@ impl irq::Handler for Chip {
         if self.playing.load(Acquire) {
             let alsa = self.alsa.load(Acquire);
             if !alsa.is_null() {
-                // SAFETY: `alsa` was returned by `motu424_alsa_create()`, and the card it names
+                // SAFETY: `alsa` was set by `alsa::Card::new()`, and the card it names
                 // is freed only after the driver data, which owns this IRQ registration.
-                unsafe { alsa::motu424_alsa_period_elapsed(alsa) };
+                unsafe { alsa::period_elapsed(alsa) };
             }
         }
         IrqReturn::Handled
